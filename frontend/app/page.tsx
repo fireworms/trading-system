@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { api, Strategy, StrategyStats, getToken } from "@/lib/api";
+import { api, Strategy, StrategyStats, User, getToken } from "@/lib/api";
 import StatCard from "@/components/StatCard";
 
 interface StrategyWithStats {
@@ -13,6 +13,7 @@ interface StrategyWithStats {
 
 export default function DashboardPage() {
   const router = useRouter();
+  const [me, setMe]             = useState<User | null>(null);
   const [items, setItems]       = useState<StrategyWithStats[]>([]);
   const [scheduler, setScheduler] = useState<{ running: boolean; jobs: { id: string; next_run: string | null }[] } | null>(null);
   const [loading, setLoading]   = useState(true);
@@ -24,9 +25,13 @@ export default function DashboardPage() {
 
   async function load() {
     try {
+      const user = await api.auth.me();
+      setMe(user);
+
+      const isAdmin = user.role === "ADMIN" || user.role === "SUPER_ADMIN";
       const [strategies, sched] = await Promise.all([
         api.strategies.list(),
-        api.admin.schedulerStatus(),
+        isAdmin ? api.admin.schedulerStatus().catch(() => null) : Promise.resolve(null),
       ]);
       const withStats = await Promise.all(
         strategies.map(async (s) => ({
