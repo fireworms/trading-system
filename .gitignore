@@ -1,0 +1,44 @@
+# 환경변수 (절대 커밋 금지)
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# 알렘빅 캐시
+migrations/versions/__pycache__/
+
+# 테스트/캐시
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+
+# KIS 토큰 캐시 (민감 정보 포함 가능)
+/tmp/kis_token_cache.json
+
+# Next.js
+frontend/.next/
+frontend/node_modules/
+frontend/.env.local
+frontend/.env*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+.claude/
