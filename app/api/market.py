@@ -59,6 +59,23 @@ def _user_account(user: User, db: Session) -> BrokerAccount:
 
 
 # ------------------------------------------------------------------ #
+# 종목 기본정보 조회 (코드 → 이름/시장/섹터)
+# ------------------------------------------------------------------ #
+
+@router.get("/stock-basic/{stock_code}")
+def get_stock_basic(
+    stock_code: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """종목코드로 종목명/시장/섹터 조회 (미지 종목 등록 시 자동완성용)."""
+    info = get_kis_client(db).get_stock_basic_info(stock_code)
+    if not info:
+        raise HTTPException(status_code=404, detail="종목 정보를 찾을 수 없습니다.")
+    return info
+
+
+# ------------------------------------------------------------------ #
 # 시장 데이터 (any active account)
 # ------------------------------------------------------------------ #
 

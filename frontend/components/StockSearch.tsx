@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { searchStocks, StockItem } from "@/lib/korean-stocks";
+import { api } from "@/lib/api";
 
 interface Props {
   onSelect: (stock: StockItem) => void;
@@ -76,10 +77,18 @@ export default function StockSearch({ onSelect, placeholder = "종목명 또는 
           ))}
           {query.trim().length === 6 && /^\d{6}$/.test(query.trim()) && results.length === 0 && (
             <li
-              onMouseDown={() => select({ code: query.trim(), name: query.trim(), market: "KOSPI", sector: "" })}
+              onMouseDown={async () => {
+                const code = query.trim();
+                try {
+                  const info = await api.market.stockBasic(code);
+                  select({ code: info.stock_code, name: info.stock_name, market: info.market as "KOSPI"|"KOSDAQ", sector: info.sector });
+                } catch {
+                  select({ code, name: "", market: "KOSPI", sector: "" });
+                }
+              }}
               className="px-4 py-2.5 cursor-pointer text-sm hover:bg-gray-700 text-gray-300">
               <span className="font-mono">{query.trim()}</span>
-              <span className="ml-2 text-gray-500">직접 입력 (목록에 없는 종목)</span>
+              <span className="ml-2 text-gray-500">KIS에서 종목 정보 조회</span>
             </li>
           )}
         </ul>

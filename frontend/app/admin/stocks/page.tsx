@@ -17,8 +17,10 @@ export default function AdminStocksPage() {
   const [loading, setLoading] = useState(true);
   const [msg, setMsg]         = useState("");
 
-  // 선택된 종목 (검색 후 확인 대기)
+  // 선택된 종목 (검색 후 확인/편집 대기)
   const [selected, setSelected] = useState<StockItem | null>(null);
+  // 직접 입력 종목의 편집 폼
+  const [editForm, setEditForm] = useState({ name: "", market: "KOSPI", sector: "" });
   const [addLoading, setAddLoading] = useState(false);
 
   // 일괄 등록
@@ -58,15 +60,28 @@ export default function AdminStocksPage() {
     }
   }
 
+  function handleSelect(s: StockItem) {
+    setSelected(s);
+    setMsg("");
+    // 목록에 없는 종목(name이 비어있음)이면 편집 폼 초기화
+    if (!s.name) setEditForm({ name: "", market: "KOSPI", sector: "" });
+  }
+
+  const isUnknown = selected && !selected.name;
+
   async function addStock() {
     if (!selected) return;
+    const name   = isUnknown ? editForm.name.trim()   : selected.name;
+    const market = isUnknown ? editForm.market        : selected.market;
+    const sector = isUnknown ? editForm.sector.trim() : selected.sector;
+    if (!name) { setMsg("종목명을 입력하세요"); return; }
     setAddLoading(true); setMsg("");
     try {
       const created = await api.stocks.create({
         stock_code: selected.code,
-        stock_name: selected.name,
-        market:     selected.market ?? null,
-        sector:     selected.sector || null,
+        stock_name: name,
+        market:     market ?? null,
+        sector:     sector || null,
         notes:      null,
       });
       setStocks((prev) => [...prev, created]);
@@ -170,12 +185,12 @@ export default function AdminStocksPage() {
           <div className="bg-gray-800 rounded-2xl p-5">
             <h3 className="font-semibold text-gray-300 mb-3">종목 추가</h3>
             <StockSearch
-              onSelect={(s) => { setSelected(s); setMsg(""); }}
+              onSelect={handleSelect}
               placeholder="종목명 또는 코드 검색"
             />
 
-            {/* 선택된 종목 미리보기 */}
-            {selected && (
+            {/* 알려진 종목: 확인 카드 */}
+            {selected && !isUnknown && (
               <div className="mt-3 bg-gray-700/50 rounded-lg p-3">
                 <div className="flex items-start justify-between">
                   <div>
@@ -189,6 +204,38 @@ export default function AdminStocksPage() {
                 </div>
                 <button onClick={addStock} disabled={addLoading}
                   className="mt-3 w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2 text-sm font-medium disabled:opacity-50">
+                  {addLoading ? "추가 중..." : "풀에 추가"}
+                </button>
+              </div>
+            )}
+
+            {/* 미지 종목: 정보 입력 폼 */}
+            {selected && isUnknown && (
+              <div className="mt-3 bg-yellow-900/20 border border-yellow-700/40 rounded-lg p-3 flex flex-col gap-2">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs text-yellow-400 font-medium">
+                    코드 {selected.code} — 종목 정보 입력
+                  </span>
+                  <button onClick={() => setSelected(null)}
+                    className="text-gray-500 hover:text-white text-xs">✕</button>
+                </div>
+                <input type="text" placeholder="종목명 *" required
+                  value={editForm.name}
+                  onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
+                  className="bg-gray-700 text-white rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+                <select value={editForm.market}
+                  onChange={(e) => setEditForm((f) => ({ ...f, market: e.target.value }))}
+                  className="bg-gray-700 text-white rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500">
+                  <option value="KOSPI">KOSPI</option>
+                  <option value="KOSDAQ">KOSDAQ</option>
+                </select>
+                <input type="text" placeholder="섹터 (선택)"
+                  value={editForm.sector}
+                  onChange={(e) => setEditForm((f) => ({ ...f, sector: e.target.value }))}
+                  className="bg-gray-700 text-white rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
+                {msg && <p className="text-xs text-red-400">{msg}</p>}
+                <button onClick={addStock} disabled={addLoading || !editForm.name.trim()}
+                  className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2 text-sm font-medium disabled:opacity-50">
                   {addLoading ? "추가 중..." : "풀에 추가"}
                 </button>
               </div>

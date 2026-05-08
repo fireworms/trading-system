@@ -227,6 +227,13 @@ export const api = {
       authFetch<BrokerAccount[]>(`/users/${userId}/accounts`),
   },
 
+  market: {
+    stockBasic: (code: string) =>
+      authFetch<{ stock_code: string; stock_name: string; market: string; sector: string }>(
+        `/market/stock-basic/${code}`
+      ),
+  },
+
   stocks: {
     list: (activeOnly = true) =>
       authFetch<CandidateStock[]>(`/candidate-stocks?active_only=${activeOnly}`),

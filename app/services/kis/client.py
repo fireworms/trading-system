@@ -187,6 +187,29 @@ class KISClient:
     # 시세 조회
     # ------------------------------------------------------------------ #
 
+    def get_stock_basic_info(self, stock_code: str) -> dict | None:
+        """
+        종목 기본정보 조회 (종목명, 시장, 섹터).
+        search-stock-info / CTPF1002R
+        반환: {"stock_code", "stock_name", "market", "sector"} or None
+        """
+        try:
+            data = self._get(
+                "/uapi/domestic-stock/v1/quotations/search-stock-info",
+                "CTPF1002R",
+                {"PRDT_TYPE_CD": "300", "PDNO": stock_code},
+            )
+            o = data.get("output", {})
+            name = o.get("prdt_abrv_name") or o.get("prdt_name", "")
+            if not name:
+                return None
+            mket = o.get("mket_id_cd", "")
+            market = "KOSDAQ" if mket == "KSQ" else "KOSPI"
+            sector = o.get("idx_bztp_mcls_cd_name") or o.get("std_idst_clsf_cd_name", "")
+            return {"stock_code": stock_code, "stock_name": name, "market": market, "sector": sector}
+        except Exception:
+            return None
+
     def get_current_price(self, stock_code: str) -> Decimal:
         """현재가 조회."""
         data = self._get(
