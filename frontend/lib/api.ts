@@ -1,5 +1,8 @@
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
 
+// ------------------------------------------------------------------ //
+// Token
+// ------------------------------------------------------------------ //
 let _token: string | null = null;
 
 export function getToken(): string | null {
@@ -7,23 +10,18 @@ export function getToken(): string | null {
   if (typeof window !== "undefined") _token = localStorage.getItem("token");
   return _token;
 }
-
 export function setToken(t: string) {
   _token = t;
   if (typeof window !== "undefined") localStorage.setItem("token", t);
 }
-
-export async function login(username: string, password: string): Promise<void> {
-  const res = await fetch(`${BASE}/users/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, password }),
-  });
-  if (!res.ok) throw new Error("로그인 실패");
-  const data = await res.json();
-  setToken(data.access_token);
+export function clearToken() {
+  _token = null;
+  if (typeof window !== "undefined") localStorage.removeItem("token");
 }
 
+// ------------------------------------------------------------------ //
+// Base fetch
+// ------------------------------------------------------------------ //
 async function authFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const token = getToken();
   const res = await fetch(`${BASE}${path}`, {
@@ -35,19 +33,32 @@ async function authFetch<T>(path: string, init?: RequestInit): Promise<T> {
     },
   });
   if (res.status === 401) {
-    if (typeof window !== "undefined") {
-      localStorage.removeItem("token");
-      window.location.href = "/login";
-    }
+    clearToken();
+    if (typeof window !== "undefined") window.location.href = "/login";
     throw new Error("Unauthorized");
   }
-  if (!res.ok) throw new Error(`API ${res.status}`);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.detail ?? `API ${res.status}`);
+  }
+  if (res.status === 204) return undefined as T;
   return res.json();
 }
 
 // ------------------------------------------------------------------ //
 // Types
 // ------------------------------------------------------------------ //
+export type UserRole = "SUPER_ADMIN" | "ADMIN" | "TRADER" | "VIEWER";
+
+export interface User {
+  user_id: string;
+  username: string;
+  email: string;
+  role: UserRole;
+  is_active: boolean;
+  telegram_chat_id: string | null;
+  created_at: string;
+}
 
 export interface Strategy {
   strategy_id: string;
@@ -94,6 +105,33 @@ export interface StrategyStats {
   expected_value: number | null;
 }
 
+export type PositionStatus =
+  | "HOLDING" | "TARGET_HIT" | "STOP_LOSS" | "EXPIRED" | "MANUAL_EXIT";
+
+export interface Position {
+  position_id: string;
+  user_id: string;
+  strategy_id: string;
+  rec_id: string;
+  account_id: string;
+  stock_code: string;
+  entry_price: string;
+  entry_date: string;
+  quantity: number;
+  status: PositionStatus;
+  exit_price: string | null;
+  exit_date: string | null;
+  pnl_pct: string | null;
+}
+
+export interface BrokerAccount {
+  account_id: string;
+  broker: string;
+  account_no: string;
+  account_type: string;
+  is_active: boolean;
+}
+
 export interface SchedulerJob {
   id: string;
   trigger: string;
@@ -103,17 +141,69 @@ export interface SchedulerJob {
 // ------------------------------------------------------------------ //
 // API
 // ------------------------------------------------------------------ //
-
 export const api = {
+  auth: {
+    login: async (username: string, password: string) => {
+      const res = await fetch(`${BASE}/users/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      if (!res.ok) throw new Error("로그인 실패");
+      const data = await res.json();
+      setToken(data.access_token);
+    },
+    register: async (username: string, email: string, password: string) => {
+      const res = await fetch(`${BASE}/users/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, email, password, role: "TRADER" }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail ?? "회원가입 실패");
+      }
+      return res.json();
+    },
+    me: () => authFetch<User>("/users/me"),
+  },
+
   strategies: {
     list: () => authFetch<Strategy[]>("/strategies"),
   },
+
   recommendations: {
     runs: (strategyId: string) =>
       authFetch<RecommendationRun[]>(`/recommendations/runs?strategy_id=${strategyId}`),
     stats: (strategyId: string) =>
       authFetch<StrategyStats>(`/recommendations/stats/${strategyId}`),
   },
+
+  positions: {
+    list: (status?: PositionStatus) =>
+      authFetch<Position[]>(`/positions${status ? `?status=${status}` : ""}`),
+  },
+
+  users: {
+    list: () => authFetch<User[]>("/users"),
+    update: (userId: string, body: Partial<Pick<User, "role" | "is_active">>) =>
+      authFetch<User>(`/users/${userId}`, { method: "PATCH", body: JSON.stringify(body) }),
+    updateTelegram: (chatId: string | null) =>
+      authFetch<User>("/users/me/telegram", {
+        method: "PATCH",
+        body: JSON.stringify({ telegram_chat_id: chatId }),
+      }),
+    addBrokerAccount: (userId: string, body: {
+      account_no: string; api_key: string; api_secret: string; account_type: string;
+    }) =>
+      authFetch<BrokerAccount>(`/users/${userId}/accounts`, {
+        method: "POST",
+        body: JSON.stringify({ broker: "KIS", ...body }),
+      }),
+    listBrokerAccounts: (userId: string) =>
+      authFetch<BrokerAccount[]>(`/users/${userId}/accounts`),
+  },
+
   admin: {
     schedulerStatus: () =>
       authFetch<{ running: boolean; jobs: SchedulerJob[] }>("/admin/scheduler/status"),
