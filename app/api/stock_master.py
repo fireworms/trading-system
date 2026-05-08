@@ -100,21 +100,3 @@ def trigger_update(
     return {"status": "started"}
 
 
-@router.post("/refresh-candidates", status_code=202)
-def trigger_candidate_refresh(
-    db: Session = Depends(get_db),
-    _: User = Depends(require_admin),
-):
-    """후보 종목 풀 즉시 갱신 (백그라운드)."""
-    from app.core.database import SessionLocal
-    import threading
-    from app.services.stock_master.updater import refresh_candidate_stocks
-
-    def _run():
-        with SessionLocal() as s:
-            result = refresh_candidate_stocks(s)
-            import logging
-            logging.getLogger(__name__).info("Manual candidate refresh: %s", result)
-
-    threading.Thread(target=_run, daemon=True).start()
-    return {"status": "started"}

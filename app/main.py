@@ -2,13 +2,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import users, strategies, recommendations, positions, market, admin, stocks, prompt_versions, stock_master
+from app.api import users, strategies, recommendations, positions, market, admin, prompt_versions, stock_master
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from app.services.trading.scheduler import start_scheduler, stop_scheduler
+    from app.services.trading.scheduler import start_scheduler, stop_scheduler, run_startup_catchup
     start_scheduler()
+    run_startup_catchup()   # 누락된 스케줄 작업 백그라운드 보완
     yield
     stop_scheduler()
 
@@ -34,7 +35,6 @@ app.include_router(recommendations.router, prefix="/api/v1")
 app.include_router(positions.router, prefix="/api/v1")
 app.include_router(market.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
-app.include_router(stocks.router, prefix="/api/v1")
 app.include_router(prompt_versions.router, prefix="/api/v1")
 app.include_router(stock_master.router, prefix="/api/v1")
 

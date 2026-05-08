@@ -75,20 +75,25 @@ def _verify_recommendation(
     current_price = client.get_current_price(rec.stock_code)
     bars = client.get_ohlcv(rec.stock_code)
 
-    cutoff = str(run.run_date)
-    relevant = [b for b in bars if b.date >= cutoff]
+    # 검증 기간: run_date ~ run_date + hold_days (이후 데이터 제외)
+    period_start = str(run.run_date)
+    period_end   = str(run.run_date + timedelta(days=strategy.hold_days))
+    relevant = [b for b in bars if period_start <= b.date <= period_end]
 
     max_high = max((b.high for b in relevant), default=current_price)
     max_low  = min((b.low  for b in relevant), default=current_price)
 
+    # 목표가 도달 여부: 보유기간 내 고점이 target_price 이상이면 SUCCESS
     verdict = VerificationResult.FAIL
     if rec.target_price and max_high >= rec.target_price:
         verdict = VerificationResult.SUCCESS
 
-    # 실제 매수가 없으면 추천 당시 현재가(rec에 없음)를 현재가로 대체
+    # pnl_pct: 추천 당시 현재가 대비 hold_days 후 가격 변화
+    # current_price_at_rec이 없으면 현재가로 fallback (부정확하지만 최선)
+    entry = rec.current_price_at_rec or current_price
     pnl = (
-        (current_price - rec.target_price) / rec.target_price * 100
-        if rec.target_price and rec.target_price > 0
+        (current_price - entry) / entry * 100
+        if entry and entry > 0
         else Decimal("0")
     )
 

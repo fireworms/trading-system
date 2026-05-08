@@ -111,17 +111,61 @@ def job_update_stock_master() -> None:
         _notify_error("stock_master 업데이트 실패", str(e))
 
 
-def job_refresh_candidates() -> None:
-    """3일마다 장 마감 후 candidate_stocks 자동 선별."""
-    from app.services.stock_master.updater import refresh_candidate_stocks
 
-    try:
-        with SessionLocal() as db:
-            result = refresh_candidate_stocks(db)
-            logger.info("candidate refresh done: %s", result)
-    except Exception as e:
-        logger.error("candidate refresh failed: %s", e)
-        _notify_error("후보 종목 갱신 실패", str(e))
+
+
+
+# ------------------------------------------------------------------ #
+# 서버 재시작 시 누락 작업 catch-up
+# ------------------------------------------------------------------ #
+
+def run_startup_catchup() -> None:
+    """
+    서버 재시작 시 호출. 스케줄러 다운 중 누락된 작업을 보완한다.
+
+    - 전략 실행: _should_run 체크 → 필요한 전략만 실행 (중복 방지)
+    - 검증: 멱등성 보장 → 항상 실행 (이미 검증된 건 스킵됨)
+    - 포지션 모니터링: 장중에만 의미 있으므로 조건부 실행
+    - stock_master: 7일 이상 미갱신 시 갱신
+    """
+    import threading
+    from datetime import datetime, timezone as _tz
+
+    def _run() -> None:
+        import time as _time
+        _time.sleep(5)  # 서버 완전 기동 대기
+        logger.info("=== Startup catch-up start ===")
+
+        # 1. 검증 (멱등 — 항상 안전)
+        try:
+            job_verify_recommendations()
+        except Exception as e:
+            logger.error("Catchup verify failed: %s", e)
+
+        # 2. 전략 실행 (_should_run 내부에서 체크)
+        try:
+            job_run_strategies()
+        except Exception as e:
+            logger.error("Catchup strategy run failed: %s", e)
+
+        # 3. stock_master: 마지막 갱신 7일 초과 시
+        try:
+            from app.models.stock_master import StockMaster
+            with SessionLocal() as db:
+                last = db.query(StockMaster.updated_at).order_by(
+                    StockMaster.updated_at.desc()
+                ).first()
+                if last is None or (
+                    datetime.now(_tz.utc) - last[0]
+                ).days >= 7:
+                    logger.info("stock_master outdated, running update")
+                    job_update_stock_master()
+        except Exception as e:
+            logger.error("Catchup stock_master check failed: %s", e)
+
+        logger.info("=== Startup catch-up done ===")
+
+    threading.Thread(target=_run, daemon=True).start()
 
 
 # ------------------------------------------------------------------ #
@@ -167,14 +211,6 @@ def start_scheduler() -> None:
         job_update_stock_master,
         trigger=CronTrigger(day_of_week="sun", hour=3, minute=0),
         id="update_stock_master",
-        replace_existing=True,
-    )
-
-    # 월/수/금 15:30 (장 마감 후): 후보 종목 풀 갱신
-    _scheduler.add_job(
-        job_refresh_candidates,
-        trigger=CronTrigger(day_of_week="mon,wed,fri", hour=15, minute=30),
-        id="refresh_candidates",
         replace_existing=True,
     )
 

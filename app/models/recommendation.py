@@ -70,6 +70,7 @@ class Recommendation(Base):
     )
     stock_code: Mapped[str] = mapped_column(String(20), nullable=False)
     stock_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    current_price_at_rec: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     target_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 0), nullable=True)
     stop_loss_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 0), nullable=True)
     ai_probability: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)

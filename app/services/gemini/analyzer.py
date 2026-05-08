@@ -19,7 +19,7 @@ import google.generativeai as genai
 
 from app.core.config import get_settings
 from app.services.gemini.prompts import (
-    STAGE1_MACRO, STAGE2_HISTORICAL, STAGE3_INDUSTRY, STAGE4_PICKS
+    STAGE1_MACRO, STAGE2_HISTORICAL, STAGE3_INDUSTRY, STAGE4_PICKS, _FILTER_GUIDANCE
 )
 
 logger = logging.getLogger(__name__)
@@ -193,8 +193,10 @@ class GeminiAnalyzer:
         stop_loss_pct: Decimal,
         min_probability: Decimal,
         pick_count: int,
+        candidate_filter: str = "mixed",
     ) -> PickResult:
         """4단계: 종목 선정 (최고 품질 모델 우선)."""
+        guidance = _FILTER_GUIDANCE.get(candidate_filter, _FILTER_GUIDANCE["mixed"])
         prompt = STAGE4_PICKS.format(
             macro_summary=macro.macro_summary,
             market_theme=macro.market_theme,
@@ -205,6 +207,7 @@ class GeminiAnalyzer:
             stop_loss_pct=float(stop_loss_pct),
             min_probability=float(min_probability),
             pick_count=pick_count,
+            filter_guidance=guidance,
         )
         text, model = self._call_with_fallback(prompt, _CHAIN_STAGE4)
         data = self._parse_json(text)
@@ -245,6 +248,7 @@ class GeminiAnalyzer:
             stop_loss_pct=strategy.stop_loss_pct,
             min_probability=strategy.min_probability,
             pick_count=strategy.pick_count,
+            candidate_filter=getattr(strategy, "candidate_filter", "mixed"),
         )
         logger.info("Stage4 done: %d picks [%s]", len(picks.picks), picks.model_used)
 

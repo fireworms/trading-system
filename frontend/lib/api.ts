@@ -102,18 +102,6 @@ export interface Recommendation {
   verification: Verification | null;
 }
 
-export interface CandidateStock {
-  stock_id: number;
-  stock_code: string;
-  stock_name: string;
-  market: string | null;
-  sector: string | null;
-  country: string | null;
-  currency: string | null;
-  is_active: boolean;
-  notes: string | null;
-}
-
 export interface StockMasterItem {
   stock_code: string;
   stock_name: string;
@@ -272,21 +260,6 @@ export const api = {
       authFetch("/stock-master/update", { method: "POST" }),
     triggerCandidateRefresh: () =>
       authFetch("/stock-master/refresh-candidates", { method: "POST" }),
-  },
-
-  stocks: {
-    list: (activeOnly = true) =>
-      authFetch<CandidateStock[]>(`/candidate-stocks?active_only=${activeOnly}`),
-    create: (body: Pick<CandidateStock, "stock_code" | "stock_name" | "market" | "sector" | "country" | "notes">) =>
-      authFetch<CandidateStock>("/candidate-stocks", { method: "POST", body: JSON.stringify(body) }),
-    update: (id: number, body: Partial<Pick<CandidateStock, "stock_name" | "market" | "sector" | "country" | "is_active" | "notes">>) =>
-      authFetch<CandidateStock>(`/candidate-stocks/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
-    remove: (id: number) =>
-      authFetch<void>(`/candidate-stocks/${id}`, { method: "DELETE" }),
-    bulkImport: (items: Pick<CandidateStock, "stock_code" | "stock_name" | "market" | "sector">[]) =>
-      authFetch<{ created: number; skipped: number }>("/candidate-stocks/bulk-import", {
-        method: "POST", body: JSON.stringify(items),
-      }),
   },
 
   admin: {

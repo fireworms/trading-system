@@ -5,7 +5,6 @@ from app.models.recommendation import (
     PromptVersion, VerificationResult,
 )
 from app.models.position import Position, PositionStatus
-from app.models.candidate_stock import CandidateStock
 from app.models.stock_master import StockMaster
 
 __all__ = [
@@ -14,6 +13,5 @@ __all__ = [
     "RecommendationRun", "MacroAnalysis", "Recommendation", "Verification",
     "PromptVersion", "VerificationResult",
     "Position", "PositionStatus",
-    "CandidateStock",
     "StockMaster",
 ]

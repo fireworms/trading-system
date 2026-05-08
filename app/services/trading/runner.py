@@ -12,17 +12,11 @@ from app.models.strategy import Strategy, UserStrategy
 from app.models.recommendation import (
     RecommendationRun, MacroAnalysis, Recommendation
 )
-from app.models.candidate_stock import CandidateStock
+from app.models.stock_master import StockMaster
 from app.services.gemini.analyzer import GeminiAnalyzer
 from app.services.kis.client import get_kis_client, get_kis_client_from_account
 
 logger = logging.getLogger(__name__)
-
-def _get_largecap_codes() -> frozenset[str]:
-    """largecap 필터용 코드 집합 — 캐시된 KOSPI200+KOSDAQ150."""
-    from app.services.stock_master.index_constituents import get_kospi200, get_kosdaq150
-    return frozenset(get_kospi200() + get_kosdaq150())
-
 
 class StrategyRunner:
     """전략별 AI 분석 실행 및 DB 저장."""
@@ -31,55 +25,95 @@ class StrategyRunner:
         self.db = db
         self.analyzer = GeminiAnalyzer()
 
-    def _get_candidate_stocks(self, strategy: Strategy) -> list[dict]:
+    # ------------------------------------------------------------------ #
+    # stock_master 직접 샘플링
+    # ------------------------------------------------------------------ #
+
+    def _sample_from_master(self, strategy: Strategy) -> list[dict]:
         """
-        전략의 candidate_filter / candidate_market 기준으로
-        활성 후보 종목 (code, country, market) 반환.
+        stock_master에서 직접 필터링 + 샘플링.
 
-        candidate_market:
-          ALL    → 전 시장
-          KOSPI  → KOSPI만
-          KOSDAQ → KOSDAQ만
-          NAS    → NASDAQ만
+        샘플 크기: pick_count × 15, 최소 50 최대 200
+          (Stage4 프롬프트 크기와 KIS API 호출 수의 균형점)
 
+        candidate_market: ALL / KOSPI / KOSDAQ / NAS
         candidate_filter:
-          volume   → 현재 거래량 활발 종목 위주 (풀 전체 사용, volume-ranked 우선)
-          largecap → KOSPI/KOSDAQ 시총 상위 대형주만
-          mixed    → 풀 전체 사용 (기본)
+          volume   → KIS 거래량 순위 상위 우선 + 나머지 stride 채우기
+          largecap → KOSPI200 / KOSDAQ150 구성종목만
+          mixed    → largecap 우선 + stride 채우기
         """
-        q = (
-            self.db.query(
-                CandidateStock.stock_code,
-                CandidateStock.country,
-                CandidateStock.market,
-            )
-            .filter(CandidateStock.is_active == True)
+        from app.services.stock_master.index_constituents import (
+            get_kospi200, get_kosdaq150,
+            _fetch_cap_rank_sector, _KOSPI_SECTOR_CODES, _KOSDAQ_SECTOR_CODES,
         )
 
-        # 시장 필터
-        mkt = getattr(strategy, "candidate_market", "ALL")
-        if mkt and mkt != "ALL":
-            q = q.filter(CandidateStock.market == mkt)
+        mkt    = getattr(strategy, "candidate_market", "ALL")
+        flt    = getattr(strategy, "candidate_filter", "mixed")
+        sample = min(max(strategy.pick_count * 15, 50), 200)
 
-        rows = q.order_by(CandidateStock.stock_id).all()
+        # 1) stock_master 로드 (시장 필터)
+        q = self.db.query(StockMaster).filter(StockMaster.is_active == True)
+        if mkt != "ALL":
+            q = q.filter(StockMaster.market == mkt)
+        all_rows: dict[str, StockMaster] = {r.stock_code: r for r in q.all()}
 
-        # largecap 필터: KOSPI200 + KOSDAQ150 구성종목만 유지
-        flt = getattr(strategy, "candidate_filter", "mixed")
+        if not all_rows:
+            logger.warning("No stocks in stock_master for market=%s", mkt)
+            return []
+
+        # 2) 필터별 정렬 / 선별
         if flt == "largecap":
-            largecap = _get_largecap_codes()
-            rows = [r for r in rows if r[0] in largecap]
+            kospi200  = set(get_kospi200())
+            kosdaq150 = set(get_kosdaq150())
+            index_set = kospi200 | kosdaq150
+            ordered = [r for code, r in all_rows.items() if code in index_set]
+            # 인덱스에 없는 종목으로 부족분 채우기
+            rest    = [r for code, r in all_rows.items() if code not in index_set]
+            ordered += self._stride(rest, max(0, sample - len(ordered)))
 
-        candidates = [
-            {"code": r[0], "country": r[1] or "KR", "market": r[2]}
-            for r in rows
+        elif flt == "volume":
+            # KIS 시총 순위 API (FHPST01740000) 섹터별 호출로 실시간 랭킹
+            client = get_kis_client(self.db)
+            cap_map: dict[str, int] = {}
+            sectors = (
+                _KOSPI_SECTOR_CODES  if mkt == "KOSPI"  else
+                _KOSDAQ_SECTOR_CODES if mkt == "KOSDAQ" else
+                _KOSPI_SECTOR_CODES + _KOSDAQ_SECTOR_CODES
+            )
+            for iscd in sectors[:12]:  # NAS 없고, 속도 위해 12개로 제한
+                for code, cap in _fetch_cap_rank_sector(client, iscd):
+                    if code in all_rows:
+                        cap_map[code] = max(cap_map.get(code, 0), cap)
+            ranked  = sorted(cap_map.keys(), key=lambda c: cap_map[c], reverse=True)
+            ordered = [all_rows[c] for c in ranked if c in all_rows]
+            rest    = [r for code, r in all_rows.items() if code not in set(ranked)]
+            ordered += self._stride(rest, max(0, sample - len(ordered)))
+
+        else:  # mixed
+            # largecap 먼저, 나머지 stride
+            kospi200  = set(get_kospi200())
+            kosdaq150 = set(get_kosdaq150())
+            index_set = kospi200 | kosdaq150
+            largecap  = [r for code, r in all_rows.items() if code in index_set]
+            rest      = [r for code, r in all_rows.items() if code not in index_set]
+            ordered   = largecap + self._stride(rest, max(0, sample - len(largecap)))
+
+        selected = ordered[:sample]
+        logger.info("Sampled %d stocks from master (filter=%s market=%s pick_count=%d)",
+                    len(selected), flt, mkt, strategy.pick_count)
+        return [
+            {"code": r.stock_code, "country": r.country or "KR", "market": r.market}
+            for r in selected
         ]
-        if not candidates:
-            logger.warning("No candidates for strategy %s (filter=%s market=%s)",
-                           strategy.name, flt, mkt)
-        else:
-            logger.info("Candidates for %s: %d (filter=%s market=%s)",
-                        strategy.name, len(candidates), flt, mkt)
-        return candidates
+
+    @staticmethod
+    def _stride(rows: list, limit: int) -> list:
+        if limit <= 0 or not rows:
+            return []
+        if len(rows) <= limit:
+            return rows
+        step = len(rows) / limit
+        return [rows[int(i * step)] for i in range(limit)]
 
     def _collect_stock_data(self, candidates: list[dict]) -> list[dict]:
         """KIS API로 후보 종목 기술 데이터 수집."""
@@ -117,8 +151,8 @@ class StrategyRunner:
         run_date = today or date.today()
         logger.info("Running strategy: %s (%s)", strategy.name, run_date)
 
-        # 1. 종목 데이터 수집 (DB 기반 후보 풀)
-        candidates = self._get_candidate_stocks(strategy)
+        # 1. stock_master에서 직접 샘플링 → KIS 데이터 수집
+        candidates = self._sample_from_master(strategy)
         stock_data = self._collect_stock_data(candidates)
         if not stock_data:
             raise RuntimeError("No stock data collected")
@@ -156,12 +190,21 @@ class StrategyRunner:
         )
         self.db.add(analysis)
 
-        # Recommendations 저장
+        # Recommendations 저장 (current_price_at_rec: 검증 pnl 기준가)
+        # stock_data에서 종목코드 → 현재가 맵 구성
+        price_map: dict[str, Decimal] = {
+            s["stock_code"]: Decimal(str(s["current_price"]))
+            for s in stock_data if s.get("stock_code") and s.get("current_price")
+        }
         for pick in picks_result.picks:
+            code = pick.get("stock_code", "")
+            # AI가 반환한 current_price 우선, 없으면 수집 데이터에서 조회
+            raw_price = pick.get("current_price") or price_map.get(code)
             rec = Recommendation(
                 run_id=run.run_id,
-                stock_code=pick.get("stock_code", ""),
+                stock_code=code,
                 stock_name=pick.get("stock_name", ""),
+                current_price_at_rec=Decimal(str(raw_price)) if raw_price else None,
                 target_price=Decimal(str(pick.get("target_price", 0))) if pick.get("target_price") else None,
                 stop_loss_price=Decimal(str(pick.get("stop_loss_price", 0))) if pick.get("stop_loss_price") else None,
                 ai_probability=Decimal(str(pick.get("ai_probability", 0))) if pick.get("ai_probability") else None,

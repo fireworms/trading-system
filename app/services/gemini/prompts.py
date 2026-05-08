@@ -90,6 +90,30 @@ STAGE3_INDUSTRY = """
 }}
 """
 
+_FILTER_GUIDANCE = {
+    "volume": (
+        "【종목 선별 우선 기준: 거래량 위주 / 단기 고수익】\n"
+        "- 거래량 급증, 단기 모멘텀, 테마 수혜 종목을 최우선 고려\n"
+        "- RSI 40~70 범위, 최근 5일 거래량이 20일 평균의 1.5배 이상인 종목 가점\n"
+        "- 외국인·기관 동반 순매수가 확인되면 강력 가점\n"
+        "- 단기(hold_days 이내) 급등 가능성이 높은 종목 위주로 선정"
+    ),
+    "largecap": (
+        "【종목 선별 우선 기준: 대형주 / 안정적 수익】\n"
+        "- 시총 상위 KOSPI200·KOSDAQ150 구성 종목을 우선 고려\n"
+        "- 유동성이 충분하고 변동성이 과도하지 않은 종목 선호\n"
+        "- RSI 35~60, 현재가가 MA60 위에 있거나 근접한 종목 가점\n"
+        "- 기관 순매수 지속, 실적 개선 섹터 소속 종목 우선"
+    ),
+    "mixed": (
+        "【종목 선별 기준: 균형 접근 / 모멘텀 + 안정성】\n"
+        "- 대형주의 안정성과 중소형 모멘텀 종목을 균형 있게 혼합\n"
+        "- RSI 30~65 범위, 현재가가 MA20 대비 -10%~+5%인 종목 우선\n"
+        "- 외국인·기관 순매수 연속 3일 이상이면 추가 가점\n"
+        "- 매크로 수혜 섹터와 기술적 지표가 동시에 긍정적인 종목 선정"
+    ),
+}
+
 STAGE4_PICKS = """
 당신은 퀀트 트레이딩 전문가입니다.
 
@@ -104,23 +128,23 @@ STAGE4_PICKS = """
 {stocks_data}
 
 각 종목의 데이터 설명:
+- current_price: 현재가
 - rsi_14: RSI(14일), 30 이하=과매도, 70 이상=과매수
 - ma5/ma20/ma60: 5/20/60일 이동평균
-- frgn_net_buy_1d: 당일 외국인 순매수 수량 (양수=순매수, 음수=순매도)
-- frgn_net_buy_5d: 최근 5거래일 외국인 순매수 수량 누적
-- orgn_net_buy_1d: 당일 기관 순매수 수량
-- orgn_net_buy_5d: 최근 5거래일 기관 순매수 수량 누적
+- frgn_net_buy_1d/5d: 외국인 1일/5일 누적 순매수 수량 (양수=순매수)
+- orgn_net_buy_1d/5d: 기관 1일/5일 누적 순매수 수량
 
 === 전략 파라미터 ===
 - 보유기간: {hold_days}일
-- 목표수익률: {target_pct}%
-- 손절라인: {stop_loss_pct}%
-- AI 최소 확률: {min_probability}%
+- 목표수익률: +{target_pct}%  → target_price = current_price × (1 + {target_pct}/100)
+- 손절라인: -{stop_loss_pct}%  → stop_loss_price = current_price × (1 - {stop_loss_pct}/100)
+- AI 최소 확률: {min_probability}% (이 확률 미달 종목은 제외)
 - 선정 종목 수: {pick_count}개
 
-위 정보를 종합하여 최적 종목을 선정하세요.
-기술적 분석 조건: RSI 30~65, 현재가가 MA20 대비 -10%~+5% 범위 우선.
-외국인/기관 순매수 연속 3일 이상이면 추가 가점.
+{filter_guidance}
+
+위 정보를 종합하여 최적 종목을 {pick_count}개 선정하세요.
+target_price와 stop_loss_price는 반드시 위 공식으로 계산하세요.
 다음 JSON 형식으로만 응답하세요. 다른 설명 없이 JSON만 반환하세요.
 
 {{
@@ -130,14 +154,14 @@ STAGE4_PICKS = """
       "stock_code": "005930",
       "stock_name": "삼성전자",
       "current_price": 75000,
-      "target_price": 82500,
-      "stop_loss_price": 71250,
+      "target_price": 86250,
+      "stop_loss_price": 69750,
       "ai_probability": 78.5,
       "ai_reason": "선정 근거 2-3문장",
       "historical_basis": "역사적 유사 사례 근거",
       "risk_factors": "주요 리스크"
     }}
   ],
-  "excluded_reason": "제외된 종목 또는 min_probability 미달 이유 간략 설명"
+  "excluded_reason": "min_probability 미달 또는 제외 이유 간략 설명"
 }}
 """
