@@ -73,6 +73,16 @@ export interface Strategy {
   is_active: boolean;
 }
 
+export interface Verification {
+  verify_id: string;
+  verified_at: string;
+  price_at_verify: string | null;
+  max_high: string | null;
+  max_low: string | null;
+  result: "SUCCESS" | "FAIL" | null;
+  pnl_pct: string | null;
+}
+
 export interface Recommendation {
   rec_id: string;
   stock_code: string;
@@ -81,7 +91,20 @@ export interface Recommendation {
   stop_loss_price: string | null;
   ai_probability: string | null;
   ai_reason: string | null;
+  risk_factors: string | null;
+  historical_basis: string | null;
   rank: number | null;
+  verification: Verification | null;
+}
+
+export interface CandidateStock {
+  stock_id: number;
+  stock_code: string;
+  stock_name: string;
+  market: string | null;
+  sector: string | null;
+  is_active: boolean;
+  notes: string | null;
 }
 
 export interface RecommendationRun {
@@ -202,6 +225,21 @@ export const api = {
       }),
     listBrokerAccounts: (userId: string) =>
       authFetch<BrokerAccount[]>(`/users/${userId}/accounts`),
+  },
+
+  stocks: {
+    list: (activeOnly = true) =>
+      authFetch<CandidateStock[]>(`/candidate-stocks?active_only=${activeOnly}`),
+    create: (body: Pick<CandidateStock, "stock_code" | "stock_name" | "market" | "sector" | "notes">) =>
+      authFetch<CandidateStock>("/candidate-stocks", { method: "POST", body: JSON.stringify(body) }),
+    update: (id: number, body: Partial<Pick<CandidateStock, "stock_name" | "market" | "sector" | "is_active" | "notes">>) =>
+      authFetch<CandidateStock>(`/candidate-stocks/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+    remove: (id: number) =>
+      authFetch<void>(`/candidate-stocks/${id}`, { method: "DELETE" }),
+    bulkImport: (items: Pick<CandidateStock, "stock_code" | "stock_name" | "market" | "sector">[]) =>
+      authFetch<{ created: number; skipped: number }>("/candidate-stocks/bulk-import", {
+        method: "POST", body: JSON.stringify(items),
+      }),
   },
 
   admin: {

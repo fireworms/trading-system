@@ -18,6 +18,7 @@ class RecommendationOut(BaseModel):
     historical_basis: str | None
     risk_factors: str | None
     rank: int | None
+    verification: "VerificationOut | None" = None
 
     model_config = {"from_attributes": True}
 
