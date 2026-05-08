@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { api, CandidateStock, getToken } from "@/lib/api";
+import { StockItem } from "@/lib/korean-stocks";
+import StockSearch from "@/components/StockSearch";
 
 const BULK_PLACEHOLDER = `005930,삼성전자,KOSPI,반도체
 000660,SK하이닉스,KOSPI,반도체
@@ -10,13 +12,13 @@ const BULK_PLACEHOLDER = `005930,삼성전자,KOSPI,반도체
 
 export default function AdminStocksPage() {
   const router = useRouter();
-  const [stocks, setStocks]     = useState<CandidateStock[]>([]);
-  const [showAll, setShowAll]   = useState(false);
-  const [loading, setLoading]   = useState(true);
-  const [msg, setMsg]           = useState("");
+  const [stocks, setStocks]   = useState<CandidateStock[]>([]);
+  const [showAll, setShowAll] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [msg, setMsg]         = useState("");
 
-  // 단일 추가 폼
-  const [form, setForm] = useState({ stock_code: "", stock_name: "", market: "KOSPI", sector: "", notes: "" });
+  // 선택된 종목 (검색 후 확인 대기)
+  const [selected, setSelected] = useState<StockItem | null>(null);
   const [addLoading, setAddLoading] = useState(false);
 
   // 일괄 등록
@@ -31,15 +33,13 @@ export default function AdminStocksPage() {
   async function load() {
     setLoading(true);
     try {
-      const data = await api.stocks.list(!showAll);
-      setStocks(data);
+      setStocks(await api.stocks.list(!showAll));
     } finally {
       setLoading(false);
     }
   }
 
   async function toggleActive(s: CandidateStock) {
-    setMsg("");
     try {
       const updated = await api.stocks.update(s.stock_id, { is_active: !s.is_active });
       setStocks((prev) => prev.map((x) => x.stock_id === s.stock_id ? updated : x));
@@ -58,17 +58,20 @@ export default function AdminStocksPage() {
     }
   }
 
-  async function addStock(e: React.FormEvent) {
-    e.preventDefault();
+  async function addStock() {
+    if (!selected) return;
     setAddLoading(true); setMsg("");
     try {
       const created = await api.stocks.create({
-        ...form,
-        notes: form.notes || null,
-      } as Parameters<typeof api.stocks.create>[0]);
+        stock_code: selected.code,
+        stock_name: selected.name,
+        market:     selected.market ?? null,
+        sector:     selected.sector || null,
+        notes:      null,
+      });
       setStocks((prev) => [...prev, created]);
-      setForm({ stock_code: "", stock_name: "", market: "KOSPI", sector: "", notes: "" });
-      setMsg("종목 추가 완료");
+      setSelected(null);
+      setMsg(`${created.stock_name} 추가 완료`);
     } catch (err: unknown) {
       setMsg(err instanceof Error ? err.message : "추가 실패");
     } finally {
@@ -83,7 +86,7 @@ export default function AdminStocksPage() {
       const [stock_code, stock_name, market, sector] = line.split(",").map((s) => s.trim());
       return { stock_code, stock_name, market: market || null, sector: sector || null };
     });
-    if (items.length === 0) { setBulkMsg("입력값 없음"); return; }
+    if (!items.length) { setBulkMsg("입력값 없음"); return; }
     try {
       const res = await api.stocks.bulkImport(items);
       setBulkMsg(`${res.created}개 추가, ${res.skipped}개 중복 건너뜀`);
@@ -122,20 +125,20 @@ export default function AdminStocksPage() {
             <table className="w-full text-sm">
               <thead className="text-gray-400 border-b border-gray-700">
                 <tr>
-                  <th className="text-left p-4">종목코드</th>
+                  <th className="text-left p-4">코드</th>
                   <th className="text-left p-4">종목명</th>
                   <th className="text-left p-4">시장</th>
                   <th className="text-left p-4">섹터</th>
                   <th className="text-center p-4">상태</th>
-                  <th className="text-center p-4">액션</th>
+                  <th className="text-center p-4">삭제</th>
                 </tr>
               </thead>
               <tbody>
                 {stocks.map((s) => (
                   <tr key={s.stock_id}
                     className={`border-b border-gray-700/50 ${!s.is_active ? "opacity-40" : ""}`}>
-                    <td className="p-4 font-mono font-medium">{s.stock_code}</td>
-                    <td className="p-4">{s.stock_name}</td>
+                    <td className="p-4 font-mono">{s.stock_code}</td>
+                    <td className="p-4 font-medium">{s.stock_name}</td>
                     <td className="p-4 text-gray-400 text-xs">{s.market ?? "-"}</td>
                     <td className="p-4 text-gray-400 text-xs">{s.sector ?? "-"}</td>
                     <td className="p-4 text-center">
@@ -163,32 +166,33 @@ export default function AdminStocksPage() {
 
         {/* 사이드 패널 */}
         <div className="flex flex-col gap-4">
-          {/* 단일 추가 */}
+          {/* 검색 추가 */}
           <div className="bg-gray-800 rounded-2xl p-5">
             <h3 className="font-semibold text-gray-300 mb-3">종목 추가</h3>
-            <form onSubmit={addStock} className="flex flex-col gap-2">
-              {[
-                { key: "stock_code", placeholder: "종목코드 (예: 005930)", required: true },
-                { key: "stock_name", placeholder: "종목명 (예: 삼성전자)", required: true },
-                { key: "sector",     placeholder: "섹터 (예: 반도체)",     required: false },
-                { key: "notes",      placeholder: "메모 (선택)",           required: false },
-              ].map(({ key, placeholder, required }) => (
-                <input key={key} type="text" placeholder={placeholder} required={required}
-                  value={form[key as keyof typeof form]}
-                  onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
-                  className="bg-gray-700 text-white rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
-              ))}
-              <select value={form.market}
-                onChange={(e) => setForm((f) => ({ ...f, market: e.target.value }))}
-                className="bg-gray-700 text-white rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500">
-                <option value="KOSPI">KOSPI</option>
-                <option value="KOSDAQ">KOSDAQ</option>
-              </select>
-              <button type="submit" disabled={addLoading}
-                className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2 text-sm font-medium disabled:opacity-50">
-                {addLoading ? "추가 중..." : "추가"}
-              </button>
-            </form>
+            <StockSearch
+              onSelect={(s) => { setSelected(s); setMsg(""); }}
+              placeholder="종목명 또는 코드 검색"
+            />
+
+            {/* 선택된 종목 미리보기 */}
+            {selected && (
+              <div className="mt-3 bg-gray-700/50 rounded-lg p-3">
+                <div className="flex items-start justify-between">
+                  <div>
+                    <div className="font-medium">{selected.name}</div>
+                    <div className="text-xs text-gray-400 mt-0.5">
+                      {selected.code} · {selected.market} · {selected.sector}
+                    </div>
+                  </div>
+                  <button onClick={() => setSelected(null)}
+                    className="text-gray-500 hover:text-white text-xs">✕</button>
+                </div>
+                <button onClick={addStock} disabled={addLoading}
+                  className="mt-3 w-full bg-blue-600 hover:bg-blue-700 text-white rounded-lg py-2 text-sm font-medium disabled:opacity-50">
+                  {addLoading ? "추가 중..." : "풀에 추가"}
+                </button>
+              </div>
+            )}
           </div>
 
           {/* 일괄 등록 */}
