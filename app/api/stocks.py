@@ -24,6 +24,8 @@ class CandidateStockOut(BaseModel):
     stock_name: str
     market: Optional[str]
     sector: Optional[str]
+    country: Optional[str]
+    currency: Optional[str]
     is_active: bool
     notes: Optional[str]
 
@@ -36,6 +38,8 @@ class CandidateStockCreate(BaseModel):
     stock_name: str
     market: Optional[str] = None
     sector: Optional[str] = None
+    country: Optional[str] = None
+    currency: Optional[str] = None
     notes: Optional[str] = None
 
 
@@ -43,6 +47,8 @@ class CandidateStockUpdate(BaseModel):
     stock_name: Optional[str] = None
     market: Optional[str] = None
     sector: Optional[str] = None
+    country: Optional[str] = None
+    currency: Optional[str] = None
     is_active: Optional[bool] = None
     notes: Optional[str] = None
 
@@ -52,6 +58,8 @@ class BulkImportItem(BaseModel):
     stock_name: str
     market: Optional[str] = None
     sector: Optional[str] = None
+    country: Optional[str] = None
+    currency: Optional[str] = None
 
 
 # ------------------------------------------------------------------ #
@@ -61,8 +69,9 @@ class BulkImportItem(BaseModel):
 @router.get("", response_model=list[CandidateStockOut])
 def list_candidates(
     active_only: bool = Query(True, description="활성 종목만 조회"),
-    market: Optional[str] = Query(None, description="KOSPI / KOSDAQ 필터"),
+    market: Optional[str] = Query(None, description="KOSPI/KOSDAQ/NAS/NYS/AMS 필터"),
     sector: Optional[str] = Query(None, description="섹터 필터 (부분 일치)"),
+    country: Optional[str] = Query(None, description="KR / US 필터"),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
@@ -73,6 +82,8 @@ def list_candidates(
         q = q.filter(CandidateStock.market == market.upper())
     if sector:
         q = q.filter(CandidateStock.sector.ilike(f"%{sector}%"))
+    if country:
+        q = q.filter(CandidateStock.country == country.upper())
     return q.order_by(CandidateStock.stock_id).all()
 
 

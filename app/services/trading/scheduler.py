@@ -94,6 +94,36 @@ def job_verify_recommendations() -> None:
         _notify_error("추천 검증 작업 실패", str(e))
 
 
+def job_update_stock_master() -> None:
+    """주 1회 KIS MST 파일로 stock_master 갱신 + 지수 구성종목 캐시 갱신."""
+    from app.services.stock_master.updater import update_stock_master
+    from app.services.stock_master.index_constituents import refresh_index_cache
+
+    try:
+        with SessionLocal() as db:
+            result = update_stock_master(db)
+            logger.info("stock_master update done: %s", result)
+
+        idx = refresh_index_cache()
+        logger.info("index cache refreshed: %s", idx)
+    except Exception as e:
+        logger.error("stock_master update failed: %s", e)
+        _notify_error("stock_master 업데이트 실패", str(e))
+
+
+def job_refresh_candidates() -> None:
+    """3일마다 장 마감 후 candidate_stocks 자동 선별."""
+    from app.services.stock_master.updater import refresh_candidate_stocks
+
+    try:
+        with SessionLocal() as db:
+            result = refresh_candidate_stocks(db)
+            logger.info("candidate refresh done: %s", result)
+    except Exception as e:
+        logger.error("candidate refresh failed: %s", e)
+        _notify_error("후보 종목 갱신 실패", str(e))
+
+
 # ------------------------------------------------------------------ #
 # 스케줄러 시작/종료
 # ------------------------------------------------------------------ #
@@ -129,6 +159,22 @@ def start_scheduler() -> None:
         job_verify_recommendations,
         trigger=CronTrigger(hour=0, minute=10),
         id="verify_recommendations",
+        replace_existing=True,
+    )
+
+    # 매주 일요일 03:00: stock_master 전체 갱신
+    _scheduler.add_job(
+        job_update_stock_master,
+        trigger=CronTrigger(day_of_week="sun", hour=3, minute=0),
+        id="update_stock_master",
+        replace_existing=True,
+    )
+
+    # 월/수/금 15:30 (장 마감 후): 후보 종목 풀 갱신
+    _scheduler.add_job(
+        job_refresh_candidates,
+        trigger=CronTrigger(day_of_week="mon,wed,fri", hour=15, minute=30),
+        id="refresh_candidates",
         replace_existing=True,
     )
 

@@ -14,11 +14,12 @@ router = APIRouter(prefix="/market", tags=["market"])
 
 class StockInfoOut(BaseModel):
     stock_code: str
-    current_price: int
+    currency: str = "KRW"
+    current_price: float
     rsi_14: float | None
-    ma5: int | None
-    ma20: int | None
-    ma60: int | None
+    ma5: float | None
+    ma20: float | None
+    ma60: float | None
     avg_volume_20d: int
     frgn_net_buy_1d: int
     frgn_net_buy_5d: int
@@ -82,11 +83,19 @@ def get_stock_basic(
 @router.get("/price/{stock_code}")
 def get_price(
     stock_code: str,
+    country: str = Query("KR", description="KR / US"),
+    market: str | None = Query(None, description="US 거래소: NAS / NYS / AMS"),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     try:
-        return {"stock_code": stock_code, "current_price": int(get_kis_client(db).get_current_price(stock_code))}
+        client = get_kis_client(db)
+        if country.upper() == "US":
+            exchange = (market or "NAS").upper()
+            price = client.get_us_current_price(stock_code, exchange)
+            return {"stock_code": stock_code, "currency": "USD", "current_price": float(price)}
+        price = client.get_current_price(stock_code)
+        return {"stock_code": stock_code, "currency": "KRW", "current_price": int(price)}
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"KIS API error: {e}")
 
@@ -94,11 +103,13 @@ def get_price(
 @router.get("/stock/{stock_code}", response_model=StockInfoOut)
 def get_stock_info(
     stock_code: str,
+    country: str = Query("KR", description="KR / US"),
+    market: str | None = Query(None, description="US 거래소: NAS / NYS / AMS"),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     try:
-        return get_kis_client(db).get_stock_info(stock_code)
+        return get_kis_client(db).get_stock_info(stock_code, country=country, market=market)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"KIS API error: {e}")
 
@@ -107,14 +118,21 @@ def get_stock_info(
 def get_ohlcv(
     stock_code: str,
     days: int = Query(30, ge=1, le=100),
+    country: str = Query("KR", description="KR / US"),
+    market: str | None = Query(None, description="US 거래소: NAS / NYS / AMS"),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
     try:
-        bars = get_kis_client(db).get_ohlcv(stock_code, days)
+        client = get_kis_client(db)
+        if country.upper() == "US":
+            exchange = (market or "NAS").upper()
+            bars = client.get_us_ohlcv(stock_code, exchange, days)
+        else:
+            bars = client.get_ohlcv(stock_code, days)
         return [
-            {"date": b.date, "open": int(b.open), "high": int(b.high),
-             "low": int(b.low), "close": int(b.close), "volume": b.volume}
+            {"date": b.date, "open": float(b.open), "high": float(b.high),
+             "low": float(b.low), "close": float(b.close), "volume": b.volume}
             for b in bars
         ]
     except Exception as e:

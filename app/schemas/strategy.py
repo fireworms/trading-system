@@ -1,7 +1,11 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 from pydantic import BaseModel, Field
+
+CandidateFilter = Literal["volume", "largecap", "mixed"]
+CandidateMarket = Literal["KOSPI", "KOSDAQ", "NAS", "ALL"]
 
 
 class StrategyCreate(BaseModel):
@@ -13,6 +17,8 @@ class StrategyCreate(BaseModel):
     min_probability: Decimal = Field(ge=Decimal("0"), le=Decimal("100"))
     pick_count: int = Field(default=5, ge=1, le=20)
     run_interval_days: int = Field(default=3, ge=1, le=30)
+    candidate_filter: CandidateFilter = "mixed"
+    candidate_market: CandidateMarket = "ALL"
 
 
 class StrategyUpdate(BaseModel):
@@ -24,6 +30,8 @@ class StrategyUpdate(BaseModel):
     min_probability: Decimal | None = None
     pick_count: int | None = None
     run_interval_days: int | None = None
+    candidate_filter: CandidateFilter | None = None
+    candidate_market: CandidateMarket | None = None
     is_active: bool | None = None
 
 
@@ -38,6 +46,8 @@ class StrategyOut(BaseModel):
     min_probability: Decimal
     pick_count: int
     run_interval_days: int
+    candidate_filter: str
+    candidate_market: str
     is_active: bool
     created_at: datetime
 

@@ -6,6 +6,7 @@ from app.models.recommendation import (
 )
 from app.models.position import Position, PositionStatus
 from app.models.candidate_stock import CandidateStock
+from app.models.stock_master import StockMaster
 
 __all__ = [
     "User", "Permission", "BrokerAccount", "UserRole", "BrokerType", "AccountType",
@@ -14,4 +15,5 @@ __all__ = [
     "PromptVersion", "VerificationResult",
     "Position", "PositionStatus",
     "CandidateStock",
+    "StockMaster",
 ]

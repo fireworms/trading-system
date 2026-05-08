@@ -56,7 +56,7 @@ class BalanceItem:
 # ------------------------------------------------------------------ #
 
 class KISClient:
-    """KIS OpenAPI 클라이언트 (국내 주식 전용)."""
+    """KIS OpenAPI 클라이언트 (국내/해외 주식)."""
 
     def __init__(self, app_key: str, app_secret: str, account_no: str, is_real: bool = True):
         self._key    = app_key
@@ -321,11 +321,89 @@ class KISClient:
         return {"ma5": ma(5), "ma20": ma(20), "ma60": ma(min(60, len(closes)))}
 
     # ------------------------------------------------------------------ #
-    # 통합 종목 정보 (Gemini Stage4 입력용)
+    # 해외주식 시세 조회
     # ------------------------------------------------------------------ #
 
-    def get_stock_info(self, stock_code: str) -> dict:
-        """현재가 + OHLCV + 기술적지표 + 외국인/기관 순매수 통합 조회."""
+    def get_us_current_price(self, symbol: str, exchange: str) -> Decimal:
+        """해외주식 현재가 조회."""
+        data = self._get(
+            "/uapi/overseas-price/v1/quotations/price",
+            "HHDFS00000300",
+            {"AUTH": "", "EXCD": exchange.upper(), "SYMB": symbol.upper()},
+        )
+        return Decimal(data["output"]["last"])
+
+    def get_us_ohlcv(self, symbol: str, exchange: str, days: int = 100) -> list[OHLCVBar]:
+        """해외주식 일봉 OHLCV 조회."""
+        today = date.today().strftime("%Y%m%d")
+        data = self._get(
+            "/uapi/overseas-price/v1/quotations/dailyprice",
+            "HHDFS76240000",
+            {
+                "AUTH": "",
+                "EXCD": exchange.upper(),
+                "SYMB": symbol.upper(),
+                "GUBN": "0",
+                "BYMD": today,
+                "MODP": "0",
+            },
+        )
+        bars = []
+        for item in data.get("output2", []):
+            close = item.get("clos", "0")
+            if not close or close == "0":
+                continue
+            bars.append(OHLCVBar(
+                date=item["xymd"],
+                open=Decimal(item.get("open") or close),
+                high=Decimal(item.get("high") or close),
+                low=Decimal(item.get("low") or close),
+                close=Decimal(close),
+                volume=int(item.get("tvol") or 0),
+            ))
+        return bars[:days]
+
+    def _get_us_stock_info(self, symbol: str, exchange: str) -> dict:
+        """해외주식 통합 정보 (현재가 + OHLCV + 기술적지표). currency=USD."""
+        current_price = self.get_us_current_price(symbol, exchange)
+        bars          = self.get_us_ohlcv(symbol, exchange)
+        rsi           = self._compute_rsi(bars)
+        mas           = self._compute_mas(bars)
+
+        recent     = bars[:5] if bars else []
+        avg_volume = int(sum(b.volume for b in bars[:20]) / min(20, len(bars))) if bars else 0
+
+        def _price(v) -> float | None:
+            return float(v) if v else None
+
+        return {
+            "stock_code":      symbol,
+            "currency":        "USD",
+            "current_price":   float(current_price),
+            "rsi_14":          float(rsi) if rsi else None,
+            "ma5":             _price(mas["ma5"]),
+            "ma20":            _price(mas["ma20"]),
+            "ma60":            _price(mas["ma60"]),
+            "avg_volume_20d":  avg_volume,
+            "frgn_net_buy_1d": 0,
+            "frgn_net_buy_5d": 0,
+            "orgn_net_buy_1d": 0,
+            "orgn_net_buy_5d": 0,
+            "recent_ohlcv": [
+                {
+                    "date":   b.date,
+                    "open":   float(b.open),
+                    "high":   float(b.high),
+                    "low":    float(b.low),
+                    "close":  float(b.close),
+                    "volume": b.volume,
+                }
+                for b in recent
+            ],
+        }
+
+    def _get_domestic_stock_info(self, stock_code: str) -> dict:
+        """국내주식 통합 정보 (현재가 + OHLCV + 기술적지표 + 외국인/기관). currency=KRW."""
         current_price = self.get_current_price(stock_code)
         bars          = self.get_ohlcv(stock_code)
         rsi           = self._compute_rsi(bars)
@@ -336,14 +414,14 @@ class KISClient:
         avg_volume = int(sum(b.volume for b in bars[:20]) / min(20, len(bars))) if bars else 0
 
         return {
-            "stock_code":     stock_code,
-            "current_price":  int(current_price),
-            "rsi_14":         float(rsi) if rsi else None,
-            "ma5":            int(mas["ma5"])  if mas["ma5"]  else None,
-            "ma20":           int(mas["ma20"]) if mas["ma20"] else None,
-            "ma60":           int(mas["ma60"]) if mas["ma60"] else None,
-            "avg_volume_20d": avg_volume,
-            # 외국인/기관 순매수 (수량, 양수=순매수 / 음수=순매도)
+            "stock_code":      stock_code,
+            "currency":        "KRW",
+            "current_price":   int(current_price),
+            "rsi_14":          float(rsi) if rsi else None,
+            "ma5":             int(mas["ma5"])  if mas["ma5"]  else None,
+            "ma20":            int(mas["ma20"]) if mas["ma20"] else None,
+            "ma60":            int(mas["ma60"]) if mas["ma60"] else None,
+            "avg_volume_20d":  avg_volume,
             "frgn_net_buy_1d": investor["frgn_net_buy_1d"],
             "frgn_net_buy_5d": investor["frgn_net_buy_5d"],
             "orgn_net_buy_1d": investor["orgn_net_buy_1d"],
@@ -360,6 +438,17 @@ class KISClient:
                 for b in recent
             ],
         }
+
+    # ------------------------------------------------------------------ #
+    # 통합 종목 정보 (Gemini Stage4 입력용)
+    # ------------------------------------------------------------------ #
+
+    def get_stock_info(self, stock_code: str, country: str = "KR", market: str | None = None) -> dict:
+        """현재가 + OHLCV + 기술적지표 통합 조회. country='US'이면 해외주식 경로 사용."""
+        if country.upper() == "US":
+            exchange = (market or "NAS").upper()
+            return self._get_us_stock_info(stock_code, exchange)
+        return self._get_domestic_stock_info(stock_code)
 
     # ------------------------------------------------------------------ #
     # 계좌 조회

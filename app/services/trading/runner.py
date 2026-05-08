@@ -18,6 +18,11 @@ from app.services.kis.client import get_kis_client, get_kis_client_from_account
 
 logger = logging.getLogger(__name__)
 
+def _get_largecap_codes() -> frozenset[str]:
+    """largecap 필터용 코드 집합 — 캐시된 KOSPI200+KOSDAQ150."""
+    from app.services.stock_master.index_constituents import get_kospi200, get_kosdaq150
+    return frozenset(get_kospi200() + get_kosdaq150())
+
 
 class StrategyRunner:
     """전략별 AI 분석 실행 및 DB 저장."""
@@ -26,40 +31,77 @@ class StrategyRunner:
         self.db = db
         self.analyzer = GeminiAnalyzer()
 
-    def _get_candidate_codes(self) -> list[str]:
-        """DB에서 활성 후보 종목 코드 목록 반환."""
-        rows = (
-            self.db.query(CandidateStock.stock_code)
-            .filter(CandidateStock.is_active == True)
-            .order_by(CandidateStock.stock_id)
-            .all()
-        )
-        codes = [r[0] for r in rows]
-        if not codes:
-            logger.warning("No active candidate stocks in DB")
-        return codes
+    def _get_candidate_stocks(self, strategy: Strategy) -> list[dict]:
+        """
+        전략의 candidate_filter / candidate_market 기준으로
+        활성 후보 종목 (code, country, market) 반환.
 
-    def _collect_stock_data(self, stock_codes: list[str]) -> list[dict]:
+        candidate_market:
+          ALL    → 전 시장
+          KOSPI  → KOSPI만
+          KOSDAQ → KOSDAQ만
+          NAS    → NASDAQ만
+
+        candidate_filter:
+          volume   → 현재 거래량 활발 종목 위주 (풀 전체 사용, volume-ranked 우선)
+          largecap → KOSPI/KOSDAQ 시총 상위 대형주만
+          mixed    → 풀 전체 사용 (기본)
+        """
+        q = (
+            self.db.query(
+                CandidateStock.stock_code,
+                CandidateStock.country,
+                CandidateStock.market,
+            )
+            .filter(CandidateStock.is_active == True)
+        )
+
+        # 시장 필터
+        mkt = getattr(strategy, "candidate_market", "ALL")
+        if mkt and mkt != "ALL":
+            q = q.filter(CandidateStock.market == mkt)
+
+        rows = q.order_by(CandidateStock.stock_id).all()
+
+        # largecap 필터: KOSPI200 + KOSDAQ150 구성종목만 유지
+        flt = getattr(strategy, "candidate_filter", "mixed")
+        if flt == "largecap":
+            largecap = _get_largecap_codes()
+            rows = [r for r in rows if r[0] in largecap]
+
+        candidates = [
+            {"code": r[0], "country": r[1] or "KR", "market": r[2]}
+            for r in rows
+        ]
+        if not candidates:
+            logger.warning("No candidates for strategy %s (filter=%s market=%s)",
+                           strategy.name, flt, mkt)
+        else:
+            logger.info("Candidates for %s: %d (filter=%s market=%s)",
+                        strategy.name, len(candidates), flt, mkt)
+        return candidates
+
+    def _collect_stock_data(self, candidates: list[dict]) -> list[dict]:
         """KIS API로 후보 종목 기술 데이터 수집."""
         client = get_kis_client(self.db)
         result = []
         failed = []
-        for code in stock_codes:
+        for c in candidates:
+            code, country, market = c["code"], c["country"], c["market"]
             try:
-                info = client.get_stock_info(code)
+                info = client.get_stock_info(code, country=country, market=market)
                 result.append(info)
             except Exception as e:
                 logger.warning("Failed to fetch %s: %s", code, e)
                 failed.append(f"{code}: {e}")
 
-        # 절반 이상 실패하면 KIS API 장애 알림
-        if failed and len(failed) >= len(stock_codes) // 2:
+        if failed and len(failed) >= len(candidates) // 2:
             from app.services.telegram.notifier import get_notifier
             notifier = get_notifier()
             if notifier:
                 notifier.notify_error(
                     "KIS API 시세 수집 실패",
-                    f"{len(failed)}/{len(stock_codes)}개 종목 수집 실패\n"
+                    f"{len(failed)}/{len(candidates)}개 종목 수집 실패\n"
                     + "\n".join(failed[:5]),
                 )
         return result
@@ -76,8 +118,8 @@ class StrategyRunner:
         logger.info("Running strategy: %s (%s)", strategy.name, run_date)
 
         # 1. 종목 데이터 수집 (DB 기반 후보 풀)
-        candidate_codes = self._get_candidate_codes()
-        stock_data = self._collect_stock_data(candidate_codes)
+        candidates = self._get_candidate_stocks(strategy)
+        stock_data = self._collect_stock_data(candidates)
         if not stock_data:
             raise RuntimeError("No stock data collected")
 

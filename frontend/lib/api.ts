@@ -60,6 +60,9 @@ export interface User {
   created_at: string;
 }
 
+export type CandidateFilter = "volume" | "largecap" | "mixed";
+export type CandidateMarket = "KOSPI" | "KOSDAQ" | "NAS" | "ALL";
+
 export interface Strategy {
   strategy_id: string;
   name: string;
@@ -70,6 +73,8 @@ export interface Strategy {
   min_probability: string;
   pick_count: number;
   run_interval_days: number;
+  candidate_filter: CandidateFilter;
+  candidate_market: CandidateMarket;
   is_active: boolean;
 }
 
@@ -103,8 +108,18 @@ export interface CandidateStock {
   stock_name: string;
   market: string | null;
   sector: string | null;
+  country: string | null;
+  currency: string | null;
   is_active: boolean;
   notes: string | null;
+}
+
+export interface StockMasterItem {
+  stock_code: string;
+  stock_name: string;
+  market: string;
+  country: string;
+  sector: string | null;
 }
 
 export interface RecommendationRun {
@@ -193,6 +208,19 @@ export const api = {
 
   strategies: {
     list: () => authFetch<Strategy[]>("/strategies"),
+    create: (body: {
+      name: string; description?: string | null;
+      hold_days: number; target_pct: string; stop_loss_pct: string;
+      min_probability: string; pick_count: number; run_interval_days: number;
+      candidate_filter: CandidateFilter; candidate_market: CandidateMarket;
+    }) => authFetch<Strategy>("/strategies", { method: "POST", body: JSON.stringify(body) }),
+    update: (id: string, body: Partial<{
+      name: string; description: string | null;
+      hold_days: number; target_pct: string; stop_loss_pct: string;
+      min_probability: string; pick_count: number; run_interval_days: number;
+      candidate_filter: CandidateFilter; candidate_market: CandidateMarket;
+      is_active: boolean;
+    }>) => authFetch<Strategy>(`/strategies/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
   },
 
   recommendations: {
@@ -234,12 +262,24 @@ export const api = {
       ),
   },
 
+  stockMaster: {
+    search: (q: string, market?: string) =>
+      authFetch<StockMasterItem[]>(
+        `/stock-master/search?q=${encodeURIComponent(q)}${market ? `&market=${market}` : ""}&limit=15`
+      ),
+    stats: () => authFetch<Record<string, number>>("/stock-master/stats"),
+    triggerUpdate: () =>
+      authFetch("/stock-master/update", { method: "POST" }),
+    triggerCandidateRefresh: () =>
+      authFetch("/stock-master/refresh-candidates", { method: "POST" }),
+  },
+
   stocks: {
     list: (activeOnly = true) =>
       authFetch<CandidateStock[]>(`/candidate-stocks?active_only=${activeOnly}`),
-    create: (body: Pick<CandidateStock, "stock_code" | "stock_name" | "market" | "sector" | "notes">) =>
+    create: (body: Pick<CandidateStock, "stock_code" | "stock_name" | "market" | "sector" | "country" | "notes">) =>
       authFetch<CandidateStock>("/candidate-stocks", { method: "POST", body: JSON.stringify(body) }),
-    update: (id: number, body: Partial<Pick<CandidateStock, "stock_name" | "market" | "sector" | "is_active" | "notes">>) =>
+    update: (id: number, body: Partial<Pick<CandidateStock, "stock_name" | "market" | "sector" | "country" | "is_active" | "notes">>) =>
       authFetch<CandidateStock>(`/candidate-stocks/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
     remove: (id: number) =>
       authFetch<void>(`/candidate-stocks/${id}`, { method: "DELETE" }),

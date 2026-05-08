@@ -15,8 +15,10 @@ class CandidateStock(Base):
     stock_id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     stock_code: Mapped[str] = mapped_column(String(20), unique=True, nullable=False)
     stock_name: Mapped[str] = mapped_column(String(100), nullable=False)
-    market: Mapped[str | None] = mapped_column(String(20), nullable=True)   # KOSPI / KOSDAQ
+    market: Mapped[str | None] = mapped_column(String(20), nullable=True)    # KOSPI/KOSDAQ/NAS/NYS/AMS
     sector: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True)    # KR / US
+    currency: Mapped[str | None] = mapped_column(String(3), nullable=True)   # KRW / USD
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     notes: Mapped[str | None] = mapped_column(Text, nullable=True)
     added_at: Mapped[datetime] = mapped_column(

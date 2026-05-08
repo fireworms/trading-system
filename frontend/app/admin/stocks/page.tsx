@@ -20,7 +20,7 @@ export default function AdminStocksPage() {
   // 선택된 종목 (검색 후 확인/편집 대기)
   const [selected, setSelected] = useState<StockItem | null>(null);
   // 직접 입력 종목의 편집 폼
-  const [editForm, setEditForm] = useState({ name: "", market: "KOSPI", sector: "" });
+  const [editForm, setEditForm] = useState({ name: "", market: "KOSPI", sector: "", country: "KR" });
   const [addLoading, setAddLoading] = useState(false);
 
   // 일괄 등록
@@ -63,17 +63,17 @@ export default function AdminStocksPage() {
   function handleSelect(s: StockItem) {
     setSelected(s);
     setMsg("");
-    // 목록에 없는 종목(name이 비어있음)이면 편집 폼 초기화
-    if (!s.name) setEditForm({ name: "", market: "KOSPI", sector: "" });
+    if (!s.name) setEditForm({ name: "", market: "KOSPI", sector: "", country: "KR" });
   }
 
   const isUnknown = selected && !selected.name;
 
   async function addStock() {
     if (!selected) return;
-    const name   = isUnknown ? editForm.name.trim()   : selected.name;
-    const market = isUnknown ? editForm.market        : selected.market;
-    const sector = isUnknown ? editForm.sector.trim() : selected.sector;
+    const name    = isUnknown ? editForm.name.trim()    : selected.name;
+    const market  = isUnknown ? editForm.market         : selected.market;
+    const sector  = isUnknown ? editForm.sector.trim()  : (selected.sector ?? "");
+    const country = isUnknown ? editForm.country        : selected.country;
     if (!name) { setMsg("종목명을 입력하세요"); return; }
     setAddLoading(true); setMsg("");
     try {
@@ -82,8 +82,9 @@ export default function AdminStocksPage() {
         stock_name: name,
         market:     market ?? null,
         sector:     sector || null,
+        country:    country || null,
         notes:      null,
-      });
+      } as Parameters<typeof api.stocks.create>[0]);
       setStocks((prev) => [...prev, created]);
       setSelected(null);
       setMsg(`${created.stock_name} 추가 완료`);
@@ -224,10 +225,15 @@ export default function AdminStocksPage() {
                   onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
                   className="bg-gray-700 text-white rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
                 <select value={editForm.market}
-                  onChange={(e) => setEditForm((f) => ({ ...f, market: e.target.value }))}
+                  onChange={(e) => {
+                    const m = e.target.value;
+                    const c = m === "NAS" ? "US" : "KR";
+                    setEditForm((f) => ({ ...f, market: m, country: c }));
+                  }}
                   className="bg-gray-700 text-white rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500">
                   <option value="KOSPI">KOSPI</option>
                   <option value="KOSDAQ">KOSDAQ</option>
+                  <option value="NAS">NAS (나스닥)</option>
                 </select>
                 <input type="text" placeholder="섹터 (선택)"
                   value={editForm.sector}

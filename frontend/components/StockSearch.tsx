@@ -1,28 +1,62 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
-import { searchStocks, StockItem } from "@/lib/korean-stocks";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { api } from "@/lib/api";
+import { StockItem } from "@/lib/korean-stocks";
 
 interface Props {
   onSelect: (stock: StockItem) => void;
   placeholder?: string;
+  market?: string;
 }
 
-export default function StockSearch({ onSelect, placeholder = "종목명 또는 코드 검색" }: Props) {
-  const [query, setQuery]       = useState("");
-  const [results, setResults]   = useState<StockItem[]>([]);
-  const [open, setOpen]         = useState(false);
-  const [focused, setFocused]   = useState(0);
-  const ref = useRef<HTMLDivElement>(null);
+export default function StockSearch({
+  onSelect,
+  placeholder = "종목명 또는 코드 검색",
+  market,
+}: Props) {
+  const [query,   setQuery]   = useState("");
+  const [results, setResults] = useState<StockItem[]>([]);
+  const [open,    setOpen]    = useState(false);
+  const [focused, setFocused] = useState(0);
+  const [loading, setLoading] = useState(false);
+  const ref    = useRef<HTMLDivElement>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  useEffect(() => {
-    setResults(searchStocks(query));
-    setFocused(0);
-    setOpen(query.trim().length > 0);
-  }, [query]);
+  // 디바운스 API 검색
+  const search = useCallback(
+    (q: string) => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      if (!q.trim()) { setResults([]); setOpen(false); return; }
 
-  // 외부 클릭 시 닫기
+      timerRef.current = setTimeout(async () => {
+        setLoading(true);
+        try {
+          const items = await api.stockMaster.search(q.trim(), market);
+          setResults(
+            items.map((s) => ({
+              code:    s.stock_code,
+              name:    s.stock_name,
+              market:  s.market,
+              country: s.country,
+              sector:  s.sector,
+            }))
+          );
+          setFocused(0);
+          setOpen(true);
+        } catch {
+          setResults([]);
+        } finally {
+          setLoading(false);
+        }
+      }, 200);
+    },
+    [market]
+  );
+
+  useEffect(() => { search(query); }, [query, search]);
+
+  // 외부 클릭 닫기
   useEffect(() => {
     function handler(e: MouseEvent) {
       if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
@@ -43,7 +77,15 @@ export default function StockSearch({ onSelect, placeholder = "종목명 또는 
     onSelect(stock);
     setQuery("");
     setOpen(false);
+    setResults([]);
   }
+
+  const marketBadge = (m: string) => {
+    if (m === "KOSPI")  return "text-blue-400";
+    if (m === "KOSDAQ") return "text-green-400";
+    if (m === "NAS")    return "text-purple-400";
+    return "text-gray-400";
+  };
 
   return (
     <div ref={ref} className="relative">
@@ -57,45 +99,39 @@ export default function StockSearch({ onSelect, placeholder = "종목명 또는 
         className="w-full bg-gray-700 text-white rounded-lg px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
         autoComplete="off"
       />
+      {loading && (
+        <span className="absolute right-3 top-2.5 text-xs text-gray-400">검색 중...</span>
+      )}
+
       {open && results.length > 0 && (
-        <ul className="absolute z-50 top-full mt-1 w-full bg-gray-800 border border-gray-600 rounded-lg shadow-xl overflow-hidden">
+        <ul className="absolute z-50 top-full mt-1 w-full bg-gray-800 border border-gray-600 rounded-lg shadow-xl overflow-hidden max-h-72 overflow-y-auto">
           {results.map((s, i) => (
-            <li key={s.code}
+            <li
+              key={`${s.code}-${s.market}`}
               onMouseDown={() => select(s)}
               className={`flex items-center justify-between px-4 py-2.5 cursor-pointer text-sm ${
                 i === focused ? "bg-blue-600" : "hover:bg-gray-700"
-              }`}>
+              }`}
+            >
               <div>
                 <span className="font-medium">{s.name}</span>
                 <span className="ml-2 text-xs text-gray-400 font-mono">{s.code}</span>
               </div>
-              <div className="flex items-center gap-2 text-xs text-gray-400">
-                <span>{s.market}</span>
-                <span>{s.sector}</span>
+              <div className="flex items-center gap-2 text-xs">
+                <span className={marketBadge(s.market)}>{s.market}</span>
+                {s.sector && <span className="text-gray-500">{s.sector}</span>}
               </div>
             </li>
           ))}
-          {query.trim().length === 6 && /^\d{6}$/.test(query.trim()) && results.length === 0 && (
-            <li
-              onMouseDown={async () => {
-                const code = query.trim();
-                try {
-                  const info = await api.market.stockBasic(code);
-                  select({ code: info.stock_code, name: info.stock_name, market: info.market as "KOSPI"|"KOSDAQ", sector: info.sector });
-                } catch {
-                  select({ code, name: "", market: "KOSPI", sector: "" });
-                }
-              }}
-              className="px-4 py-2.5 cursor-pointer text-sm hover:bg-gray-700 text-gray-300">
-              <span className="font-mono">{query.trim()}</span>
-              <span className="ml-2 text-gray-500">KIS에서 종목 정보 조회</span>
-            </li>
-          )}
         </ul>
       )}
-      {open && query.trim().length > 0 && results.length === 0 && !/^\d{6}$/.test(query.trim()) && (
+
+      {open && !loading && query.trim().length > 0 && results.length === 0 && (
         <div className="absolute z-50 top-full mt-1 w-full bg-gray-800 border border-gray-600 rounded-lg px-4 py-3 text-sm text-gray-400">
-          검색 결과 없음 — 6자리 코드를 직접 입력하세요
+          검색 결과 없음
+          {!query.trim().includes(" ") && (
+            <span className="ml-1 text-gray-500">— stock_master가 비어있다면 관리자에게 업데이트 요청하세요</span>
+          )}
         </div>
       )}
     </div>
