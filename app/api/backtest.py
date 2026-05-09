@@ -53,15 +53,22 @@ def get_backtest_results(
     )
     result = []
     for r in runs:
-        verified = [rec for rec in r.recommendations if rec.verification]
-        success  = [rec for rec in verified if rec.verification.result and rec.verification.result.value == "SUCCESS"]
-        pnls     = [float(rec.verification.pnl_pct) for rec in verified if rec.verification.pnl_pct is not None]
+        verified     = [rec for rec in r.recommendations if rec.verification]
+        success_recs = [rec for rec in verified if rec.verification.result and rec.verification.result.value == "SUCCESS"]
+        fail_recs    = [rec for rec in verified if rec.verification.result and rec.verification.result.value == "FAIL"]
+        all_pnls     = [float(rec.verification.pnl_pct) for rec in verified if rec.verification.pnl_pct is not None]
+        success_pnls = [float(rec.verification.pnl_pct) for rec in success_recs if rec.verification.pnl_pct is not None]
+        fail_pnls    = [float(rec.verification.pnl_pct) for rec in fail_recs if rec.verification.pnl_pct is not None]
+        random_avg   = (r.raw_response or {}).get("random_avg_pnl")
         result.append({
-            "run_id":   str(r.run_id),
-            "run_date": str(r.run_date),
-            "picks":    len(r.recommendations),
-            "verified": len(verified),
-            "success":  len(success),
-            "avg_pnl":  round(sum(pnls) / len(pnls), 4) if pnls else None,
+            "run_id":          str(r.run_id),
+            "run_date":        str(r.run_date),
+            "picks":           len(r.recommendations),
+            "verified":        len(verified),
+            "success":         len(success_recs),
+            "avg_pnl":         round(sum(all_pnls) / len(all_pnls), 4) if all_pnls else None,
+            "success_avg_pnl": round(sum(success_pnls) / len(success_pnls), 4) if success_pnls else None,
+            "fail_avg_pnl":    round(sum(fail_pnls) / len(fail_pnls), 4) if fail_pnls else None,
+            "random_avg_pnl":  random_avg,
         })
     return result

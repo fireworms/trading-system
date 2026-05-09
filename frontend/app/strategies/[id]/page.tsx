@@ -214,35 +214,48 @@ export default function StrategyDetailPage() {
           const totalPicks   = btHistory.reduce((s, r) => s + r.verified, 0);
           const totalSuccess = btHistory.reduce((s, r) => s + r.success, 0);
           const winRate      = totalPicks > 0 ? totalSuccess / totalPicks : null;
-          const pnlList      = btHistory.filter(r => r.avg_pnl != null).map(r => r.avg_pnl!);
-          const avgPnl       = pnlList.length > 0 ? pnlList.reduce((a, b) => a + b, 0) / pnlList.length : null;
-          const failRate     = winRate != null ? 1 - winRate : null;
-          const ev           = winRate != null && avgPnl != null ? winRate * avgPnl + (failRate ?? 0) * (avgPnl < 0 ? avgPnl : -avgPnl) : null;
+          const avg = (arr: (number|null|undefined)[]) => { const v = arr.filter(x => x != null) as number[]; return v.length ? v.reduce((a,b)=>a+b,0)/v.length : null; };
+          const avgPnl        = avg(btHistory.map(r => r.avg_pnl));
+          const successAvgPnl = avg(btHistory.map(r => r.success_avg_pnl));
+          const failAvgPnl    = avg(btHistory.map(r => r.fail_avg_pnl));
+          const randomAvgPnl  = avg(btHistory.map(r => r.random_avg_pnl));
+          const aiVsRandom    = avgPnl != null && randomAvgPnl != null ? avgPnl - randomAvgPnl : null;
 
           return (
           <div className="flex flex-col gap-6">
 
             {/* 백테스트 종합 요약 */}
             {totalRuns > 0 && (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
                 <StatCard label="총 실행" value={totalRuns} sub="회" />
                 <StatCard
-                  label="승률"
+                  label="목표 달성률"
                   value={winRate != null ? `${(winRate * 100).toFixed(1)}%` : "-"}
-                  sub={totalPicks > 0 ? `${totalSuccess}성공 ${totalPicks - totalSuccess}실패` : "검증 대기 중"}
+                  sub={`${totalSuccess}성공 ${totalPicks - totalSuccess}실패`}
                   color={winRate != null ? (winRate >= 0.3 ? "green" : "red") : "gray"}
                 />
                 <StatCard
-                  label="평균 수익률"
-                  value={avgPnl != null ? `${avgPnl.toFixed(2)}%` : "-"}
-                  sub="검증 완료 기준"
+                  label="AI 평균수익"
+                  value={avgPnl != null ? `${avgPnl >= 0 ? "+" : ""}${avgPnl.toFixed(2)}%` : "-"}
                   color={avgPnl != null ? (avgPnl >= 0 ? "green" : "red") : "gray"}
                 />
                 <StatCard
-                  label="기댓값"
-                  value={ev != null ? `${ev.toFixed(2)}%` : "-"}
-                  sub={`검증 ${totalPicks}건`}
-                  color={ev != null ? (ev >= 0 ? "green" : "red") : "gray"}
+                  label="랜덤 평균수익"
+                  value={randomAvgPnl != null ? `${randomAvgPnl >= 0 ? "+" : ""}${randomAvgPnl.toFixed(2)}%` : "-"}
+                  sub="시장 효과"
+                  color={randomAvgPnl != null ? (randomAvgPnl >= 0 ? "green" : "red") : "gray"}
+                />
+                <StatCard
+                  label="AI 우위"
+                  value={aiVsRandom != null ? `${aiVsRandom >= 0 ? "+" : ""}${aiVsRandom.toFixed(2)}%p` : "-"}
+                  sub="AI - 랜덤"
+                  color={aiVsRandom != null ? (aiVsRandom >= 0 ? "green" : "red") : "gray"}
+                />
+                <StatCard
+                  label="성공/실패 평균"
+                  value={successAvgPnl != null ? `${successAvgPnl >= 0 ? "+" : ""}${successAvgPnl.toFixed(1)}%` : "-"}
+                  sub={failAvgPnl != null ? `실패 ${failAvgPnl >= 0 ? "+" : ""}${failAvgPnl.toFixed(1)}%` : "실패 데이터 없음"}
+                  color={successAvgPnl != null ? "green" : "gray"}
                 />
               </div>
             )}
@@ -314,28 +327,33 @@ export default function StrategyDetailPage() {
                     <thead>
                       <tr className="text-gray-400 border-b border-gray-700">
                         <th className="pb-2 text-left">날짜</th>
-                        <th className="pb-2 text-right">픽 수</th>
                         <th className="pb-2 text-right">달성률</th>
-                        <th className="pb-2 text-right">평균 수익</th>
+                        <th className="pb-2 text-right">AI 수익</th>
+                        <th className="pb-2 text-right">랜덤 수익</th>
+                        <th className="pb-2 text-right">우위</th>
                         <th className="pb-2 text-left pl-4">픽 종목</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {btResult.results.map((r) => (
+                      {btResult.results.map((r) => {
+                        const diff = r.avg_pnl != null && r.random_avg_pnl != null ? r.avg_pnl - r.random_avg_pnl : null;
+                        return (
                         <tr key={r.date} className="border-b border-gray-800">
                           <td className="py-2 text-gray-300">{r.date}</td>
-                          <td className="py-2 text-right">{r.picks.length}</td>
                           <td className={`py-2 text-right font-medium ${
                             r.win_rate == null ? "text-gray-500" :
                             r.win_rate >= 0.4 ? "text-green-400" : "text-red-400"
                           }`}>
                             {r.win_rate != null ? `${(r.win_rate * 100).toFixed(0)}%` : r.error ? "오류" : "-"}
                           </td>
-                          <td className={`py-2 text-right ${
-                            r.avg_pnl == null ? "text-gray-500" :
-                            r.avg_pnl >= 0 ? "text-green-400" : "text-red-400"
-                          }`}>
+                          <td className={`py-2 text-right ${r.avg_pnl == null ? "text-gray-500" : r.avg_pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
                             {r.avg_pnl != null ? `${r.avg_pnl >= 0 ? "+" : ""}${r.avg_pnl.toFixed(2)}%` : "-"}
+                          </td>
+                          <td className={`py-2 text-right ${r.random_avg_pnl == null ? "text-gray-500" : r.random_avg_pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                            {r.random_avg_pnl != null ? `${r.random_avg_pnl >= 0 ? "+" : ""}${r.random_avg_pnl.toFixed(2)}%` : "-"}
+                          </td>
+                          <td className={`py-2 text-right font-medium ${diff == null ? "text-gray-500" : diff >= 0 ? "text-blue-400" : "text-orange-400"}`}>
+                            {diff != null ? `${diff >= 0 ? "+" : ""}${diff.toFixed(2)}%p` : "-"}
                           </td>
                           <td className="py-2 pl-4 text-gray-400 text-xs">
                             {r.picks.map((p) => (
@@ -351,7 +369,8 @@ export default function StrategyDetailPage() {
                             ))}
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -377,27 +396,33 @@ export default function StrategyDetailPage() {
                     <thead>
                       <tr className="text-gray-400 border-b border-gray-700">
                         <th className="pb-2 text-left">날짜</th>
-                        <th className="pb-2 text-right">픽</th>
-                        <th className="pb-2 text-right">검증</th>
-                        <th className="pb-2 text-right">성공</th>
                         <th className="pb-2 text-right">달성률</th>
+                        <th className="pb-2 text-right">AI 수익</th>
+                        <th className="pb-2 text-right">랜덤 수익</th>
+                        <th className="pb-2 text-right">우위</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {btHistory.map((r) => (
+                      {btHistory.map((r) => {
+                        const d = r.avg_pnl != null && r.random_avg_pnl != null ? r.avg_pnl - r.random_avg_pnl : null;
+                        return (
                         <tr key={r.run_id} className="border-b border-gray-800 text-gray-300">
                           <td className="py-2">{r.run_date}</td>
-                          <td className="py-2 text-right">{r.picks}</td>
-                          <td className="py-2 text-right">{r.verified}</td>
-                          <td className="py-2 text-right text-green-400">{r.success}</td>
-                          <td className={`py-2 text-right font-medium ${
-                            r.verified === 0 ? "text-gray-500" :
-                            r.success / r.verified >= 0.4 ? "text-green-400" : "text-red-400"
-                          }`}>
-                            {r.verified > 0 ? `${(r.success / r.verified * 100).toFixed(0)}%` : "-"}
+                          <td className={`py-2 text-right font-medium ${r.verified === 0 ? "text-gray-500" : r.success/r.verified >= 0.4 ? "text-green-400" : "text-red-400"}`}>
+                            {r.verified > 0 ? `${(r.success/r.verified*100).toFixed(0)}%` : "-"}
+                          </td>
+                          <td className={`py-2 text-right ${r.avg_pnl == null ? "text-gray-500" : r.avg_pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                            {r.avg_pnl != null ? `${r.avg_pnl >= 0 ? "+" : ""}${r.avg_pnl.toFixed(2)}%` : "-"}
+                          </td>
+                          <td className={`py-2 text-right ${r.random_avg_pnl == null ? "text-gray-500" : r.random_avg_pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                            {r.random_avg_pnl != null ? `${r.random_avg_pnl >= 0 ? "+" : ""}${r.random_avg_pnl.toFixed(2)}%` : "-"}
+                          </td>
+                          <td className={`py-2 text-right font-medium ${d == null ? "text-gray-500" : d >= 0 ? "text-blue-400" : "text-orange-400"}`}>
+                            {d != null ? `${d >= 0 ? "+" : ""}${d.toFixed(2)}%p` : "-"}
                           </td>
                         </tr>
-                      ))}
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>

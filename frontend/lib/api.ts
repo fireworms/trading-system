@@ -181,12 +181,18 @@ export interface BacktestDateResult {
   picks: BacktestPickResult[];
   win_rate: number | null;
   avg_pnl: number | null;
+  success_avg_pnl: number | null;
+  fail_avg_pnl: number | null;
+  random_avg_pnl: number | null;
   error?: string;
 }
 
 export interface BacktestSummary {
   win_rate: number | null;
   avg_pnl: number | null;
+  success_avg_pnl: number | null;
+  fail_avg_pnl: number | null;
+  random_avg_pnl: number | null;
   total_picks: number;
   success_count: number;
   fail_count: number;
@@ -210,6 +216,9 @@ export interface BacktestRunSummary {
   verified: number;
   success: number;
   avg_pnl: number | null;
+  success_avg_pnl: number | null;
+  fail_avg_pnl: number | null;
+  random_avg_pnl: number | null;
 }
 
 // ------------------------------------------------------------------ //

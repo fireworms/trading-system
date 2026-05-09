@@ -171,16 +171,29 @@ class BacktestRunner:
                     "pnl_pct": float(v.pnl_pct) if v.pnl_pct else None,
                 })
 
+        # 5. 랜덤 대조군 (AI와 동일한 종목 풀에서 pick_count개 무작위 선택)
+        random_avg_pnl = self._compute_random_baseline(
+            stock_data, target_date, strategy.hold_days, strategy.pick_count, client
+        )
+
+        # raw_response에 랜덤 결과 포함 저장
+        run.raw_response = {"picks": picks_result.raw, "random_avg_pnl": random_avg_pnl}
         self.db.commit()
 
         success = sum(1 for p in verified_picks if p["result"] == "SUCCESS")
         total = len(verified_picks)
+        pnls = [p["pnl_pct"] for p in verified_picks if p["pnl_pct"] is not None]
+        success_pnls = [p["pnl_pct"] for p in verified_picks if p["result"] == "SUCCESS" and p["pnl_pct"] is not None]
+        fail_pnls    = [p["pnl_pct"] for p in verified_picks if p["result"] == "FAIL"    and p["pnl_pct"] is not None]
         return {
             "date": str(target_date),
             "run_id": str(run.run_id),
             "picks": verified_picks,
-            "win_rate": success / total if total else None,
-            "avg_pnl": sum(p["pnl_pct"] for p in verified_picks if p["pnl_pct"] is not None) / total if total else None,
+            "win_rate":        success / total if total else None,
+            "avg_pnl":         sum(pnls) / len(pnls) if pnls else None,
+            "success_avg_pnl": sum(success_pnls) / len(success_pnls) if success_pnls else None,
+            "fail_avg_pnl":    sum(fail_pnls) / len(fail_pnls) if fail_pnls else None,
+            "random_avg_pnl":  random_avg_pnl,
         }
 
     def _collect_historical_data(self, strategy: Strategy, target_date: date) -> list[dict]:
@@ -214,13 +227,42 @@ class BacktestRunner:
         logger.info("Historical data collected: %d/%d stocks for %s", len(result), len(candidates), target_date)
         return result
 
+    def _compute_random_baseline(
+        self, stock_data: list[dict], target_date: date, hold_days: int, pick_count: int, client
+    ) -> float | None:
+        """AI와 동일한 종목 풀에서 랜덤 pick_count개 선택 후 평균 pnl 계산."""
+        import random as _random
+        period_start = target_date.strftime("%Y%m%d")
+        period_end = (target_date + timedelta(days=hold_days)).strftime("%Y%m%d")
+
+        candidates = [s for s in stock_data if s.get("current_price", 0) > 0]
+        if len(candidates) < pick_count:
+            return None
+
+        sampled = _random.sample(candidates, pick_count)
+        pnls = []
+        for s in sampled:
+            try:
+                bars = client.get_ohlcv(s["stock_code"], days=100)
+                future = sorted([b for b in bars if period_start < b.date <= period_end], key=lambda b: b.date)
+                if not future:
+                    continue
+                entry = float(s["current_price"])
+                end_price = float(future[-1].close)
+                if entry > 0:
+                    pnls.append((end_price - entry) / entry * 100)
+            except Exception:
+                continue
+
+        return round(sum(pnls) / len(pnls), 4) if pnls else None
+
     def _verify_pick(self, rec: Recommendation, run_date: date, hold_days: int, client) -> Verification | None:
         """단일 픽 즉시 검증. hold_days 기간 OHLCV로 성공/실패 판정."""
         try:
             bars = client.get_ohlcv(rec.stock_code, days=100)
-            period_start = str(run_date)
-            period_end = str(run_date + timedelta(days=hold_days))
-            relevant = [b for b in bars if period_start <= b.date <= period_end]
+            period_start = run_date.strftime("%Y%m%d")
+            period_end = (run_date + timedelta(days=hold_days)).strftime("%Y%m%d")
+            relevant = sorted([b for b in bars if period_start <= b.date <= period_end], key=lambda b: b.date)
 
             entry = rec.current_price_at_rec
             if not entry or entry == 0 or not relevant:
@@ -258,12 +300,18 @@ class BacktestRunner:
         all_picks = [p for r in valid for p in r.get("picks", [])]
         success = sum(1 for p in all_picks if p.get("result") == "SUCCESS")
         total = len(all_picks)
-        pnls = [p["pnl_pct"] for p in all_picks if p.get("pnl_pct") is not None]
+        pnls         = [p["pnl_pct"] for p in all_picks if p.get("pnl_pct") is not None]
+        success_pnls = [p["pnl_pct"] for p in all_picks if p.get("result") == "SUCCESS" and p.get("pnl_pct") is not None]
+        fail_pnls    = [p["pnl_pct"] for p in all_picks if p.get("result") == "FAIL"    and p.get("pnl_pct") is not None]
+        random_pnls  = [r["random_avg_pnl"] for r in valid if r.get("random_avg_pnl") is not None]
 
         return {
-            "win_rate": round(success / total, 4) if total else None,
-            "avg_pnl": round(sum(pnls) / len(pnls), 4) if pnls else None,
-            "total_picks": total,
-            "success_count": success,
-            "fail_count": total - success,
+            "win_rate":        round(success / total, 4) if total else None,
+            "avg_pnl":         round(sum(pnls) / len(pnls), 4) if pnls else None,
+            "success_avg_pnl": round(sum(success_pnls) / len(success_pnls), 4) if success_pnls else None,
+            "fail_avg_pnl":    round(sum(fail_pnls) / len(fail_pnls), 4) if fail_pnls else None,
+            "random_avg_pnl":  round(sum(random_pnls) / len(random_pnls), 4) if random_pnls else None,
+            "total_picks":     total,
+            "success_count":   success,
+            "fail_count":      total - success,
         }
