@@ -168,6 +168,49 @@ export interface SchedulerJob {
   next_run: string | null;
 }
 
+export interface BacktestPickResult {
+  stock_code: string;
+  stock_name: string;
+  result: "SUCCESS" | "FAIL";
+  pnl_pct: number | null;
+}
+
+export interface BacktestDateResult {
+  date: string;
+  run_id?: string;
+  picks: BacktestPickResult[];
+  win_rate: number | null;
+  avg_pnl: number | null;
+  error?: string;
+}
+
+export interface BacktestSummary {
+  win_rate: number | null;
+  avg_pnl: number | null;
+  total_picks: number;
+  success_count: number;
+  fail_count: number;
+}
+
+export interface BacktestResult {
+  status: string;
+  strategy_name: string;
+  base_date: string;
+  dates_attempted: number;
+  dates_succeeded: number;
+  skipped: string[];
+  summary: BacktestSummary;
+  results: BacktestDateResult[];
+}
+
+export interface BacktestRunSummary {
+  run_id: string;
+  run_date: string;
+  picks: number;
+  verified: number;
+  success: number;
+}
+
 // ------------------------------------------------------------------ //
 // API
 // ------------------------------------------------------------------ //
@@ -271,5 +314,12 @@ export const api = {
       authFetch<{ running: boolean; jobs: SchedulerJob[] }>("/admin/scheduler/status"),
     runStrategy: (id: string) =>
       authFetch(`/admin/strategies/${id}/run`, { method: "POST" }),
+    runBacktest: (id: string, baseDate: string) =>
+      authFetch<BacktestResult>(`/admin/backtest/strategies/${id}`, {
+        method: "POST",
+        body: JSON.stringify({ base_date: baseDate }),
+      }),
+    getBacktestResults: (id: string) =>
+      authFetch<BacktestRunSummary[]>(`/admin/backtest/strategies/${id}/results`),
   },
 };
