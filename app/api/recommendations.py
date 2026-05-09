@@ -64,9 +64,12 @@ class StrategyStats(BaseModel):
     total_verified: int
     success_count: int
     fail_count: int
-    win_rate: float | None          # 0.0 ~ 1.0
-    avg_pnl_pct: float | None       # 평균 수익률 (검증된 종목)
-    expected_value: float | None    # win_rate * avg_gain + (1-win_rate) * avg_loss
+    win_rate: float | None
+    avg_pnl_pct: float | None
+    success_avg_pnl: float | None
+    fail_avg_pnl: float | None
+    random_avg_pnl: float | None
+    expected_value: float | None
 
 
 @router.get("/stats/{strategy_id}", response_model=StrategyStats)
@@ -111,6 +114,17 @@ def get_strategy_stats(
     avg_pnl  = (s_cnt * s_pnl + f_cnt * f_pnl) / total_verified if total_verified > 0 else None
     ev       = (win_rate * s_pnl + (1 - win_rate) * f_pnl) if win_rate is not None else None
 
+    # 랜덤 대조군 평균 pnl (raw_response.random_baseline.avg_pnl 집계)
+    runs_with_random = db.scalars(
+        select(RecommendationRun).where(*live_filter)
+    ).all()
+    random_pnls = [
+        r.raw_response["random_baseline"]["avg_pnl"]
+        for r in runs_with_random
+        if r.raw_response and r.raw_response.get("random_baseline", {}).get("avg_pnl") is not None
+    ]
+    random_avg_pnl = round(sum(random_pnls) / len(random_pnls), 4) if random_pnls else None
+
     return StrategyStats(
         strategy_id=strategy_id,
         total_runs=total_runs,
@@ -120,5 +134,8 @@ def get_strategy_stats(
         fail_count=f_cnt,
         win_rate=win_rate,
         avg_pnl_pct=avg_pnl,
+        success_avg_pnl=round(s_pnl, 4) if s_cnt > 0 else None,
+        fail_avg_pnl=round(f_pnl, 4) if f_cnt > 0 else None,
+        random_avg_pnl=random_avg_pnl,
         expected_value=ev,
     )

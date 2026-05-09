@@ -164,7 +164,14 @@ class StrategyRunner:
             today=run_date,
         )
 
-        # 3. DB 저장
+        # 3. 랜덤 대조군 진입가 기록 (같은 종목 풀에서 pick_count개 무작위)
+        import random as _random
+        random_entries: dict[str, float] = {}
+        eligible = [s for s in stock_data if s.get("stock_code") and s.get("current_price", 0) > 0]
+        for s in _random.sample(eligible, min(strategy.pick_count, len(eligible))):
+            random_entries[s["stock_code"]] = float(s["current_price"])
+
+        # 4. DB 저장
         run = RecommendationRun(
             strategy_id=strategy.strategy_id,
             run_date=run_date,
@@ -179,6 +186,7 @@ class StrategyRunner:
                 "historical": historical.raw,
                 "industry": industry.raw,
                 "picks": picks_result.raw,
+                "random_baseline": {"entries": random_entries},
             },
         )
         self.db.add(run)

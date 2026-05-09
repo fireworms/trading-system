@@ -132,6 +132,9 @@ export interface StrategyStats {
   fail_count: number;
   win_rate: number | null;
   avg_pnl_pct: number | null;
+  success_avg_pnl: number | null;
+  fail_avg_pnl: number | null;
+  random_avg_pnl: number | null;
   expected_value: number | null;
 }
 

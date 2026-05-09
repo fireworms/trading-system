@@ -62,7 +62,53 @@ def run_verifications(db: Session) -> int:
     for version_no in affected_versions:
         _update_performance_score(db, version_no)
 
+    # 랜덤 대조군 pnl 계산 (raw_response에 entries가 있고 아직 avg_pnl 없는 run)
+    _verify_random_baselines(db, client, today)
+
     return count
+
+
+def _verify_random_baselines(db, client, today: date) -> None:
+    """raw_response.random_baseline.entries가 있는 run에 대해 랜덤 대조군 pnl 계산."""
+    from sqlalchemy import select as sa_select
+    runs = db.scalars(
+        sa_select(RecommendationRun)
+        .where(RecommendationRun.is_backtest == False)  # noqa: E712
+        .where(RecommendationRun.raw_response != None)   # noqa: E711
+    ).all()
+
+    updated = 0
+    for run in runs:
+        raw = run.raw_response or {}
+        baseline = raw.get("random_baseline", {})
+        if not baseline.get("entries") or baseline.get("avg_pnl") is not None:
+            continue  # 이미 계산됐거나 entries 없음
+
+        strategy: Strategy = run.strategy
+        if run.run_date + timedelta(days=strategy.hold_days) > today:
+            continue  # hold_days 미경과
+
+        period_start = run.run_date.strftime("%Y%m%d")
+        period_end   = (run.run_date + timedelta(days=strategy.hold_days)).strftime("%Y%m%d")
+        pnls = []
+        for code, entry_price in baseline["entries"].items():
+            try:
+                bars = client.get_ohlcv(code)
+                future = sorted([b for b in bars if period_start < b.date <= period_end], key=lambda b: b.date)
+                if not future or entry_price == 0:
+                    continue
+                end_price = float(future[-1].close)
+                pnls.append((end_price - entry_price) / entry_price * 100)
+            except Exception as e:
+                logger.warning("Random baseline verify failed for %s: %s", code, e)
+
+        if pnls:
+            run.raw_response = {**raw, "random_baseline": {**baseline, "avg_pnl": round(sum(pnls) / len(pnls), 4)}}
+            updated += 1
+
+    if updated:
+        db.commit()
+        logger.info("Random baseline pnl updated for %d runs", updated)
 
 
 def _verify_recommendation(

@@ -122,8 +122,11 @@ export default function StrategyDetailPage() {
         {/* ── 추천 결과 탭 ─────────────────────────────────── */}
         {tab === "live" && (
           <>
-            {stats && (
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6">
+            {stats && (() => {
+              const aiVsRandom = stats.avg_pnl_pct != null && stats.random_avg_pnl != null
+                ? stats.avg_pnl_pct - stats.random_avg_pnl : null;
+              return (
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 mb-6">
                 <StatCard label="총 실행" value={stats.total_runs} sub="회" />
                 <StatCard
                   label="승률"
@@ -132,18 +135,31 @@ export default function StrategyDetailPage() {
                   color={stats.win_rate != null ? (stats.win_rate >= 0.5 ? "green" : "red") : "gray"}
                 />
                 <StatCard
-                  label="평균 수익률"
-                  value={stats.avg_pnl_pct != null ? `${stats.avg_pnl_pct.toFixed(2)}%` : "-"}
+                  label="AI 평균수익"
+                  value={stats.avg_pnl_pct != null ? `${stats.avg_pnl_pct >= 0 ? "+" : ""}${stats.avg_pnl_pct.toFixed(2)}%` : "-"}
                   color={stats.avg_pnl_pct != null ? (stats.avg_pnl_pct >= 0 ? "green" : "red") : "gray"}
                 />
                 <StatCard
-                  label="기댓값"
-                  value={stats.expected_value != null ? `${stats.expected_value.toFixed(2)}%` : "-"}
-                  sub={`검증 ${stats.total_verified}건`}
-                  color={stats.expected_value != null ? (stats.expected_value >= 0 ? "green" : "red") : "gray"}
+                  label="랜덤 평균수익"
+                  value={stats.random_avg_pnl != null ? `${stats.random_avg_pnl >= 0 ? "+" : ""}${stats.random_avg_pnl.toFixed(2)}%` : "-"}
+                  sub="시장 효과"
+                  color={stats.random_avg_pnl != null ? (stats.random_avg_pnl >= 0 ? "green" : "red") : "gray"}
+                />
+                <StatCard
+                  label="AI 우위"
+                  value={aiVsRandom != null ? `${aiVsRandom >= 0 ? "+" : ""}${aiVsRandom.toFixed(2)}%p` : "-"}
+                  sub="AI - 랜덤"
+                  color={aiVsRandom != null ? (aiVsRandom >= 0 ? "green" : "red") : "gray"}
+                />
+                <StatCard
+                  label="성공/실패 평균"
+                  value={stats.success_avg_pnl != null ? `${stats.success_avg_pnl >= 0 ? "+" : ""}${stats.success_avg_pnl.toFixed(1)}%` : "-"}
+                  sub={stats.fail_avg_pnl != null ? `실패 ${stats.fail_avg_pnl >= 0 ? "+" : ""}${stats.fail_avg_pnl.toFixed(1)}%` : "실패 데이터 없음"}
+                  color={stats.success_avg_pnl != null ? "green" : "gray"}
                 />
               </div>
-            )}
+              );
+            })()}
 
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               <div className="flex flex-col gap-4">
