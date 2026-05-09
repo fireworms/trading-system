@@ -38,6 +38,7 @@ _MODEL_GEMMA4  = "gemma-4-31b-it"                                          # JSO
 _SEARCH_CONFIG = types.GenerateContentConfig(
     tools=[types.Tool(google_search=types.GoogleSearch())]
 )
+_CHAIN_BACKTEST = ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite"]
 
 
 @dataclass
@@ -228,6 +229,40 @@ class GeminiAnalyzer:
             filter_guidance=guidance,
         )
         text, model = self._call_with_fallback(prompt, _CHAIN_STAGE4)
+        data = self._parse_json(text)
+        return PickResult(
+            picks=data.get("picks", []),
+            excluded_reason=data.get("excluded_reason", ""),
+            model_used=model,
+            raw=data,
+        )
+
+    def stage4_picks_backtest(
+        self,
+        stocks_data: list[dict],
+        hold_days: int,
+        target_pct: Decimal,
+        stop_loss_pct: Decimal,
+        min_probability: Decimal,
+        pick_count: int,
+        candidate_filter: str,
+        backtest_date,
+    ) -> PickResult:
+        """백테스트용 Stage4. Lite 모델만 사용, 매크로 컨텍스트는 placeholder."""
+        guidance = _FILTER_GUIDANCE.get(candidate_filter, _FILTER_GUIDANCE["mixed"])
+        prompt = STAGE4_PICKS.format(
+            macro_summary=f"{backtest_date} 기준 과거 데이터 백테스트 시뮬레이션. 기술적 지표 중심으로 판단.",
+            market_theme="백테스트",
+            expected_beneficiary="기술적 지표 우수 종목",
+            stocks_data=json.dumps(stocks_data, ensure_ascii=False, indent=2),
+            hold_days=hold_days,
+            target_pct=float(target_pct),
+            stop_loss_pct=float(stop_loss_pct),
+            min_probability=float(min_probability),
+            pick_count=pick_count,
+            filter_guidance=guidance,
+        )
+        text, model = self._call_with_fallback(prompt, _CHAIN_BACKTEST)
         data = self._parse_json(text)
         return PickResult(
             picks=data.get("picks", []),

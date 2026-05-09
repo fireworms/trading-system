@@ -45,6 +45,7 @@ class RecommendationRunOut(BaseModel):
     stage3_model: str | None
     stage4_model: str | None
     prompt_version: str | None
+    is_backtest: bool = False
     recommendations: list[RecommendationOut] = []
 
     model_config = {"from_attributes": True}

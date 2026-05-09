@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api import users, strategies, recommendations, positions, market, admin, prompt_versions, stock_master
+from app.api import users, strategies, recommendations, positions, market, admin, prompt_versions, stock_master, backtest
 import app.models.app_config  # noqa: F401 — Alembic autogenerate 인식용
 
 
@@ -38,6 +38,7 @@ app.include_router(market.router, prefix="/api/v1")
 app.include_router(admin.router, prefix="/api/v1")
 app.include_router(prompt_versions.router, prefix="/api/v1")
 app.include_router(stock_master.router, prefix="/api/v1")
+app.include_router(backtest.router, prefix="/api/v1")
 
 
 @app.get("/health")

@@ -23,7 +23,7 @@ def list_runs(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    q = select(RecommendationRun)
+    q = select(RecommendationRun).where(RecommendationRun.is_backtest == False)  # noqa: E712
     if strategy_id:
         q = q.where(RecommendationRun.strategy_id == strategy_id)
     return db.scalars(q.order_by(RecommendationRun.run_date.desc()).limit(50)).all()
@@ -76,15 +76,20 @@ def get_strategy_stats(
     _: User = Depends(get_current_user),
 ):
     """전략별 추천 성과 통계 (승률, 기댓값)."""
+    live_filter = (
+        RecommendationRun.strategy_id == strategy_id,
+        RecommendationRun.is_backtest == False,  # noqa: E712
+    )
+
     total_runs = db.scalar(
         select(func.count(RecommendationRun.run_id))
-        .where(RecommendationRun.strategy_id == strategy_id)
+        .where(*live_filter)
     ) or 0
 
     total_picks = db.scalar(
         select(func.count(Recommendation.rec_id))
         .join(RecommendationRun)
-        .where(RecommendationRun.strategy_id == strategy_id)
+        .where(*live_filter)
     ) or 0
 
     # 검증 결과
@@ -92,7 +97,7 @@ def get_strategy_stats(
         select(Verification.result, func.count().label("cnt"), func.avg(Verification.pnl_pct).label("avg_pnl"))
         .join(Recommendation, Recommendation.rec_id == Verification.rec_id)
         .join(RecommendationRun, RecommendationRun.run_id == Recommendation.run_id)
-        .where(RecommendationRun.strategy_id == strategy_id)
+        .where(*live_filter)
         .where(Verification.result != None)  # noqa: E711
         .group_by(Verification.result)
     ).all()

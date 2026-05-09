@@ -439,6 +439,53 @@ class KISClient:
             ],
         }
 
+    def get_historical_stock_info(self, stock_code: str, target_date) -> dict | None:
+        """target_date 기준 과거 시점 주식 데이터를 OHLCV에서 재구성. 백테스트용."""
+        try:
+            bars = self.get_ohlcv(stock_code, days=100)
+            if not bars:
+                return None
+
+            target_str = str(target_date)
+            hist_bars = [b for b in bars if b.date <= target_str]
+            if not hist_bars:
+                return None
+
+            target_bar = hist_bars[-1]
+            rsi = self._compute_rsi(hist_bars)
+            mas = self._compute_mas(hist_bars)
+            avg_volume = int(sum(b.volume for b in hist_bars[-20:]) / min(20, len(hist_bars)))
+            recent = hist_bars[-5:]
+
+            return {
+                "stock_code":      stock_code,
+                "currency":        "KRW",
+                "current_price":   int(target_bar.close),
+                "rsi_14":          float(rsi) if rsi else None,
+                "ma5":             int(mas["ma5"])  if mas["ma5"]  else None,
+                "ma20":            int(mas["ma20"]) if mas["ma20"] else None,
+                "ma60":            int(mas["ma60"]) if mas["ma60"] else None,
+                "avg_volume_20d":  avg_volume,
+                "frgn_net_buy_1d": 0,
+                "frgn_net_buy_5d": 0,
+                "orgn_net_buy_1d": 0,
+                "orgn_net_buy_5d": 0,
+                "recent_ohlcv": [
+                    {
+                        "date":   b.date,
+                        "open":   int(b.open),
+                        "high":   int(b.high),
+                        "low":    int(b.low),
+                        "close":  int(b.close),
+                        "volume": b.volume,
+                    }
+                    for b in recent
+                ],
+            }
+        except Exception as e:
+            logger.warning("Historical stock info failed for %s@%s: %s", stock_code, target_date, e)
+            return None
+
     # ------------------------------------------------------------------ #
     # 통합 종목 정보 (Gemini Stage4 입력용)
     # ------------------------------------------------------------------ #
