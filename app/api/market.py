@@ -66,14 +66,33 @@ def _user_account(user: User, db: Session) -> BrokerAccount:
 @router.get("/stock-basic/{stock_code}")
 def get_stock_basic(
     stock_code: str,
+    country: str = Query("KR", description="KR 또는 US"),
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    """종목코드로 종목명/시장/섹터 조회 (미지 종목 등록 시 자동완성용)."""
+    """종목코드로 종목명/시장/섹터 조회."""
+    if country.upper() == "US":
+        from app.models.stock_master import StockMaster
+        row = db.scalar(
+            select(StockMaster).where(
+                StockMaster.stock_code == stock_code.upper(),
+                StockMaster.country == "US",
+            )
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="종목 정보를 찾을 수 없습니다.")
+        return {
+            "stock_code": row.stock_code,
+            "stock_name": row.stock_name,
+            "market": row.market,
+            "sector": row.sector,
+            "country": "US",
+        }
+
     info = get_kis_client(db).get_stock_basic_info(stock_code)
     if not info:
         raise HTTPException(status_code=404, detail="종목 정보를 찾을 수 없습니다.")
-    return info
+    return {**info, "country": "KR"}
 
 
 # ------------------------------------------------------------------ #
