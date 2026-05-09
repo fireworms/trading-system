@@ -446,16 +446,24 @@ class KISClient:
             if not bars:
                 return None
 
-            target_str = str(target_date)
-            hist_bars = [b for b in bars if b.date <= target_str]
+            # OHLCV date 형식은 "YYYYMMDD", target_date를 같은 형식으로 변환
+            from datetime import date as date_type
+            if isinstance(target_date, date_type):
+                target_str = target_date.strftime("%Y%m%d")
+            else:
+                target_str = str(target_date).replace("-", "")
+
+            # bars는 최신순 정렬 → 오래된 순으로 뒤집기
+            sorted_bars = sorted(bars, key=lambda b: b.date)
+            hist_bars = [b for b in sorted_bars if b.date <= target_str]
             if not hist_bars:
                 return None
 
-            target_bar = hist_bars[-1]
+            target_bar = hist_bars[-1]   # target_date에 가장 가까운 영업일
             rsi = self._compute_rsi(hist_bars)
             mas = self._compute_mas(hist_bars)
             avg_volume = int(sum(b.volume for b in hist_bars[-20:]) / min(20, len(hist_bars)))
-            recent = hist_bars[-5:]
+            recent = hist_bars[-5:]      # 가장 최근 5개
 
             return {
                 "stock_code":      stock_code,
