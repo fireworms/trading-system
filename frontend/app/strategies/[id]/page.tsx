@@ -208,8 +208,44 @@ export default function StrategyDetailPage() {
         )}
 
         {/* ── 백테스트 탭 ──────────────────────────────────── */}
-        {tab === "backtest" && (
+        {tab === "backtest" && (() => {
+          // 이력 집계
+          const totalRuns    = btHistory.length;
+          const totalPicks   = btHistory.reduce((s, r) => s + r.verified, 0);
+          const totalSuccess = btHistory.reduce((s, r) => s + r.success, 0);
+          const winRate      = totalPicks > 0 ? totalSuccess / totalPicks : null;
+          const pnlList      = btHistory.filter(r => r.avg_pnl != null).map(r => r.avg_pnl!);
+          const avgPnl       = pnlList.length > 0 ? pnlList.reduce((a, b) => a + b, 0) / pnlList.length : null;
+          const failRate     = winRate != null ? 1 - winRate : null;
+          const ev           = winRate != null && avgPnl != null ? winRate * avgPnl + (failRate ?? 0) * (avgPnl < 0 ? avgPnl : -avgPnl) : null;
+
+          return (
           <div className="flex flex-col gap-6">
+
+            {/* 백테스트 종합 요약 */}
+            {totalRuns > 0 && (
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                <StatCard label="총 실행" value={totalRuns} sub="회" />
+                <StatCard
+                  label="승률"
+                  value={winRate != null ? `${(winRate * 100).toFixed(1)}%` : "-"}
+                  sub={totalPicks > 0 ? `${totalSuccess}성공 ${totalPicks - totalSuccess}실패` : "검증 대기 중"}
+                  color={winRate != null ? (winRate >= 0.3 ? "green" : "red") : "gray"}
+                />
+                <StatCard
+                  label="평균 수익률"
+                  value={avgPnl != null ? `${avgPnl.toFixed(2)}%` : "-"}
+                  sub="검증 완료 기준"
+                  color={avgPnl != null ? (avgPnl >= 0 ? "green" : "red") : "gray"}
+                />
+                <StatCard
+                  label="기댓값"
+                  value={ev != null ? `${ev.toFixed(2)}%` : "-"}
+                  sub={`검증 ${totalPicks}건`}
+                  color={ev != null ? (ev >= 0 ? "green" : "red") : "gray"}
+                />
+              </div>
+            )}
 
             {/* 실행 패널 */}
             <div className="bg-gray-800 rounded-2xl p-6">
@@ -369,7 +405,8 @@ export default function StrategyDetailPage() {
             </div>
 
           </div>
-        )}
+          );
+        })()}
       </div>
     </div>
   );

@@ -51,13 +51,17 @@ def get_backtest_results(
         .order_by(RecommendationRun.run_date.desc())
         .all()
     )
-    return [
-        {
-            "run_id": str(r.run_id),
+    result = []
+    for r in runs:
+        verified = [rec for rec in r.recommendations if rec.verification]
+        success  = [rec for rec in verified if rec.verification.result and rec.verification.result.value == "SUCCESS"]
+        pnls     = [float(rec.verification.pnl_pct) for rec in verified if rec.verification.pnl_pct is not None]
+        result.append({
+            "run_id":   str(r.run_id),
             "run_date": str(r.run_date),
-            "picks": len(r.recommendations),
-            "verified": sum(1 for rec in r.recommendations if rec.verification),
-            "success": sum(1 for rec in r.recommendations if rec.verification and rec.verification.result and rec.verification.result.value == "SUCCESS"),
-        }
-        for r in runs
-    ]
+            "picks":    len(r.recommendations),
+            "verified": len(verified),
+            "success":  len(success),
+            "avg_pnl":  round(sum(pnls) / len(pnls), 4) if pnls else None,
+        })
+    return result

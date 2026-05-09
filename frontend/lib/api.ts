@@ -209,6 +209,7 @@ export interface BacktestRunSummary {
   picks: number;
   verified: number;
   success: number;
+  avg_pnl: number | null;
 }
 
 // ------------------------------------------------------------------ //
