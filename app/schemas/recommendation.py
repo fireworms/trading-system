@@ -40,6 +40,10 @@ class RecommendationRunOut(BaseModel):
     strategy_id: uuid.UUID
     run_date: date
     ai_model_used: str | None
+    stage1_model: str | None
+    stage2_model: str | None
+    stage3_model: str | None
+    stage4_model: str | None
     prompt_version: str | None
     recommendations: list[RecommendationOut] = []
 

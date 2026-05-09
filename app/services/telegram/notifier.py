@@ -115,15 +115,22 @@ _notifier: TelegramNotifier | None = None
 
 
 def get_notifier() -> TelegramNotifier | None:
-    """BOT_TOKEN 설정 시 TelegramNotifier 반환, 미설정 시 None."""
+    """DB app_config에서 telegram_bot_token 조회 후 TelegramNotifier 반환."""
     global _notifier
     if _notifier is not None:
         return _notifier
 
-    from app.core.config import get_settings
-    token = get_settings().telegram_bot_token
-    if token:
-        _notifier = TelegramNotifier(token)
+    try:
+        from app.core.database import SessionLocal
+        from app.models.app_config import AppConfig
+        from app.core.security import decrypt_secret
+        with SessionLocal() as db:
+            row = db.get(AppConfig, "telegram_bot_token")
+            if row and row.value_enc:
+                token = decrypt_secret(row.value_enc) if row.is_encrypted else row.value_enc
+                _notifier = TelegramNotifier(token)
+    except Exception as e:
+        logger.warning("Failed to load telegram token from DB: %s", e)
     return _notifier
 
 

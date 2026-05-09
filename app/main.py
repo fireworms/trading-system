@@ -3,6 +3,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import users, strategies, recommendations, positions, market, admin, prompt_versions, stock_master
+import app.models.app_config  # noqa: F401 — Alembic autogenerate 인식용
 
 
 @asynccontextmanager

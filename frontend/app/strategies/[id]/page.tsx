@@ -131,10 +131,25 @@ export default function StrategyDetailPage() {
                   <h3 className="font-semibold">
                     {currentRun.run_date} 추천 종목
                   </h3>
-                  <span className="text-xs text-gray-500">
-                    {currentRun.prompt_version} · {currentRun.ai_model_used}
-                  </span>
+                  <span className="text-xs text-gray-500">{currentRun.prompt_version}</span>
                 </div>
+
+                {/* Stage별 모델 표시 */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
+                  {(["stage1_model", "stage2_model", "stage3_model", "stage4_model"] as const).map((key, i) => {
+                    const labels = ["매크로", "역사분석", "산업분석", "종목선정"];
+                    const model = currentRun[key];
+                    return (
+                      <div key={key} className="bg-gray-900 rounded-lg px-3 py-2">
+                        <div className="text-xs text-gray-500 mb-0.5">S{i + 1} {labels[i]}</div>
+                        <div className="text-xs text-gray-300 truncate" title={model ?? "-"}>
+                          {model ? model.replace("gemini-", "").replace("-preview", "★") : <span className="text-gray-600">-</span>}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
                 <RecommendationTable recommendations={currentRun.recommendations} />
               </>
             ) : (

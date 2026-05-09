@@ -31,6 +31,10 @@ class RecommendationRun(Base):
     )
     run_date: Mapped[date] = mapped_column(Date, nullable=False)
     ai_model_used: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    stage1_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    stage2_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    stage3_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    stage4_model: Mapped[str | None] = mapped_column(String(100), nullable=True)
     prompt_version: Mapped[str | None] = mapped_column(String(20), nullable=True)
     raw_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 

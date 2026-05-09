@@ -115,6 +115,10 @@ export interface RecommendationRun {
   strategy_id: string;
   run_date: string;
   ai_model_used: string | null;
+  stage1_model: string | null;
+  stage2_model: string | null;
+  stage3_model: string | null;
+  stage4_model: string | null;
   prompt_version: string | null;
   recommendations: Recommendation[];
 }

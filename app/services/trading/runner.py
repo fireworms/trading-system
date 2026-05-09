@@ -169,6 +169,10 @@ class StrategyRunner:
             strategy_id=strategy.strategy_id,
             run_date=run_date,
             ai_model_used=picks_result.model_used or "gemini-3-flash-preview",
+            stage1_model=macro.model_used or None,
+            stage2_model=historical.model_used or None,
+            stage3_model=industry.model_used or None,
+            stage4_model=picks_result.model_used or None,
             prompt_version="v1.0",
             raw_response={
                 "macro": macro.raw,
