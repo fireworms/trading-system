@@ -72,3 +72,78 @@ def get_backtest_results(
             "random_avg_pnl":  random_avg,
         })
     return result
+
+
+@router.get("/strategies/{strategy_id}/summary")
+def get_backtest_summary(
+    strategy_id: uuid.UUID,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """백테스트 종합 통계 + 월별 추이 반환."""
+    from collections import defaultdict
+
+    runs = (
+        db.query(RecommendationRun)
+        .filter(
+            RecommendationRun.strategy_id == strategy_id,
+            RecommendationRun.is_backtest == True,
+        )
+        .order_by(RecommendationRun.run_date)
+        .all()
+    )
+
+    all_ai_pnls: list[float] = []
+    all_rand_avgs: list[float] = []
+    monthly: dict[str, dict] = defaultdict(lambda: {"ai": [], "rand": [], "success": 0})
+
+    for r in runs:
+        verified     = [rec for rec in r.recommendations if rec.verification]
+        success_recs = [rec for rec in verified if rec.verification.result and rec.verification.result.value == "SUCCESS"]
+        ai_pnls      = [float(rec.verification.pnl_pct) for rec in verified if rec.verification.pnl_pct is not None]
+        rand_avg     = (r.raw_response or {}).get("random_avg_pnl")
+
+        all_ai_pnls.extend(ai_pnls)
+        if rand_avg is not None:
+            all_rand_avgs.append(rand_avg)
+
+        ym = r.run_date.strftime("%Y-%m")
+        monthly[ym]["ai"].extend(ai_pnls)
+        monthly[ym]["success"] += len(success_recs)
+        if rand_avg is not None:
+            monthly[ym]["rand"].append(rand_avg)
+
+    def _avg(lst: list[float]) -> float | None:
+        return round(sum(lst) / len(lst), 4) if lst else None
+
+    ai_success = [p for p in all_ai_pnls if p > 0]
+    ai_fail    = [p for p in all_ai_pnls if p <= 0]
+    ai_avg     = _avg(all_ai_pnls)
+    rand_avg_all = _avg(all_rand_avgs)
+
+    monthly_list = []
+    for ym in sorted(monthly):
+        d = monthly[ym]
+        ai_a = _avg(d["ai"])
+        ra   = _avg(d["rand"])
+        total = len(d["ai"])
+        monthly_list.append({
+            "month":       ym,
+            "picks":       total,
+            "win_rate":    round(d["success"] / total, 4) if total else None,
+            "ai_avg_pnl":  ai_a,
+            "rand_avg_pnl": ra,
+            "advantage":   round(ai_a - ra, 4) if ai_a is not None and ra is not None else None,
+        })
+
+    return {
+        "total_runs":      len(runs),
+        "total_picks":     len(all_ai_pnls),
+        "win_rate":        round(len(ai_success) / len(all_ai_pnls), 4) if all_ai_pnls else None,
+        "ai_avg_pnl":      ai_avg,
+        "ai_success_avg":  _avg(ai_success),
+        "ai_fail_avg":     _avg(ai_fail),
+        "rand_avg_pnl":    rand_avg_all,
+        "advantage":       round(ai_avg - rand_avg_all, 4) if ai_avg is not None and rand_avg_all is not None else None,
+        "monthly":         monthly_list,
+    }

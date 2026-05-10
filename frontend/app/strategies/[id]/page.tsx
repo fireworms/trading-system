@@ -4,8 +4,11 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
-  api, RecommendationRun, StrategyStats, BacktestResult, BacktestRunSummary, getToken,
+  api, RecommendationRun, StrategyStats, BacktestResult, BacktestRunSummary, BacktestOverallSummary, getToken,
 } from "@/lib/api";
+import {
+  ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine, ResponsiveContainer,
+} from "recharts";
 import RecommendationTable from "@/components/RecommendationTable";
 import WinRateChart from "@/components/WinRateChart";
 import StatCard from "@/components/StatCard";
@@ -29,6 +32,7 @@ export default function StrategyDetailPage() {
   const [btRunning, setBtRunning]     = useState(false);
   const [btResult, setBtResult]       = useState<BacktestResult | null>(null);
   const [btHistory, setBtHistory]     = useState<BacktestRunSummary[]>([]);
+  const [btSummary, setBtSummary]     = useState<BacktestOverallSummary | null>(null);
   const [btError, setBtError]         = useState("");
   const [btHistoryLoading, setBtHistoryLoading] = useState(false);
 
@@ -58,8 +62,12 @@ export default function StrategyDetailPage() {
   async function loadBtHistory() {
     setBtHistoryLoading(true);
     try {
-      const data = await api.admin.getBacktestResults(id);
-      setBtHistory(data);
+      const [histData, summaryData] = await Promise.all([
+        api.admin.getBacktestResults(id),
+        api.admin.getBacktestSummary(id).catch(() => null),
+      ]);
+      setBtHistory(histData);
+      setBtSummary(summaryData);
     } catch {
       /* 권한 없으면 조용히 */
     } finally {
@@ -225,54 +233,89 @@ export default function StrategyDetailPage() {
 
         {/* ── 백테스트 탭 ──────────────────────────────────── */}
         {tab === "backtest" && (() => {
-          // 이력 집계
-          const totalRuns    = btHistory.length;
-          const totalPicks   = btHistory.reduce((s, r) => s + r.verified, 0);
-          const totalSuccess = btHistory.reduce((s, r) => s + r.success, 0);
-          const winRate      = totalPicks > 0 ? totalSuccess / totalPicks : null;
-          const avg = (arr: (number|null|undefined)[]) => { const v = arr.filter(x => x != null) as number[]; return v.length ? v.reduce((a,b)=>a+b,0)/v.length : null; };
-          const avgPnl        = avg(btHistory.map(r => r.avg_pnl));
-          const successAvgPnl = avg(btHistory.map(r => r.success_avg_pnl));
-          const failAvgPnl    = avg(btHistory.map(r => r.fail_avg_pnl));
-          const randomAvgPnl  = avg(btHistory.map(r => r.random_avg_pnl));
-          const aiVsRandom    = avgPnl != null && randomAvgPnl != null ? avgPnl - randomAvgPnl : null;
+          const s = btSummary;
+          const fmt = (v: number | null | undefined, digits = 2) =>
+            v != null ? `${v >= 0 ? "+" : ""}${v.toFixed(digits)}%` : "-";
 
           return (
           <div className="flex flex-col gap-6">
 
             {/* 백테스트 종합 요약 */}
-            {totalRuns > 0 && (
+            {s && s.total_runs > 0 && (
               <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
-                <StatCard label="총 실행" value={totalRuns} sub="회" />
+                <StatCard label="총 실행" value={s.total_runs} sub={`${s.total_picks}픽`} />
                 <StatCard
                   label="목표 달성률"
-                  value={winRate != null ? `${(winRate * 100).toFixed(1)}%` : "-"}
-                  sub={`${totalSuccess}성공 ${totalPicks - totalSuccess}실패`}
-                  color={winRate != null ? (winRate >= 0.3 ? "green" : "red") : "gray"}
+                  value={s.win_rate != null ? `${(s.win_rate * 100).toFixed(1)}%` : "-"}
+                  sub={s.win_rate != null ? `${Math.round(s.win_rate * s.total_picks)}성공` : ""}
+                  color={s.win_rate != null ? (s.win_rate >= 0.4 ? "green" : "red") : "gray"}
                 />
                 <StatCard
                   label="AI 평균수익"
-                  value={avgPnl != null ? `${avgPnl >= 0 ? "+" : ""}${avgPnl.toFixed(2)}%` : "-"}
-                  color={avgPnl != null ? (avgPnl >= 0 ? "green" : "red") : "gray"}
+                  value={fmt(s.ai_avg_pnl)}
+                  color={s.ai_avg_pnl != null ? (s.ai_avg_pnl >= 0 ? "green" : "red") : "gray"}
                 />
                 <StatCard
                   label="랜덤 평균수익"
-                  value={randomAvgPnl != null ? `${randomAvgPnl >= 0 ? "+" : ""}${randomAvgPnl.toFixed(2)}%` : "-"}
+                  value={fmt(s.rand_avg_pnl)}
                   sub="시장 효과"
-                  color={randomAvgPnl != null ? (randomAvgPnl >= 0 ? "green" : "red") : "gray"}
+                  color={s.rand_avg_pnl != null ? (s.rand_avg_pnl >= 0 ? "green" : "red") : "gray"}
                 />
                 <StatCard
                   label="AI 우위"
-                  value={aiVsRandom != null ? `${aiVsRandom >= 0 ? "+" : ""}${aiVsRandom.toFixed(2)}%p` : "-"}
+                  value={s.advantage != null ? `${s.advantage >= 0 ? "+" : ""}${s.advantage.toFixed(2)}%p` : "-"}
                   sub="AI - 랜덤"
-                  color={aiVsRandom != null ? (aiVsRandom >= 0 ? "green" : "red") : "gray"}
+                  color={s.advantage != null ? (s.advantage >= 0 ? "green" : "red") : "gray"}
                 />
                 <StatCard
                   label="성공/실패 평균"
-                  value={successAvgPnl != null ? `${successAvgPnl >= 0 ? "+" : ""}${successAvgPnl.toFixed(1)}%` : "-"}
-                  sub={failAvgPnl != null ? `실패 ${failAvgPnl >= 0 ? "+" : ""}${failAvgPnl.toFixed(1)}%` : "실패 데이터 없음"}
-                  color={successAvgPnl != null ? "green" : "gray"}
+                  value={fmt(s.ai_success_avg, 1)}
+                  sub={s.ai_fail_avg != null ? `실패 ${fmt(s.ai_fail_avg, 1)}` : "실패 데이터 없음"}
+                  color={s.ai_success_avg != null ? "green" : "gray"}
                 />
+              </div>
+            )}
+
+            {/* 월별 AI vs 랜덤 차트 */}
+            {s && s.monthly.length > 0 && (
+              <div className="bg-gray-800 rounded-2xl p-6">
+                <h3 className="font-semibold mb-1">월별 성과 추이</h3>
+                <p className="text-xs text-gray-500 mb-4">AI 평균수익 vs 랜덤 대조군 (막대: 월별 AI 우위)</p>
+                <ResponsiveContainer width="100%" height={260}>
+                  <ComposedChart data={s.monthly} margin={{ top: 5, right: 20, left: 0, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+                    <XAxis dataKey="month" tick={{ fill: "#9ca3af", fontSize: 12 }} />
+                    <YAxis
+                      yAxisId="pnl"
+                      tickFormatter={(v) => `${v}%`}
+                      tick={{ fill: "#9ca3af", fontSize: 11 }}
+                      width={48}
+                    />
+                    <YAxis
+                      yAxisId="wr"
+                      orientation="right"
+                      tickFormatter={(v) => `${(v * 100).toFixed(0)}%`}
+                      tick={{ fill: "#6b7280", fontSize: 11 }}
+                      width={40}
+                      domain={[0, 1]}
+                    />
+                    <Tooltip
+                      contentStyle={{ background: "#1f2937", border: "none", borderRadius: 8 }}
+                      labelStyle={{ color: "#e5e7eb" }}
+                      formatter={(value, name) => {
+                        const v = Number(value);
+                        if (name === "승률") return [`${(v * 100).toFixed(1)}%`, name];
+                        return [`${v >= 0 ? "+" : ""}${v.toFixed(2)}%`, String(name)];
+                      }}
+                    />
+                    <Legend wrapperStyle={{ fontSize: 12, color: "#9ca3af" }} />
+                    <ReferenceLine yAxisId="pnl" y={0} stroke="#4b5563" strokeDasharray="4 2" />
+                    <Bar yAxisId="pnl" dataKey="advantage" name="AI 우위" fill="#3b82f6" opacity={0.35} radius={[3, 3, 0, 0]} />
+                    <Line yAxisId="pnl" type="monotone" dataKey="ai_avg_pnl" name="AI 수익" stroke="#60a5fa" strokeWidth={2} dot={{ r: 4 }} />
+                    <Line yAxisId="pnl" type="monotone" dataKey="rand_avg_pnl" name="랜덤 수익" stroke="#6b7280" strokeWidth={2} strokeDasharray="5 3" dot={{ r: 4 }} />
+                    <Line yAxisId="wr" type="monotone" dataKey="win_rate" name="승률" stroke="#34d399" strokeWidth={1.5} dot={false} />
+                  </ComposedChart>
+                </ResponsiveContainer>
               </div>
             )}
 

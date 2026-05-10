@@ -224,6 +224,27 @@ export interface BacktestRunSummary {
   random_avg_pnl: number | null;
 }
 
+export interface BacktestMonthlyRow {
+  month: string;
+  picks: number;
+  win_rate: number | null;
+  ai_avg_pnl: number | null;
+  rand_avg_pnl: number | null;
+  advantage: number | null;
+}
+
+export interface BacktestOverallSummary {
+  total_runs: number;
+  total_picks: number;
+  win_rate: number | null;
+  ai_avg_pnl: number | null;
+  ai_success_avg: number | null;
+  ai_fail_avg: number | null;
+  rand_avg_pnl: number | null;
+  advantage: number | null;
+  monthly: BacktestMonthlyRow[];
+}
+
 // ------------------------------------------------------------------ //
 // API
 // ------------------------------------------------------------------ //
@@ -334,5 +355,7 @@ export const api = {
       }),
     getBacktestResults: (id: string) =>
       authFetch<BacktestRunSummary[]>(`/admin/backtest/strategies/${id}/results`),
+    getBacktestSummary: (id: string) =>
+      authFetch<BacktestOverallSummary>(`/admin/backtest/strategies/${id}/summary`),
   },
 };
