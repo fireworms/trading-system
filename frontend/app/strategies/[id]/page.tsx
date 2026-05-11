@@ -4,7 +4,8 @@ import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
-  api, RecommendationRun, StrategyStats, BacktestResult, BacktestRunSummary, BacktestOverallSummary, getToken,
+  api, RecommendationRun, StrategyStats, BacktestResult, BacktestRunSummary, BacktestOverallSummary,
+  Subscription, BrokerAccount, getToken,
 } from "@/lib/api";
 import {
   ComposedChart, Line, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ReferenceLine, ResponsiveContainer,
@@ -27,6 +28,18 @@ export default function StrategyDetailPage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [loading, setLoading]   = useState(true);
 
+  // ── 구독 상태 ───────────────────────────────────────────
+  const [subscription, setSubscription]   = useState<Subscription | null>(null);
+  const [accounts, setAccounts]           = useState<BrokerAccount[]>([]);
+  const [showSubForm, setShowSubForm]     = useState(false);
+  const [subAccountId, setSubAccountId]  = useState("");
+  const [subAmount, setSubAmount]         = useState("100000");
+  const [subAutoTrade, setSubAutoTrade]   = useState(false);
+  const [subLoading, setSubLoading]       = useState(false);
+  const [subError, setSubError]           = useState("");
+  const [editingAmount, setEditingAmount] = useState(false);
+  const [editAmount, setEditAmount]       = useState("");
+
   // ── 백테스트 탭 상태 ────────────────────────────────────
   const [btDate, setBtDate]           = useState("");
   const [btRunning, setBtRunning]     = useState(false);
@@ -39,11 +52,61 @@ export default function StrategyDetailPage() {
   useEffect(() => {
     if (!getToken()) { router.push("/login"); return; }
     loadLive();
+    loadSubscription();
   }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (tab === "backtest") loadBtHistory();
   }, [tab]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadSubscription() {
+    try {
+      const [me, subs] = await Promise.all([api.auth.me(), api.strategies.mySubscriptions()]);
+      const mine = subs.find((s) => s.strategy_id === id) ?? null;
+      setSubscription(mine);
+      const accs = await api.users.listBrokerAccounts(me.user_id);
+      setAccounts(accs.filter((a) => a.is_active));
+      if (accs.length > 0 && !subAccountId) setSubAccountId(accs[0].account_id);
+    } catch { /* 조용히 */ }
+  }
+
+  async function handleSubscribe() {
+    if (!subAccountId) { setSubError("계좌를 선택하세요"); return; }
+    const amount = parseInt(subAmount.replace(/,/g, ""), 10);
+    if (!amount || amount < 10000) { setSubError("최소 10,000원 이상 입력하세요"); return; }
+    setSubLoading(true); setSubError("");
+    try {
+      const sub = await api.strategies.subscribe({
+        strategy_id: id, account_id: subAccountId,
+        invest_amount_per_pick: amount, is_auto_trade: subAutoTrade,
+      });
+      setSubscription(sub);
+      setShowSubForm(false);
+    } catch (e: unknown) {
+      setSubError(e instanceof Error ? e.message : "구독 실패");
+    } finally { setSubLoading(false); }
+  }
+
+  async function handleUnsubscribe() {
+    if (!subscription) return;
+    if (!confirm("구독을 해지하시겠습니까?\n기존 보유 포지션은 원래 전략 조건대로 계속 관리됩니다.")) return;
+    try {
+      await api.strategies.unsubscribe(subscription.id);
+      setSubscription(null);
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : "해지 실패");
+    }
+  }
+
+  async function handleToggleAutoTrade() {
+    if (!subscription) return;
+    try {
+      const updated = await api.strategies.toggleAutoTrade(subscription.id);
+      setSubscription(updated);
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : "변경 실패");
+    }
+  }
 
   async function loadLive() {
     try {
@@ -110,6 +173,131 @@ export default function StrategyDetailPage() {
           <Link href="/" className="text-gray-400 hover:text-white text-sm">← 대시보드</Link>
           <span className="text-gray-600">/</span>
           <h1 className="text-xl font-bold">전략 상세</h1>
+        </div>
+
+        {/* 구독 카드 */}
+        <div className="bg-gray-800 rounded-2xl p-4 mb-6">
+          {subscription ? (
+            <div className="flex flex-wrap items-center gap-4">
+              <span className="text-xs text-green-400 font-semibold bg-green-900/40 px-2 py-1 rounded-full">구독중</span>
+              {editingAmount ? (
+                <div className="flex items-center gap-2">
+                  <input
+                    type="number"
+                    value={editAmount}
+                    onChange={(e) => setEditAmount(e.target.value)}
+                    min={10000}
+                    step={10000}
+                    className="bg-gray-700 rounded-lg px-2 py-1 text-sm w-32 outline-none focus:ring-2 focus:ring-blue-500"
+                    autoFocus
+                  />
+                  <span className="text-sm text-gray-400">원</span>
+                  <button
+                    onClick={async () => {
+                      const amount = parseInt(editAmount.replace(/,/g, ""), 10);
+                      if (!amount || amount < 10000) return;
+                      const updated = await api.strategies.updateSubscription(subscription.id, { invest_amount_per_pick: amount });
+                      setSubscription(updated);
+                      setEditingAmount(false);
+                    }}
+                    className="text-xs bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded"
+                  >확인</button>
+                  <button onClick={() => setEditingAmount(false)} className="text-xs text-gray-400 hover:text-white">취소</button>
+                </div>
+              ) : (
+                <button
+                  onClick={() => { setEditAmount(String(Number(subscription.invest_amount_per_pick))); setEditingAmount(true); }}
+                  className="text-sm text-gray-300 hover:text-white group"
+                >
+                  종목당 <span className="text-white font-medium">{Number(subscription.invest_amount_per_pick).toLocaleString()}원</span>
+                  <span className="text-gray-500 text-xs ml-1 group-hover:text-gray-300">✎</span>
+                </button>
+              )}
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-400">자동매매</span>
+                <button
+                  onClick={handleToggleAutoTrade}
+                  className={`relative w-11 h-6 rounded-full transition-colors ${subscription.is_auto_trade ? "bg-blue-600" : "bg-gray-600"}`}
+                >
+                  <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${subscription.is_auto_trade ? "translate-x-5" : "translate-x-0"}`} />
+                </button>
+                <span className={`text-xs font-medium ${subscription.is_auto_trade ? "text-blue-400" : "text-gray-500"}`}>
+                  {subscription.is_auto_trade ? "ON" : "OFF"}
+                </span>
+              </div>
+              <button
+                onClick={handleUnsubscribe}
+                className="ml-auto text-xs text-red-400 hover:text-red-300 border border-red-800 hover:border-red-600 px-3 py-1.5 rounded-lg transition-colors"
+              >
+                구독 해지
+              </button>
+            </div>
+          ) : showSubForm ? (
+            <div className="flex flex-col gap-3">
+              <p className="text-sm font-medium text-gray-300">전략 구독</p>
+              <div className="flex flex-wrap gap-3 items-end">
+                <div>
+                  <label className="text-xs text-gray-400 mb-1 block">계좌</label>
+                  <select
+                    value={subAccountId}
+                    onChange={(e) => setSubAccountId(e.target.value)}
+                    className="bg-gray-700 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 min-w-[180px]"
+                  >
+                    {accounts.length === 0 && <option value="">계좌 없음</option>}
+                    {accounts.map((a) => (
+                      <option key={a.account_id} value={a.account_id}>
+                        {a.broker} {a.account_no} ({a.account_type})
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-gray-400 mb-1 block">종목당 투자금 (원)</label>
+                  <input
+                    type="number"
+                    value={subAmount}
+                    onChange={(e) => setSubAmount(e.target.value)}
+                    min={10000}
+                    step={10000}
+                    className="bg-gray-700 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500 w-36"
+                  />
+                </div>
+                <div className="flex items-center gap-2 pb-1.5">
+                  <span className="text-sm text-gray-400">자동매매</span>
+                  <button
+                    onClick={() => setSubAutoTrade(!subAutoTrade)}
+                    className={`relative w-11 h-6 rounded-full transition-colors ${subAutoTrade ? "bg-blue-600" : "bg-gray-600"}`}
+                  >
+                    <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${subAutoTrade ? "translate-x-5" : "translate-x-0"}`} />
+                  </button>
+                </div>
+                <button
+                  onClick={handleSubscribe}
+                  disabled={subLoading || accounts.length === 0}
+                  className="bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg px-4 py-2 text-sm font-medium"
+                >
+                  {subLoading ? "처리 중..." : "구독 확인"}
+                </button>
+                <button
+                  onClick={() => { setShowSubForm(false); setSubError(""); }}
+                  className="text-gray-400 hover:text-white text-sm px-3 py-2"
+                >
+                  취소
+                </button>
+              </div>
+              {subError && <p className="text-red-400 text-xs">{subError}</p>}
+            </div>
+          ) : (
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-gray-400">이 전략을 구독하면 추천 알림과 자동매매를 사용할 수 있습니다.</p>
+              <button
+                onClick={() => setShowSubForm(true)}
+                className="bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-4 py-2 text-sm font-medium whitespace-nowrap ml-4"
+              >
+                구독하기
+              </button>
+            </div>
+          )}
         </div>
 
         {/* 탭 */}

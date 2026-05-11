@@ -54,6 +54,12 @@ class StrategyOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class UserStrategyUpdate(BaseModel):
+    invest_amount_per_pick: Decimal | None = Field(default=None, ge=Decimal("10000"))
+    is_auto_trade: bool | None = None
+    account_id: uuid.UUID | None = None
+
+
 class UserStrategyCreate(BaseModel):
     strategy_id: uuid.UUID
     account_id: uuid.UUID

@@ -12,8 +12,7 @@ const links = [
 ];
 
 const adminLinks = [
-  { href: "/admin/users",  label: "유저 관리" },
-  { href: "/admin/stocks", label: "종목 풀" },
+  { href: "/admin/users", label: "유저 관리" },
 ];
 
 export default function Nav() {

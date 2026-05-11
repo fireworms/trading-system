@@ -4,7 +4,7 @@
 - 매도: 목표가/손절가/만료일 체크 후 시장가 매도
 """
 import logging
-from datetime import date, datetime, timezone
+from datetime import date, timedelta
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
@@ -12,10 +12,13 @@ from sqlalchemy import select
 
 from app.models.position import Position, PositionStatus
 from app.models.strategy import UserStrategy
-from app.models.recommendation import RecommendationRun, Recommendation
+from app.models.recommendation import RecommendationRun
 from app.services.kis.client import get_kis_client_from_account
 
 logger = logging.getLogger(__name__)
+
+MAX_PER_SECTOR = 2      # 섹터당 최대 매수 종목 수
+RSI_OVERBOUGHT  = 70    # 이 이상이면 과매수로 스킵
 
 
 class TradeExecutor:
@@ -29,16 +32,35 @@ class TradeExecutor:
     def execute_buys_for_run(self, sub: UserStrategy, run: RecommendationRun) -> None:
         """
         추천 run의 종목들을 구독자 계좌로 시장가 매수.
-        is_auto_trade 반드시 확인.
+        - rank 오름차순 처리
+        - 잔고 부족 시 중단
+        - RSI 과매수 / 목표가 초과 / 섹터 집중 종목 스킵
         """
         if not sub.is_auto_trade:
             logger.warning("Auto trade is OFF for sub=%s, skipping", sub.id)
             return
 
+        # 뉴스 감시에 의한 자동매매 정지 체크
+        from app.core.config_store import get_config
+        if get_config(self.db, "news_auto_trade_paused", "false") == "true":
+            reason = get_config(self.db, "news_pause_reason", "")
+            logger.warning("Auto trade paused by news watch: %s", reason)
+            return
+
         client = get_kis_client_from_account(sub.account)
         strategy = sub.strategy
 
-        for rec in run.recommendations:
+        sorted_recs = sorted(run.recommendations, key=lambda r: r.rank if r.rank is not None else 999)
+
+        try:
+            buyable_cash = client.get_buyable_cash()
+        except Exception as e:
+            logger.error("Failed to get buyable cash: %s", e)
+            return
+
+        sector_counts: dict[str, int] = {}
+
+        for rec in sorted_recs:
             # 확률 필터
             if rec.ai_probability is None or rec.ai_probability < strategy.min_probability:
                 logger.info("Skip %s: probability %.1f < min %.1f",
@@ -56,16 +78,47 @@ class TradeExecutor:
                 continue
 
             try:
-                current_price = client.get_current_price(rec.stock_code)
+                stock_info = client.get_stock_info(rec.stock_code)
+                current_price = Decimal(str(stock_info["current_price"]))
+
+                # 수량
                 quantity = int(sub.invest_amount_per_pick // current_price)
                 if quantity <= 0:
                     logger.warning("invest_amount too small for %s price=%s", rec.stock_code, current_price)
                     continue
 
-                order_result = client.buy_market_order(rec.stock_code, quantity)
-                logger.info("Buy order: %s x%d, result=%s", rec.stock_code, quantity, order_result)
+                # 현재가가 AI 목표가 이상이면 스킵
+                if rec.target_price and current_price >= rec.target_price:
+                    logger.info("Skip %s: current_price=%s >= target_price=%s",
+                                rec.stock_code, current_price, rec.target_price)
+                    continue
 
-                position = Position(
+                # RSI 과매수 스킵
+                rsi = stock_info.get("rsi")
+                if rsi and float(rsi) > RSI_OVERBOUGHT:
+                    logger.info("Skip %s: RSI=%.1f (overbought)", rec.stock_code, float(rsi))
+                    continue
+
+                # 섹터 집중도 제한
+                sector = stock_info.get("sector") or "unknown"
+                if sector_counts.get(sector, 0) >= MAX_PER_SECTOR:
+                    logger.info("Skip %s: sector '%s' already has %d positions",
+                                rec.stock_code, sector, MAX_PER_SECTOR)
+                    continue
+
+                # 잔고 부족 시 중단
+                order_amount = current_price * quantity
+                if buyable_cash < order_amount:
+                    logger.info("Stop buying: buyable_cash=%s < order_amount=%s for %s",
+                                buyable_cash, order_amount, rec.stock_code)
+                    break
+
+                client.buy_market_order(rec.stock_code, quantity)
+                buyable_cash -= order_amount
+                sector_counts[sector] = sector_counts.get(sector, 0) + 1
+                logger.info("Buy order: %s x%d (sector=%s)", rec.stock_code, quantity, sector)
+
+                self.db.add(Position(
                     user_id=sub.user_id,
                     strategy_id=strategy.strategy_id,
                     rec_id=rec.rec_id,
@@ -75,8 +128,7 @@ class TradeExecutor:
                     entry_date=date.today(),
                     quantity=quantity,
                     status=PositionStatus.HOLDING,
-                )
-                self.db.add(position)
+                ))
 
             except Exception as e:
                 logger.error("Buy failed for %s: %s", rec.stock_code, e)
@@ -88,12 +140,6 @@ class TradeExecutor:
     # ------------------------------------------------------------------ #
 
     def monitor_positions(self) -> None:
-        """
-        보유 포지션 전체 체크:
-        - 목표가 도달 → TARGET_HIT 매도
-        - 손절가 도달 → STOP_LOSS 매도
-        - 보유기간 만료 → EXPIRED 매도
-        """
         positions = self.db.scalars(
             select(Position).where(Position.status == PositionStatus.HOLDING)
         ).all()
@@ -117,20 +163,37 @@ class TradeExecutor:
         today = date.today()
         hold_days_elapsed = (today - pos.entry_date).days
 
+        # peak_price 갱신
+        if pos.peak_price is None or current_price > pos.peak_price:
+            pos.peak_price = current_price
+
         # 만료 체크
         if hold_days_elapsed >= strategy.hold_days:
             self._close_position(pos, current_price, PositionStatus.EXPIRED, client)
             return
 
-        # 목표가 도달
+        # Time-based Stop: 5일 이후에도 손실 중이면 조기 청산
+        if hold_days_elapsed >= 5:
+            if current_price < pos.entry_price:
+                logger.info("Time-based stop for %s: day=%d, pnl=%.2f%%",
+                            pos.stock_code, hold_days_elapsed,
+                            float((current_price - pos.entry_price) / pos.entry_price * 100))
+                self._close_position(pos, current_price, PositionStatus.EXPIRED, client)
+                return
+
+        # 목표가 도달 (AI 분석 기준 절대 가격)
         if rec.target_price and current_price >= rec.target_price:
             self._close_position(pos, current_price, PositionStatus.TARGET_HIT, client)
             return
 
-        # 손절가 도달
-        if rec.stop_loss_price and current_price <= rec.stop_loss_price:
-            self._close_position(pos, current_price, PositionStatus.STOP_LOSS, client)
-            return
+        # 트레일링 스탑: peak 대비 -stop_loss_pct% 이탈 시 청산
+        if pos.peak_price:
+            trailing_stop = pos.peak_price * (1 - strategy.stop_loss_pct / 100)
+            if current_price <= trailing_stop:
+                logger.info("Trailing stop for %s: peak=%s current=%s stop=%s",
+                            pos.stock_code, pos.peak_price, current_price, trailing_stop)
+                self._close_position(pos, current_price, PositionStatus.STOP_LOSS, client)
+                return
 
     def _close_position(
         self,

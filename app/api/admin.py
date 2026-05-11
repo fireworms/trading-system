@@ -86,3 +86,58 @@ def scheduler_status(_: User = Depends(require_admin)):
             "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
         })
     return {"running": True, "jobs": jobs}
+
+
+# ------------------------------------------------------------------ #
+# 뉴스 감시 설정
+# ------------------------------------------------------------------ #
+
+@router.get("/news-watch/config")
+def get_news_watch_config(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    from app.core.config_store import get_config
+    interval_min = int(get_config(db, "news_check_interval_min", "40"))
+    paused       = get_config(db, "news_auto_trade_paused", "false") == "true"
+    pause_reason = get_config(db, "news_pause_reason", "")
+    last_check   = get_config(db, "news_last_check_at", "")
+    today_usage  = int(get_config(db, "news_today_usage", "0"))
+
+    market_minutes = 6 * 60 + 30  # 09:00~15:30
+    daily_checks   = max(1, market_minutes // interval_min)
+
+    return {
+        "interval_min":   interval_min,
+        "paused":         paused,
+        "pause_reason":   pause_reason,
+        "last_check_at":  last_check,
+        "today_usage":    today_usage,
+        "daily_estimate": daily_checks,
+        "rpd_limit":      20,
+    }
+
+
+@router.patch("/news-watch/config")
+def update_news_watch_config(
+    body: dict,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    from app.core.config_store import set_config
+    interval_min = int(body.get("interval_min", 40))
+    if interval_min < 30:
+        raise HTTPException(status_code=400, detail="최소 주기는 30분입니다 (RPD 한도 초과 방지)")
+    set_config(db, "news_check_interval_min", str(interval_min))
+    return {"interval_min": interval_min}
+
+
+@router.post("/news-watch/resume")
+def resume_auto_trade(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    from app.core.config_store import set_config
+    set_config(db, "news_auto_trade_paused", "false")
+    set_config(db, "news_pause_reason", "")
+    return {"message": "자동매매 재개됨"}

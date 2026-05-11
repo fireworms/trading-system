@@ -94,6 +94,43 @@ def job_verify_recommendations() -> None:
         _notify_error("추천 검증 작업 실패", str(e))
 
 
+def job_news_watch_tick() -> None:
+    """
+    10분마다 호출. 설정된 주기(news_check_interval_min)가 지났으면 뉴스 체크 실행.
+    장중(09:00~15:30 평일)에만 동작.
+    """
+    from datetime import datetime, timezone, timedelta
+    now = datetime.now()
+    # 장외 시간 제외
+    if now.weekday() >= 5:
+        return
+    if not (9 <= now.hour < 15 or (now.hour == 15 and now.minute <= 30)):
+        return
+
+    from app.core.database import SessionLocal
+    from app.core.config_store import get_config
+
+    with SessionLocal() as db:
+        interval_min = int(get_config(db, "news_check_interval_min", "40"))
+        last_check = get_config(db, "news_last_check_at", "")
+
+    if last_check:
+        try:
+            last_dt = datetime.fromisoformat(last_check)
+            if last_dt.tzinfo is None:
+                last_dt = last_dt.replace(tzinfo=timezone.utc)
+            if datetime.now(timezone.utc) - last_dt < timedelta(minutes=interval_min):
+                return
+        except Exception:
+            pass
+
+    try:
+        from app.services.news.watcher import run_news_check_and_act
+        run_news_check_and_act()
+    except Exception as e:
+        logger.error("News watch tick failed: %s", e)
+
+
 def job_update_stock_master() -> None:
     """주 1회 KIS MST 파일로 stock_master 갱신 + 지수 구성종목 캐시 갱신."""
     from app.services.stock_master.updater import update_stock_master
@@ -189,8 +226,8 @@ def start_scheduler() -> None:
         replace_existing=True,
     )
 
-    # 매일 장중 포지션 모니터링 (09:05, 12:00, 15:10)
-    for hour, minute in [(9, 5), (12, 0), (15, 10)]:
+    # 매일 장중 포지션 모니터링 (09:05, 12:00, 14:50)
+    for hour, minute in [(9, 5), (12, 0), (14, 50)]:
         _scheduler.add_job(
             job_monitor_positions,
             trigger=CronTrigger(day_of_week="mon-fri", hour=hour, minute=minute),
@@ -203,6 +240,14 @@ def start_scheduler() -> None:
         job_verify_recommendations,
         trigger=CronTrigger(hour=0, minute=10),
         id="verify_recommendations",
+        replace_existing=True,
+    )
+
+    # 10분마다 뉴스 감시 tick (장중에만 실제 실행)
+    _scheduler.add_job(
+        job_news_watch_tick,
+        trigger=CronTrigger(day_of_week="mon-fri", hour="9-15", minute="*/10"),
+        id="news_watch_tick",
         replace_existing=True,
     )
 

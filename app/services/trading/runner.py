@@ -7,6 +7,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
+from sqlalchemy import select
 
 from app.models.strategy import Strategy, UserStrategy
 from app.models.recommendation import (
@@ -259,6 +260,7 @@ class StrategyRunner:
     def _execute_auto_trades(self, strategy: Strategy, run: RecommendationRun) -> None:
         """자동매매 구독자에 대해 매수 주문 실행."""
         from app.services.trading.executor import TradeExecutor
+        from app.models.recommendation import MacroAnalysis
 
         subscriptions = [
             s for s in strategy.user_strategies
@@ -268,10 +270,26 @@ class StrategyRunner:
         if not subscriptions:
             return
 
+        # 시장 방향성 필터: 하락장 판단 시 투자금 50% 축소
+        bearish_keywords = ["하락", "위험", "침체", "약세", "bear", "bearish"]
+        macro = self.db.scalar(
+            select(MacroAnalysis).where(MacroAnalysis.run_id == run.run_id).limit(1)
+        )
+        market_theme = (macro.market_theme or "").lower() if macro else ""
+        is_bearish = any(kw in market_theme for kw in bearish_keywords)
+        if is_bearish:
+            logger.info("Bearish market detected ('%s') — invest amount halved", macro.market_theme)
+
         executor = TradeExecutor(self.db)
         for sub in subscriptions:
             try:
-                executor.execute_buys_for_run(sub, run)
+                if is_bearish:
+                    original = sub.invest_amount_per_pick
+                    sub.invest_amount_per_pick = (original / 2).quantize(Decimal("1"))
+                    executor.execute_buys_for_run(sub, run)
+                    sub.invest_amount_per_pick = original
+                else:
+                    executor.execute_buys_for_run(sub, run)
             except Exception as e:
                 logger.error(
                     "Auto trade failed for user=%s strategy=%s: %s",

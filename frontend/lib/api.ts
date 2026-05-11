@@ -165,6 +165,32 @@ export interface BrokerAccount {
   is_active: boolean;
 }
 
+export interface Subscription {
+  id: number;
+  user_id: string;
+  strategy_id: string;
+  account_id: string;
+  invest_amount_per_pick: string;
+  is_auto_trade: boolean;
+  is_active: boolean;
+  subscribed_at: string;
+}
+
+export interface NewsWatchConfig {
+  interval_min: number;
+  paused: boolean;
+  pause_reason: string;
+  last_check_at: string;
+  today_usage: number;
+  daily_estimate: number;
+  rpd_limit: number;
+}
+
+export interface CloseAllResult {
+  closed: number;
+  results: { stock_code: string; status: string; pnl_pct?: number; error?: string }[];
+}
+
 export interface SchedulerJob {
   id: string;
   trigger: string;
@@ -290,6 +316,15 @@ export const api = {
       candidate_filter: CandidateFilter; candidate_market: CandidateMarket;
       is_active: boolean;
     }>) => authFetch<Strategy>(`/strategies/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
+    subscribe: (body: {
+      strategy_id: string; account_id: string;
+      invest_amount_per_pick: number; is_auto_trade: boolean;
+    }) => authFetch<Subscription>("/strategies/subscribe", { method: "POST", body: JSON.stringify(body) }),
+    mySubscriptions: () => authFetch<Subscription[]>("/strategies/my/subscriptions"),
+    updateSubscription: (subId: number, body: { invest_amount_per_pick?: number; is_auto_trade?: boolean; account_id?: string }) =>
+      authFetch<Subscription>(`/strategies/subscriptions/${subId}`, { method: "PATCH", body: JSON.stringify(body) }),
+    unsubscribe: (subId: number) => authFetch<void>(`/strategies/subscriptions/${subId}`, { method: "DELETE" }),
+    toggleAutoTrade: (subId: number) => authFetch<Subscription>(`/strategies/subscriptions/${subId}/auto-trade`, { method: "PATCH" }),
   },
 
   recommendations: {
@@ -302,6 +337,12 @@ export const api = {
   positions: {
     list: (status?: PositionStatus) =>
       authFetch<Position[]>(`/positions${status ? `?status=${status}` : ""}`),
+    close: (positionId: string) =>
+      authFetch<Position>(`/positions/${positionId}/close`, { method: "POST" }),
+    closeAll: () =>
+      authFetch<CloseAllResult>("/positions/close-all", { method: "POST" }),
+    manualBuy: (body: { stock_code: string; account_id: string; amount: number; strategy_id?: string }) =>
+      authFetch<Position>("/positions/manual-buy", { method: "POST", body: JSON.stringify(body) }),
   },
 
   users: {
@@ -357,5 +398,11 @@ export const api = {
       authFetch<BacktestRunSummary[]>(`/admin/backtest/strategies/${id}/results`),
     getBacktestSummary: (id: string) =>
       authFetch<BacktestOverallSummary>(`/admin/backtest/strategies/${id}/summary`),
+    getNewsWatchConfig: () => authFetch<NewsWatchConfig>("/admin/news-watch/config"),
+    updateNewsWatchInterval: (interval_min: number) =>
+      authFetch<{ interval_min: number }>("/admin/news-watch/config", {
+        method: "PATCH", body: JSON.stringify({ interval_min }),
+      }),
+    resumeAutoTrade: () => authFetch("/admin/news-watch/resume", { method: "POST" }),
   },
 };

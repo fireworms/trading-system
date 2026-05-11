@@ -8,7 +8,7 @@ from app.models.user import User
 from app.models.strategy import Strategy, UserStrategy
 from app.schemas.strategy import (
     StrategyCreate, StrategyUpdate, StrategyOut,
-    UserStrategyCreate, UserStrategyOut,
+    UserStrategyCreate, UserStrategyUpdate, UserStrategyOut,
 )
 from app.api.deps import get_current_user
 
@@ -121,6 +121,46 @@ def my_subscriptions(db: Session = Depends(get_db), current_user: User = Depends
             UserStrategy.is_active == True,
         )
     ).all()
+
+
+@router.patch("/subscriptions/{sub_id}", response_model=UserStrategyOut)
+def update_subscription(
+    sub_id: int,
+    body: UserStrategyUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    sub = db.get(UserStrategy, sub_id)
+    if not sub or sub.user_id != current_user.user_id:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    if not sub.is_active:
+        raise HTTPException(status_code=400, detail="Subscription is not active")
+
+    for field, value in body.model_dump(exclude_none=True).items():
+        setattr(sub, field, value)
+
+    db.commit()
+    db.refresh(sub)
+    return sub
+
+
+@router.delete("/subscriptions/{sub_id}", status_code=204)
+def unsubscribe_strategy(
+    sub_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    구독 해지. 기존 HOLDING 포지션은 원래 전략 조건대로 계속 모니터링됨.
+    """
+    sub = db.get(UserStrategy, sub_id)
+    if not sub or sub.user_id != current_user.user_id:
+        raise HTTPException(status_code=404, detail="Subscription not found")
+    if not sub.is_active:
+        raise HTTPException(status_code=400, detail="Already unsubscribed")
+
+    sub.is_active = False
+    db.commit()
 
 
 @router.patch("/subscriptions/{sub_id}/auto-trade", response_model=UserStrategyOut)

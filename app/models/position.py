@@ -32,11 +32,11 @@ class Position(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.user_id", ondelete="CASCADE"), nullable=False
     )
-    strategy_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("strategies.strategy_id", ondelete="CASCADE"), nullable=False
+    strategy_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("strategies.strategy_id", ondelete="CASCADE"), nullable=True
     )
-    rec_id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), ForeignKey("recommendations.rec_id", ondelete="CASCADE"), nullable=False
+    rec_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("recommendations.rec_id", ondelete="CASCADE"), nullable=True
     )
     account_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), ForeignKey("broker_accounts.account_id", ondelete="CASCADE"), nullable=False
@@ -50,6 +50,7 @@ class Position(Base):
         default=PositionStatus.HOLDING,
         nullable=False,
     )
+    peak_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 0), nullable=True)
     exit_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 0), nullable=True)
     exit_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     pnl_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)

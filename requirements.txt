@@ -14,3 +14,4 @@ apscheduler==3.10.4
 httpx==0.28.1
 python-multipart==0.0.12
 pandas==3.0.2
+websockets>=12.0
