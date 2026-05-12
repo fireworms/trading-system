@@ -34,6 +34,42 @@ const MARKET_COLORS: Record<CandidateMarket, string> = {
   ALL:    "bg-gray-700 text-gray-300",
 };
 
+function getStrategyHint(hold_days: number, target_pct: string): {
+  filter: CandidateFilter;
+  market: CandidateMarket;
+  reason: string;
+} | null {
+  const days = Number(hold_days);
+  const tgt  = parseFloat(target_pct) || 0;
+  if (!days || !tgt) return null;
+
+  if (days <= 7) {
+    if (tgt >= 15)
+      return { filter: "volume", market: "KOSDAQ",
+        reason: "단기 고수익은 변동성이 큰 KOSDAQ 거래량 상위 종목이 유리합니다." };
+    if (tgt >= 8)
+      return { filter: "volume", market: "ALL",
+        reason: "단기 중수익은 거래량 위주 필터로 모멘텀 있는 종목을 넓게 탐색하는 게 효과적입니다." };
+    return { filter: "mixed", market: "KOSPI",
+      reason: "단기 저목표는 유동성 좋은 KOSPI 혼합 풀로도 충분히 달성 가능합니다." };
+  }
+
+  if (days <= 20) {
+    if (tgt >= 15)
+      return { filter: "mixed", market: "ALL",
+        reason: "중기 고수익은 NASDAQ 성장주까지 포함한 전 시장 혼합 풀이 가장 유리합니다." };
+    return { filter: "mixed", market: "ALL",
+      reason: "중기 전략의 기본 조합입니다. 대형주와 중소형 모멘텀 종목을 균형 있게 탐색합니다." };
+  }
+
+  // 장기 (21일+)
+  if (tgt >= 15)
+    return { filter: "largecap", market: "ALL",
+      reason: "장기 고수익은 펀더멘털 강한 대형주가 중심이 되어야 리스크 관리가 됩니다. NASDAQ 포함으로 성장주도 커버합니다." };
+  return { filter: "largecap", market: "KOSPI",
+    reason: "장기 안정 전략은 시총 상위 국내 대형주가 리스크 관리와 배당까지 가장 유리합니다." };
+}
+
 const DEFAULT_FORM = {
   name: "", description: "",
   hold_days: 10, target_pct: "15", stop_loss_pct: "7",
@@ -163,6 +199,30 @@ export default function DashboardPage() {
                   className="w-full bg-gray-700 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500"
                   placeholder="선택 사항" />
               </div>
+
+              {/* 후보 풀 추천 힌트 */}
+              {(() => {
+                const hint = getStrategyHint(form.hold_days, form.target_pct);
+                if (!hint) return null;
+                const FILTER_KO: Record<CandidateFilter, string> = { volume: "거래량 위주", largecap: "대형주 위주", mixed: "혼합" };
+                const MARKET_KO: Record<CandidateMarket, string> = { ALL: "전 시장", KOSPI: "KOSPI", KOSDAQ: "KOSDAQ", NAS: "NASDAQ" };
+                return (
+                  <div className="sm:col-span-2 bg-blue-950/50 border border-blue-800/50 rounded-lg px-4 py-3 flex items-start gap-2">
+                    <span className="text-blue-400 mt-0.5 shrink-0">💡</span>
+                    <div className="text-xs text-blue-300 leading-relaxed">
+                      <span className="font-medium">추천 조합: </span>
+                      <button
+                        type="button"
+                        onClick={() => setForm((f) => ({ ...f, candidate_filter: hint.filter, candidate_market: hint.market }))}
+                        className="underline underline-offset-2 hover:text-blue-100 transition-colors"
+                      >
+                        {FILTER_KO[hint.filter]} / {MARKET_KO[hint.market]}
+                      </button>
+                      <span className="text-blue-400 ml-1">— {hint.reason}</span>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* 후보 풀 설정 */}
               <div>

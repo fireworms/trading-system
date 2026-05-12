@@ -63,13 +63,18 @@ class StrategyRunner:
 
         # 2) 필터별 정렬 / 선별
         if flt == "largecap":
-            kospi200  = set(get_kospi200())
-            kosdaq150 = set(get_kosdaq150())
-            index_set = kospi200 | kosdaq150
-            ordered = [r for code, r in all_rows.items() if code in index_set]
-            # 인덱스에 없는 종목으로 부족분 채우기
-            rest    = [r for code, r in all_rows.items() if code not in index_set]
-            ordered += self._stride(rest, max(0, sample - len(ordered)))
+            # 상위 90%: 시총 내림차순 보장, 하위 10%: stride 다양성
+            k200_ordered  = get_kospi200()   # list, 시총 내림차순
+            kq150_ordered = get_kosdaq150()
+            index_rank = {code: i for i, code in enumerate(k200_ordered + kq150_ordered)}
+            cap_slots  = int(sample * 0.9)
+            div_slots  = sample - cap_slots
+            ordered = sorted(
+                [r for code, r in all_rows.items() if code in index_rank],
+                key=lambda r: index_rank[r.stock_code],
+            )[:cap_slots]
+            rest    = [r for code, r in all_rows.items() if code not in index_rank]
+            ordered += self._stride(rest, div_slots)
 
         elif flt == "volume":
             # KIS 시총 순위 API (FHPST01740000) 섹터별 호출로 실시간 랭킹
