@@ -1,6 +1,9 @@
+import logging
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+logger = logging.getLogger(__name__)
 
 from app.api import users, strategies, recommendations, positions, market, admin, prompt_versions, stock_master, backtest
 from app.api import ws as ws_api
