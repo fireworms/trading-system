@@ -13,6 +13,38 @@ from app.api.deps import get_current_user
 router = APIRouter(prefix="/positions", tags=["positions"])
 
 
+def _enrich(pos: Position) -> PositionOut:
+    """Position 모델 → PositionOut (익절가/손절가 계산 포함)."""
+    target_price = None
+    trailing_stop_price = None
+
+    if pos.recommendation:
+        target_price = pos.recommendation.target_price
+
+    if pos.peak_price and pos.strategy:
+        stop_loss_pct = pos.strategy.stop_loss_pct
+        trailing_stop_price = (pos.peak_price * (1 - stop_loss_pct / 100)).quantize(Decimal("1"))
+
+    return PositionOut(
+        position_id=pos.position_id,
+        user_id=pos.user_id,
+        strategy_id=pos.strategy_id,
+        rec_id=pos.rec_id,
+        account_id=pos.account_id,
+        stock_code=pos.stock_code,
+        entry_price=pos.entry_price,
+        entry_date=pos.entry_date,
+        quantity=pos.quantity,
+        status=pos.status,
+        exit_price=pos.exit_price,
+        exit_date=pos.exit_date,
+        pnl_pct=pos.pnl_pct,
+        peak_price=pos.peak_price,
+        target_price=target_price,
+        trailing_stop_price=trailing_stop_price,
+    )
+
+
 @router.get("", response_model=list[PositionOut])
 def list_positions(
     status: PositionStatus | None = None,
@@ -22,7 +54,7 @@ def list_positions(
     q = select(Position).where(Position.user_id == current_user.user_id)
     if status:
         q = q.where(Position.status == status)
-    return db.scalars(q.order_by(Position.entry_date.desc())).all()
+    return [_enrich(p) for p in db.scalars(q.order_by(Position.entry_date.desc())).all()]
 
 
 @router.get("/{position_id}", response_model=PositionOut)
@@ -34,7 +66,7 @@ def get_position(
     pos = db.get(Position, position_id)
     if not pos or pos.user_id != current_user.user_id:
         raise HTTPException(status_code=404, detail="Position not found")
-    return pos
+    return _enrich(pos)
 
 
 @router.post("/{position_id}/close", response_model=PositionOut)
@@ -67,7 +99,7 @@ def close_position(
     pos.pnl_pct     = Decimal(str(round(float(pnl), 4)))
     db.commit()
     db.refresh(pos)
-    return pos
+    return _enrich(pos)
 
 
 @router.post("/close-all")
@@ -142,12 +174,17 @@ def manual_buy(
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"주문 실패: {e}")
 
+    import time
+    time.sleep(1)
+    fill_price = client.get_today_fill_price(stock_code) or current_price
+
     pos = Position(
         user_id     = current_user.user_id,
         strategy_id = uuid.UUID(strategy_id) if strategy_id else None,
         account_id  = account.account_id,
         stock_code  = stock_code,
-        entry_price = current_price,
+        entry_price = fill_price,
+        peak_price  = fill_price,
         entry_date  = date.today(),
         quantity    = quantity,
         status      = PositionStatus.HOLDING,
@@ -155,4 +192,4 @@ def manual_buy(
     db.add(pos)
     db.commit()
     db.refresh(pos)
-    return pos
+    return _enrich(pos)

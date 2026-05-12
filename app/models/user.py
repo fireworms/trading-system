@@ -83,6 +83,7 @@ class BrokerAccount(Base):
     account_no: Mapped[str] = mapped_column(String(50), nullable=False)
     api_key_enc: Mapped[str] = mapped_column(Text, nullable=False)
     api_secret_enc: Mapped[str] = mapped_column(Text, nullable=False)
+    hts_id: Mapped[str | None] = mapped_column(String(20), nullable=True)
     account_type: Mapped[AccountType] = mapped_column(
         SAEnum(AccountType, name="account_type"), default=AccountType.REAL, nullable=False
     )

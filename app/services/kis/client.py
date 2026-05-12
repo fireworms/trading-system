@@ -210,6 +210,58 @@ class KISClient:
         except Exception:
             return None
 
+    def get_intraday_status(self, stock_code: str) -> dict:
+        """
+        09:20 매수 확인용 장중 스냅샷.
+        반환: current_price, open_price, today_high, acml_vol, prev_day_vol, transaction_strength
+        """
+        data = self._get(
+            "/uapi/domestic-stock/v1/quotations/inquire-price",
+            "FHKST01010100",
+            {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": stock_code},
+        )
+        o = data.get("output", {})
+        bars = self.get_ohlcv(stock_code, days=5)
+        prev_day_vol = bars[0].volume if bars else 0
+
+        return {
+            "current_price":          int(o.get("stck_prpr") or 0),
+            "open_price":             int(o.get("stck_oprc") or 0),
+            "today_high":             int(o.get("stck_hgpr") or 0),
+            "acml_vol":               int(o.get("acml_vol") or 0),
+            "prev_day_vol":           prev_day_vol,
+            "transaction_strength":   float(o.get("cttr") or 0),
+        }
+
+    def _get_index_level(self, code: str) -> Decimal | None:
+        """KOSPI(0001)/KOSDAQ(1001) 현재 지수 레벨 조회."""
+        try:
+            data = self._get(
+                "/uapi/domestic-stock/v1/quotations/inquire-index-price",
+                "FHPUP02100000",
+                {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": code},
+            )
+            val = data.get("output", {}).get("bstp_nmix_prpr")
+            return Decimal(val) if val else None
+        except Exception:
+            return None
+
+    def get_index_change_pct(self) -> dict:
+        """KOSPI/KOSDAQ 현재 등락률 조회."""
+        result = {}
+        for name, code in [("KOSPI", "0001"), ("KOSDAQ", "1001")]:
+            try:
+                data = self._get(
+                    "/uapi/domestic-stock/v1/quotations/inquire-index-price",
+                    "FHPUP02100000",
+                    {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": code},
+                )
+                o = data.get("output", {})
+                result[name] = float(o.get("bstp_nmix_prdy_ctrt") or 0)
+            except Exception:
+                result[name] = 0.0
+        return result
+
     def get_current_price(self, stock_code: str) -> Decimal:
         """현재가 조회."""
         data = self._get(
@@ -308,6 +360,24 @@ class KISClient:
         if avg_l == 0:
             return Decimal("100")
         return Decimal(str(round(100 - 100 / (1 + avg_g / avg_l), 2)))
+
+    @staticmethod
+    def _compute_atr(bars: list[OHLCVBar], period: int = 14) -> float | None:
+        """Average True Range. bars는 최신→오래된 순 (get_ohlcv 기본 순서)."""
+        if len(bars) < period + 1:
+            return None
+        # 오래된→최신 순으로 변환
+        sorted_bars = list(reversed(bars))
+        true_ranges = []
+        for i in range(1, len(sorted_bars)):
+            high       = float(sorted_bars[i].high)
+            low        = float(sorted_bars[i].low)
+            prev_close = float(sorted_bars[i - 1].close)
+            tr = max(high - low, abs(high - prev_close), abs(low - prev_close))
+            true_ranges.append(tr)
+        if len(true_ranges) < period:
+            return None
+        return sum(true_ranges[-period:]) / period
 
     @staticmethod
     def _compute_mas(bars: list[OHLCVBar]) -> dict[str, Decimal | None]:
@@ -527,6 +597,49 @@ class KISClient:
                 "CTX_AREA_NK100":        "",
             },
         )
+
+    def get_today_fill_price(self, stock_code: str) -> Decimal | None:
+        """
+        당일 특정 종목 매수 체결가 조회 (TTTC8001R).
+        매수 직후 호출해서 실 체결가를 entry_price에 반영할 때 사용.
+        """
+        today = date.today().strftime("%Y%m%d")
+        tr_id = "TTTC8001R" if self._is_real else "VTTC8001R"
+        try:
+            data = self._get(
+                "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
+                tr_id,
+                {
+                    "CANO":           self._cano,
+                    "ACNT_PRDT_CD":   self._acnt_prdt,
+                    "INQR_STRT_DT":   today,
+                    "INQR_END_DT":    today,
+                    "SLL_BUY_DVSN_CD": "02",   # 매수만
+                    "INQR_DVSN":      "00",
+                    "PDNO":           stock_code,
+                    "CCLD_DVSN":      "01",     # 체결분만
+                    "ORD_GNO_BRNO":   "",
+                    "ODNO":           "",
+                    "INQR_DVSN_3":    "00",
+                    "INQR_DVSN_1":    "",
+                    "CTX_AREA_FK100": "",
+                    "CTX_AREA_NK100": "",
+                },
+            )
+            for item in data.get("output1", []):
+                qty = int(item.get("tot_ccld_qty") or 0)
+                if qty <= 0:
+                    continue
+                # avg_prvs: 체결 평균가, 없으면 tot_ccld_amt/tot_ccld_qty 직접 계산
+                avg = item.get("avg_prvs") or ""
+                if avg and Decimal(avg) > 0:
+                    return Decimal(avg)
+                amt = Decimal(item.get("tot_ccld_amt") or "0")
+                if amt > 0:
+                    return (amt / qty).quantize(Decimal("1"))
+        except Exception as e:
+            logger.warning("get_today_fill_price failed for %s: %s", stock_code, e)
+        return None
 
     def get_balance(self) -> list[BalanceItem]:
         """보유 주식 잔고 조회."""

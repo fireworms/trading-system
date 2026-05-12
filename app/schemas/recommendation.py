@@ -67,8 +67,8 @@ class VerificationOut(BaseModel):
 class PositionOut(BaseModel):
     position_id: uuid.UUID
     user_id: uuid.UUID
-    strategy_id: uuid.UUID
-    rec_id: uuid.UUID
+    strategy_id: uuid.UUID | None
+    rec_id: uuid.UUID | None
     account_id: uuid.UUID
     stock_code: str
     entry_price: Decimal
@@ -78,5 +78,8 @@ class PositionOut(BaseModel):
     exit_price: Decimal | None
     exit_date: date | None
     pnl_pct: Decimal | None
+    peak_price: Decimal | None
+    target_price: Decimal | None       # rec.target_price
+    trailing_stop_price: Decimal | None  # peak_price × (1 - stop_loss_pct/100)
 
     model_config = {"from_attributes": True}

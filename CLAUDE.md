@@ -2,206 +2,262 @@
 
 ## 프로젝트 개요
 한국투자증권(KIS) API + Gemini AI를 활용한 자동매매 시스템
-- AI가 매크로 분석 + 역사적 패턴 매칭으로 종목 선정
-- 여러 투자 전략을 동시 운영 및 성과 비교
-- 멀티 유저 지원, 유저별 전략 구독 및 자동매매
+- AI 4단계 파이프라인으로 매크로 분석 + 역사적 패턴 매칭 + 장중 확인 후 종목 매수
+- 여러 투자 전략 동시 운영 및 성과 비교 (백테스트 포함)
+- 멀티 유저, 유저별 전략 구독 및 자동매매
+- 뉴스 감시 → 시장 충격 감지 시 자동매매 일시 중단
 
 ## 기술 스택
-- Backend: Python 3.11+ / FastAPI
-- DB: PostgreSQL + SQLAlchemy + Alembic
-- AI: Gemini API (google-generativeai)
-- 증권: 한국투자증권 KIS API (pykis)
-- 스케줄러: APScheduler
-- 환경변수: python-dotenv
+- **Backend**: Python 3.11+ / FastAPI
+- **DB**: PostgreSQL + SQLAlchemy + Alembic
+- **AI**: Gemini API (`google-genai` 신규 SDK)
+- **증권**: 한국투자증권 KIS API (httpx 네이티브 직접 호출, pykis 제거)
+- **스케줄러**: APScheduler
+- **프론트엔드**: Next.js + TypeScript + Tailwind CSS (frontend/)
+- **실시간**: KIS WebSocket (H0STCNT0 가격, H0STCNI0 체결통보)
+- **알림**: Telegram Bot API
 
 ## 프로젝트 구조
+```
 trading_system/
 ├── CLAUDE.md
 ├── .env
 ├── requirements.txt
 ├── alembic.ini
 ├── app/
-│   ├── main.py
+│   ├── main.py                  # FastAPI 앱, lifespan (스케줄러+WebSocket 초기화)
 │   ├── core/
-│   │   ├── config.py
-│   │   ├── database.py
-│   │   └── security.py
+│   │   ├── config.py            # Settings (pydantic)
+│   │   ├── database.py          # SessionLocal, Base
+│   │   ├── security.py          # JWT, bcrypt, Fernet 암호화
+│   │   └── config_store.py      # AppConfig key-value (DB 기반 동적 설정)
 │   ├── models/
-│   │   ├── user.py
-│   │   ├── strategy.py
-│   │   ├── recommendation.py
-│   │   └── position.py
+│   │   ├── user.py              # User, BrokerAccount (hts_id 포함)
+│   │   ├── strategy.py          # Strategy, UserStrategy
+│   │   ├── recommendation.py    # RecommendationRun, MacroAnalysis, Recommendation
+│   │   ├── position.py          # Position (peak_price 포함)
+│   │   ├── stock_master.py      # StockMaster (KIS MST 기반 종목 풀)
+│   │   ├── app_config.py        # AppConfig (key-value 설정 테이블)
+│   │   └── news_event.py        # NewsEvent (뉴스 감시 + 시장 영향 누적)
 │   ├── api/
-│   │   ├── users.py
-│   │   ├── strategies.py
-│   │   ├── recommendations.py
-│   │   └── positions.py
+│   │   ├── users.py             # 회원가입, 로그인, 브로커계좌 CRUD (hts_id 수정 포함)
+│   │   ├── strategies.py        # 전략 CRUD, 구독 관리
+│   │   ├── recommendations.py   # 추천 조회, 통계
+│   │   ├── positions.py         # 포지션 CRUD, 수동매수/청산 (실 체결가 반영)
+│   │   ├── market.py            # 시세 조회 API
+│   │   ├── admin.py             # 수동 트리거, 스케줄러 상태
+│   │   ├── prompt_versions.py   # 프롬프트 버전 관리
+│   │   ├── stock_master.py      # 종목 풀 검색/통계
+│   │   ├── backtest.py          # 백테스트 실행/결과
+│   │   └── ws.py                # WebSocket /ws/prices (실시간 가격)
 │   ├── services/
 │   │   ├── kis/
-│   │   │   └── client.py
+│   │   │   ├── client.py        # KISClient (httpx 네이티브)
+│   │   │   └── realtime.py      # KIS WebSocket 클라이언트 (H0STCNT0 + H0STCNI0)
 │   │   ├── gemini/
-│   │   │   ├── analyzer.py
-│   │   │   └── prompts.py
+│   │   │   ├── analyzer.py      # GeminiAnalyzer (4단계 + confirm_buys)
+│   │   │   └── prompts.py       # 프롬프트 템플릿 (STAGE1~4, BUY_CONFIRM)
+│   │   ├── news/
+│   │   │   └── watcher.py       # 뉴스 감시, news_events 저장, 사후 검증
+│   │   ├── stock_master/
+│   │   │   ├── updater.py       # KIS MST 파일 파싱 → stock_master 갱신
+│   │   │   └── index_constituents.py  # KOSPI200/KOSDAQ150 구성종목
+│   │   ├── telegram/
+│   │   │   └── notifier.py      # TelegramNotifier (멀티유저, chat_id별 전송)
 │   │   └── trading/
-│   │       ├── scheduler.py
-│   │       └── executor.py
+│   │       ├── scheduler.py     # APScheduler 잡 정의
+│   │       ├── runner.py        # StrategyRunner (AI 파이프라인, 분석만)
+│   │       ├── executor.py      # TradeExecutor (매수/매도/모니터링)
+│   │       └── verifier.py      # 추천 결과 사후 검증
 │   └── schemas/
 │       ├── user.py
 │       ├── strategy.py
-│       └── recommendation.py
-├── migrations/
-└── tests/
+│       └── recommendation.py    # PositionOut (target_price, trailing_stop_price 포함)
+├── frontend/                    # Next.js 프론트엔드
+├── scripts/                     # seed 스크립트
+├── migrations/                  # Alembic 마이그레이션
+└── tests/                       # 연동 테스트 스크립트
+```
+
 ## DB 스키마
 
 ### users
-- user_id (PK, UUID)
-- username, email, password_hash
+- user_id (PK, UUID), username, email, password_hash
 - role: SUPER_ADMIN / ADMIN / TRADER / VIEWER
+- telegram_chat_id: 텔레그램 알림용
 - is_active, created_at
 
-### permissions
-- permission_id (PK)
-- user_id (FK)
-- menu_key (예: "strategy.create", "trading.execute")
-- is_allowed (bool)
-- 현재는 모든 유저 모든 권한 허용, 나중에 세분화
-
 ### broker_accounts
-- account_id (PK, UUID)
-- user_id (FK)
+- account_id (PK, UUID), user_id (FK)
 - broker: KIS
-- account_no, api_key(암호화), api_secret(암호화)
+- account_no, api_key_enc(Fernet), api_secret_enc(Fernet)
+- **hts_id**: KIS HTS 아이디 (H0STCNI0 체결통보 WebSocket용, nullable)
 - account_type: REAL / PAPER
 - is_active
 
 ### strategies
-- strategy_id (PK, UUID)
-- created_by (FK → users)
+- strategy_id (PK, UUID), created_by (FK)
 - name, description
-- hold_days: 보유기간(일)
-- target_pct: 목표수익률(%)
-- stop_loss_pct: 손절라인(%)
-- min_probability: AI 최소 확률(%)
-- pick_count: 선정 종목 수
-- run_interval_days: 실행 주기(일)
+- hold_days, target_pct, stop_loss_pct, min_probability, pick_count, run_interval_days
+- **candidate_filter**: volume / largecap / mixed (기본 mixed)
+- **candidate_market**: KOSPI / KOSDAQ / NAS / ALL (기본 ALL)
 - is_active, created_at
 
-### user_strategies (유저-전략 구독)
-- id (PK)
+### user_strategies
 - user_id (FK), strategy_id (FK), account_id (FK)
-- invest_amount_per_pick: 종목당 투자금액
-- is_auto_trade: 자동매매 ON/OFF
-- is_active, subscribed_at
+- invest_amount_per_pick, is_auto_trade, is_active, subscribed_at
 
-### recommendation_runs (추천 회차)
-- run_id (PK, UUID)
-- strategy_id (FK)
-- run_date
-- ai_model_used, prompt_version
-- raw_response (JSON)
+### recommendation_runs
+- run_id (PK, UUID), strategy_id (FK), run_date
+- ai_model_used, raw_response (JSONB — macro/historical/industry/picks/random_baseline)
 
-### macro_analysis (매크로 분석)
-- analysis_id (PK, UUID)
-- run_id (FK)
-- current_situation: 현재 상황 요약
-- historical_matches: 유사 과거 시기 (JSON)
-- industry_mapping: 과거→현재 산업 매핑 (JSON)
-- expected_beneficiary: 수혜 예상 산업/섹터
-- created_at
+### recommendations
+- rec_id (PK, UUID), run_id (FK)
+- stock_code, stock_name, target_price, stop_loss_price
+- ai_probability, ai_reason, historical_basis, risk_factors, rank
+- **current_price_at_rec**: 추천 당시 현재가 (pnl 기준가)
 
-### recommendations (추천 종목)
-- rec_id (PK, UUID)
-- run_id (FK)
-- stock_code, stock_name
-- target_price, stop_loss_price
-- ai_probability: AI 추정 확률
-- ai_reason, historical_basis, risk_factors
-- rank
-
-### positions (유저별 실제 매매)
+### positions
 - position_id (PK, UUID)
-- user_id (FK), strategy_id (FK), rec_id (FK), account_id (FK)
+- user_id, strategy_id (nullable), rec_id (nullable), account_id
 - stock_code, entry_price, entry_date, quantity
+- **peak_price**: 트레일링 스탑 기준 고점 (매수 직후 실 체결가로 초기화)
 - status: HOLDING / TARGET_HIT / STOP_LOSS / EXPIRED / MANUAL_EXIT
 - exit_price, exit_date, pnl_pct
 
-### verifications (검증 결과)
-- verify_id (PK, UUID)
-- rec_id (FK)
-- verified_at, price_at_verify
-- max_high, max_low
-- result: SUCCESS / FAIL
-- pnl_pct
+### verifications
+- verify_id, rec_id (FK), verified_at, price_at_verify
+- max_high, max_low, result: SUCCESS/FAIL, pnl_pct
 
-### prompt_versions (프롬프트 버전 관리)
-- version_id (PK)
-- stage: 1~4
-- version_no: "v1.0"
-- prompt_text
-- created_at
-- performance_score: 나중에 승률 기반으로 채워짐
+### stock_master
+- stock_code, stock_name, market (KOSPI/KOSDAQ/NAS), country, sector
+- is_active, updated_at
+- KOSPI 894개, KOSDAQ 1760개, NAS 5119개 (주 1회 갱신)
 
-## AI 분석 4단계 파이프라인
+### news_events ← NEW
+- event_id (PK, UUID), detected_at
+- severity: NORMAL / WARNING / CRITICAL
+- event_description, keywords (JSONB), ai_confidence
+- kospi_at_detection, kosdaq_at_detection  ← 감지 시점 지수 레벨
+- kospi_change_1d/3d, kosdaq_change_1d/3d  ← 사후 시장 영향 (16:00 잡이 채움)
+- verified_1d_at, verified_3d_at
 
-### 1단계: 현재 매크로 상황 파악
-- 모델: Gemini 2.5 Flash (검색 그라운딩)
-- 입력: 현재 날짜
-- 출력: macro_summary, key_factors, market_theme, risk_factors (JSON)
+### app_config (key-value)
+- key: news_auto_trade_paused, news_pause_reason, news_last_check_at 등
 
-### 2단계: 역사적 유사 시기 탐색
-- 모델: Gemini 3 Flash
-- 입력: 1단계 결과
-- 출력: historical_matches (유사도점수, 유사점, 차이점, 당시결과) (JSON)
+### prompt_versions
+- stage(1~4), version_no, prompt_text, performance_score
 
-### 3단계: 과거 산업 흐름 분석
-- 모델: Gemini 3 Flash
-- 입력: 1단계 + 2단계 결과
-- 출력: past_winners, past_losers, sector_mapping (JSON)
+## 자동매매 흐름
 
-### 4단계: 종목 선정 (기술적 분석 교차검증)
-- 모델: Gemini 3 Flash
-- 입력: 1~3단계 결과 + KIS API 실시간 데이터
-- 출력: picks (종목코드, 목표가, 손절가, 확률, 근거) (JSON)
-- 전략 파라미터(hold_days, target_pct, stop_loss_pct 등) 적용
+### 분석 잡 (08:30 Mon/Wed/Fri)
+1. `_should_run()` — run_interval_days 경과한 전략만 선택
+2. stock_master에서 candidate_filter 기준 50~200개 종목 샘플링
+3. KIS API로 실시간 데이터 수집 (현재가/RSI/이평선/외국인+기관 순매수)
+4. Gemini 4단계 파이프라인 실행 → recommendations + RecommendationRun 저장
+5. 텔레그램 구독자 알림
 
-## Gemini 모델 운용 전략 (무료 티어)
-- Gemini 2.5 Flash: 뉴스/검색 그라운딩 (RPD 20)
-- Gemini 3 Flash: 메인 분석 (RPD 20)
-- Gemini 3.1 Flash Lite: 1차 필터링 (RPD 500)
-- Gemma 4: 단순 데이터 정제 (RPD 1500)
-- 모델별 사용량 추적해서 RPD 초과 시 자동 fallback
+### 매수 잡 (09:20 평일)
+1. auto_trade=ON 구독자 중 "오늘 분석 완료됐는데 포지션 없는 것" 탐색
+2. KOSPI/KOSDAQ 지수 현황 조회
+3. 추천 종목별 장중 스냅샷 수집 (시가/고가/체결강도/거래량비율)
+4. Gemini Flash Lite → buy/skip 판정 (BUY_CONFIRM 프롬프트)
+5. buy 판정 종목만 시장가 매수
+6. TTTC8001R로 실 체결가 즉시 조회 → Position(entry_price=fill_price, peak_price=fill_price)
 
-## KIS API 사용 범위
-- 실전 계좌 사용
-- 국내 주식만 (해외는 추후 확장)
-- 주요 데이터: 현재가, 거래량, 외국인/기관 순매수, RSI, 이평선
-- 주문: 시장가 매수/매도
+### 포지션 모니터링 (09:05, 12:00, 14:50)
+- 09:05: update_entry_prices_from_balance() 백업 실행 (폴링 fallback)
+- 목표가 도달 → 시장가 익절
+- 트레일링 스탑: `peak_price × (1 - stop_loss_pct/100)` 이탈 → 손절
+- Time-based Stop: 5일 후에도 손실 중 → 조기 청산
+- 만료(hold_days 경과) → 시장가 청산
 
-## 스케줄러 동작
-- 3일마다: 각 전략별 AI 분석 실행 → 종목 추천 → DB 저장
-- 매일 장중: 보유 포지션 모니터링 (목표가/손절가 체크)
-- 10일 후: 추천 종목 검증 자동 실행
+### 매수 스킵 조건
+- AI 09:20 확인에서 skip 판정
+- remaining_upside ≤ stop_loss_pct (리스크/리워드 불균형)
+- RSI > 70 (과매수)
+- 동일 섹터 2종목 초과 (MAX_PER_SECTOR=2)
+- 잔고 부족
+
+## 스케줄러 잡 목록
+| 잡 ID | 시각 | 역할 |
+|-------|------|------|
+| run_strategies | 08:30 Mon/Wed/Fri | AI 분석 (매수 없음) |
+| execute_pending_buys | 09:20 평일 | AI 장중 확인 + 매수 |
+| monitor_905/1200/1450 | 09:05, 12:00, 14:50 평일 | 포지션 손절/익절 모니터링 |
+| verify_recommendations | 00:10 매일 | 추천 결과 사후 검증 |
+| verify_news_events | 16:00 평일 | 뉴스 이벤트 시장 영향 검증 |
+| news_watch_tick | 09:00~15:30 10분마다 평일 | 뉴스 감시 tick (40분마다 실행) |
+| update_stock_master | 03:00 일요일 | stock_master + 지수캐시 갱신 |
+
+## Gemini 모델 체인
+| 용도 | 모델 | Fallback |
+|------|------|----------|
+| Stage1 (매크로+그라운딩) | gemini-2.5-flash | - |
+| Stage2 (역사 분석) | gemini-3-flash-preview | gemini-3.1-flash-lite |
+| Stage3 (산업 분석) | gemini-3.1-flash-lite | gemini-2.5-flash-lite |
+| Stage4 (종목 선정) | gemini-3-flash-preview | gemini-3.1-flash-lite → gemini-2.5-flash-lite |
+| BUY_CONFIRM (09:20 확인) | gemini-3.1-flash-lite | gemini-2.5-flash-lite |
+| 뉴스 감시 | gemini-2.5-flash | - |
+| JSON 정제 | gemma-4-31b-it | - |
+
+## KIS API 주요 엔드포인트
+- `FHKST01010100` inquire-price: 현재가 + 시가/고가/체결강도(cttr)/거래량
+- `FHKST03010100` inquire-daily-itemchartprice: OHLCV (일봉)
+- `FHPUP02100000` inquire-index-price: 지수 현재가/등락률 (0001=KOSPI, 1001=KOSDAQ)
+- `TTTC8434R` inquire-balance: 잔고 조회 (avg_price=pchs_avg_pric)
+- `TTTC0802U` order-cash (매수): 시장가 주문
+- `TTTC0801U` order-cash (매도): 시장가 주문
+- `TTTC8001R` inquire-daily-ccld: 당일 주문 체결 조회 (실 체결가 확인용)
+- `CTPF1002R` search-stock-info: 종목 기본정보 (섹터)
+- `FHPST01740000` 시총순위: KOSPI200/KOSDAQ150 구성종목 근사치
+
+## 뉴스 감시 시스템
+- **주기**: 장중(09:00~15:30) 40분마다 Gemini+검색그라운딩으로 체크
+- **히스토리 컨텍스트**: 최근 15건 이벤트 + 실제 시장 영향이 프롬프트에 포함 → 판단 자동 보정
+- **저장**: NORMAL 포함 모든 이벤트 news_events에 저장 (감지 시점 KOSPI/KOSDAQ 레벨 포함)
+- **사후 검증**: 16:00 잡이 1일/3일 경과분의 실제 KOSPI/KOSDAQ 변화율 자동 계산
+- **WARNING 감지 시**: news_auto_trade_paused=true + 텔레그램 어드민 알림 → 수동 재개
+
+## 실시간 WebSocket
+- **가격 스트림**: H0STCNT0 → /ws/prices 엔드포인트 → 프론트 포지션 페이지 LIVE 표시
+- **체결통보**: H0STCNI0 (broker_accounts.hts_id 등록 시 활성화)
+  - 매수 체결 이벤트 → Position.entry_price/peak_price 즉시 업데이트
+  - hts_id 미등록 시: REST 방식(TTTC8001R) fallback으로 체결가 조회
 
 ## 환경변수 (.env)
-KIS_APP_KEY=
-KIS_APP_SECRET=
-KIS_ACCOUNT_NO=
+```
 GEMINI_API_KEY=
-DATABASE_URL=
+DATABASE_URL=postgresql+asyncpg://...
 SECRET_KEY=
-
-## 개발 우선순위
-1. DB 스키마 + SQLAlchemy 모델
-2. 유저/권한 CRUD API
-3. 전략 관리 API
-4. KIS API 연동 (시세 조회)
-5. Gemini 4단계 분석 파이프라인
-6. 스케줄러
-7. 포지션 관리 + 자동매매
-8. 검증 시스템
+TELEGRAM_BOT_TOKEN=      # 선택
+```
+- KIS API 키/계좌번호는 .env 사용 안 함 → DB broker_accounts에 Fernet 암호화 저장
+- HTS 아이디는 DB broker_accounts.hts_id (프론트 포지션 페이지 > 계좌 설정에서 입력)
 
 ## 주의사항
-- API 키는 절대 코드에 하드코딩 금지, 반드시 .env 사용
-- broker_accounts의 api_key, api_secret은 DB 저장 시 암호화
+- API 키는 절대 코드에 하드코딩 금지
+- broker_accounts의 api_key, api_secret은 Fernet 암호화 (security.py)
 - 모든 금액/수량은 Decimal 타입 사용 (float 금지)
-- 자동매매 실행 전 반드시 is_auto_trade 플래그 확인
+- 자동매매 실행 전 is_auto_trade + news_auto_trade_paused 플래그 확인
+- raw_response['macro']['market_theme'] 에서 하락장 판단 (MacroAnalysis 모델에는 없음)
+- 매수 스킵 fallback: AI 확인 실패 시 전종목 skip (안전 방향)
+
+## 협업 원칙
+
+### 원칙 1: 커밋/메모리/설계도 동시 업데이트
+사용자가 아래 중 하나를 요청하면 **명시적으로 범위를 한정하지 않은 경우** 세 가지를 모두 실행한다:
+- 커밋해줘 → git commit + memory 업데이트 + CLAUDE.md 업데이트
+- 메모리 업데이트해줘 → memory 업데이트 + CLAUDE.md 업데이트 + git commit
+- 설계도 업데이트해줘 → CLAUDE.md 업데이트 + memory 업데이트 + git commit
+
+단, "메모리만 업데이트해줘", "CLAUDE.md만 바꿔줘"처럼 범위를 명시하면 그것만 한다.
+
+### 원칙 2: 퀀트 관점 의견 제안
+사용자가 **전략 변경 또는 기능 추가**를 제안할 때(버그 수정/UI 변경 제외), 구현 전에 반드시 아래를 짚는다:
+1. **실전 퀀트 관점에서 좋은 점** — 전략적 타당성, 어떤 엣지를 노리는지
+2. **잠재적 문제** — 과최적화 가능성, 이 시스템의 목적과 맞지 않는 부분, 숨겨진 가정
+3. **이 환경에서 실현 가능성** — KIS API 제약, Gemini RPD, 데이터 충분성
+
+단, 백테스트 수치는 제시할 수 없고 논리적 타당성 기준으로 판단한다.
+의견 제시 후 사용자가 진행을 결정하면 구현한다.

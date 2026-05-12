@@ -165,3 +165,35 @@ target_price와 stop_loss_price는 반드시 위 공식으로 계산하세요.
   "excluded_reason": "min_probability 미달 또는 제외 이유 간략 설명"
 }}
 """
+
+BUY_CONFIRM = """
+당신은 한국 주식 단기 트레이딩 전문가입니다.
+오전 9시 20분, 아침 개장 광기가 걷힌 시점입니다.
+아래 종목들에 대해 지금 시장가 매수를 할지 판단하세요.
+
+=== 시장 지수 현황 ===
+{market_status}
+
+=== 매수 후보 종목 ===
+{stocks_json}
+
+=== 판단 원칙 ===
+1. 현재가가 시가(open_price) 아래에 있으면 무조건 SKIP (약세 신호)
+2. 전일 전체 거래량 대비 현재 누적 거래량(volume_ratio)이 0.3 이상이면 강한 수급으로 간주
+3. 체결강도(transaction_strength)가 100 이하로 하락 추세면 SKIP
+4. 당일 고가 대비 현재가 밀림이 3% 초과면 차익 실현 매물로 간주 → SKIP 가중
+5. 지수가 -1% 이상 하락 중이면 매수 판단에 보수적으로 접근
+6. 남은 업사이드(remaining_upside_pct)가 손절라인(stop_loss_pct)의 1.5배 미만이면 SKIP
+
+각 종목에 대해 다음 JSON 형식으로만 응답하세요. 다른 설명 없이 JSON만 반환하세요.
+
+{{
+  "decisions": [
+    {{
+      "stock_code": "종목코드",
+      "action": "buy 또는 skip",
+      "reason": "판단 근거 1-2문장"
+    }}
+  ]
+}}
+"""

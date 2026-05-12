@@ -144,8 +144,8 @@ export type PositionStatus =
 export interface Position {
   position_id: string;
   user_id: string;
-  strategy_id: string;
-  rec_id: string;
+  strategy_id: string | null;
+  rec_id: string | null;
   account_id: string;
   stock_code: string;
   entry_price: string;
@@ -155,6 +155,9 @@ export interface Position {
   exit_price: string | null;
   exit_date: string | null;
   pnl_pct: string | null;
+  peak_price: string | null;
+  target_price: string | null;
+  trailing_stop_price: string | null;
 }
 
 export interface BrokerAccount {
@@ -162,6 +165,7 @@ export interface BrokerAccount {
   broker: string;
   account_no: string;
   account_type: string;
+  hts_id: string | null;
   is_active: boolean;
 }
 
@@ -363,6 +367,11 @@ export const api = {
       }),
     listBrokerAccounts: (userId: string) =>
       authFetch<BrokerAccount[]>(`/users/${userId}/accounts`),
+    updateBrokerAccount: (userId: string, accountId: string, body: { hts_id?: string | null }) =>
+      authFetch<BrokerAccount>(`/users/${userId}/accounts/${accountId}`, {
+        method: "PATCH",
+        body: JSON.stringify(body),
+      }),
   },
 
   market: {

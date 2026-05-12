@@ -20,7 +20,8 @@ from google.genai import types
 
 from app.core.config import get_settings
 from app.services.gemini.prompts import (
-    STAGE1_MACRO, STAGE2_HISTORICAL, STAGE3_INDUSTRY, STAGE4_PICKS, _FILTER_GUIDANCE
+    STAGE1_MACRO, STAGE2_HISTORICAL, STAGE3_INDUSTRY, STAGE4_PICKS,
+    _FILTER_GUIDANCE, BUY_CONFIRM,
 )
 
 logger = logging.getLogger(__name__)
@@ -306,3 +307,34 @@ class GeminiAnalyzer:
         logger.info("Stage4 done: %d picks [%s]", len(picks.picks), picks.model_used)
 
         return macro, historical, industry, picks
+
+    def confirm_buys(self, stocks: list[dict], market_status: dict) -> dict[str, str]:
+        """
+        09:20 매수 확인 단계. 장중 데이터를 보고 종목별 buy/skip 결정.
+        반환: {stock_code: "buy" | "skip"}
+        """
+        import json as _json
+        _CHAIN_CONFIRM = ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite"]
+
+        kospi = market_status.get("KOSPI", 0)
+        kosdaq = market_status.get("KOSDAQ", 0)
+        market_str = f"KOSPI {kospi:+.2f}%, KOSDAQ {kosdaq:+.2f}%"
+
+        prompt = BUY_CONFIRM.format(
+            market_status=market_str,
+            stocks_json=_json.dumps(stocks, ensure_ascii=False, indent=2),
+        )
+
+        text, model = self._call_with_fallback(_CHAIN_CONFIRM, prompt)
+        logger.info("Buy confirm done [%s]", model)
+
+        try:
+            data = self._parse_json(text)
+            return {
+                d["stock_code"]: d["action"]
+                for d in data.get("decisions", [])
+                if "stock_code" in d and "action" in d
+            }
+        except Exception as e:
+            logger.error("Buy confirm parse error: %s", e)
+            return {s["stock_code"]: "buy" for s in stocks}  # 파싱 실패 시 전부 매수

@@ -8,7 +8,7 @@ from app.core.security import hash_password, verify_password, create_access_toke
 from app.models.user import User, Permission, BrokerAccount
 from app.schemas.user import (
     UserCreate, UserUpdate, UserOut, PermissionOut,
-    BrokerAccountCreate, BrokerAccountOut,
+    BrokerAccountCreate, BrokerAccountUpdate, BrokerAccountOut,
     LoginRequest, TokenOut, TelegramUpdate,
 )
 from app.api.deps import get_current_user, require_admin
@@ -136,6 +136,26 @@ def list_broker_accounts(
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return user.broker_accounts
+
+
+@router.patch("/{user_id}/accounts/{account_id}", response_model=BrokerAccountOut)
+def update_broker_account(
+    user_id: uuid.UUID,
+    account_id: uuid.UUID,
+    body: BrokerAccountUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if current_user.user_id != user_id and current_user.role not in ("ADMIN", "SUPER_ADMIN"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+    account = db.get(BrokerAccount, account_id)
+    if not account or account.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Account not found")
+    if body.hts_id is not None:
+        account.hts_id = body.hts_id or None
+    db.commit()
+    db.refresh(account)
+    return account
 
 
 @router.patch("/me/telegram", response_model=UserOut)

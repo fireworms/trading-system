@@ -48,7 +48,12 @@ class BrokerAccountCreate(BaseModel):
     account_no: str
     api_key: str
     api_secret: str
+    hts_id: str | None = None
     account_type: AccountType = AccountType.REAL
+
+
+class BrokerAccountUpdate(BaseModel):
+    hts_id: str | None = None
 
 
 class BrokerAccountOut(BaseModel):
@@ -56,6 +61,7 @@ class BrokerAccountOut(BaseModel):
     broker: BrokerType
     account_no: str
     account_type: AccountType
+    hts_id: str | None
     is_active: bool
 
     model_config = {"from_attributes": True}

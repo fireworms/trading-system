@@ -46,6 +46,12 @@ export default function PositionsPage() {
   const [newsLoading, setNewsLoading]   = useState(false);
   const [showNewsPanel, setShowNewsPanel] = useState(false);
 
+  // 계좌 설정 (HTS ID)
+  const [showAccountPanel, setShowAccountPanel] = useState(false);
+  const [htsId, setHtsId]       = useState("");
+  const [htsLoading, setHtsLoading] = useState(false);
+  const [htsMsg, setHtsMsg]     = useState("");
+
   const isAdmin = me?.role === "ADMIN" || me?.role === "SUPER_ADMIN";
 
   // 보유 종목 실시간 가격
@@ -68,9 +74,13 @@ export default function PositionsPage() {
         api.users.listBrokerAccounts(userData.user_id),
         api.strategies.list(),
       ]);
-      setAccounts(accs.filter((a) => a.is_active));
+      const activeAccs = accs.filter((a) => a.is_active);
+      setAccounts(activeAccs);
       setStrategies(strats);
-      if (accs.length > 0) setBuyAccountId(accs[0].account_id);
+      if (activeAccs.length > 0) {
+        setBuyAccountId(activeAccs[0].account_id);
+        setHtsId(activeAccs[0].hts_id ?? "");
+      }
     } finally {
       setLoading(false);
     }
@@ -142,6 +152,22 @@ export default function PositionsPage() {
       setNewsLoading(false); }
   }
 
+  async function handleSaveHtsId() {
+    if (!me || accounts.length === 0) return;
+    setHtsLoading(true); setHtsMsg("");
+    try {
+      const updated = await api.users.updateBrokerAccount(me.user_id, accounts[0].account_id, {
+        hts_id: htsId.trim() || null,
+      });
+      setAccounts((prev) => prev.map((a) => a.account_id === updated.account_id ? updated : a));
+      setHtsMsg("저장됐습니다. 서버 재시작 후 체결통보가 활성화됩니다.");
+    } catch {
+      setHtsMsg("저장 실패");
+    } finally {
+      setHtsLoading(false);
+    }
+  }
+
   async function handleResumeAutoTrade() {
     if (!confirm("자동매매를 재개하시겠습니까?")) return;
     await api.admin.resumeAutoTrade();
@@ -181,12 +207,20 @@ export default function PositionsPage() {
         </div>
         <div className="flex gap-2">
           {isAdmin && (
-            <button
-              onClick={() => { setShowNewsPanel(!showNewsPanel); if (!showNewsPanel) loadNewsConfig(); }}
-              className="text-sm px-3 py-1.5 rounded-lg border border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 transition-colors"
-            >
-              뉴스 감시 설정
-            </button>
+            <>
+              <button
+                onClick={() => setShowAccountPanel(!showAccountPanel)}
+                className="text-sm px-3 py-1.5 rounded-lg border border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 transition-colors"
+              >
+                계좌 설정
+              </button>
+              <button
+                onClick={() => { setShowNewsPanel(!showNewsPanel); if (!showNewsPanel) loadNewsConfig(); }}
+                className="text-sm px-3 py-1.5 rounded-lg border border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 transition-colors"
+              >
+                뉴스 감시 설정
+              </button>
+            </>
           )}
           <button
             onClick={() => setShowBuyModal(true)}
@@ -204,6 +238,41 @@ export default function PositionsPage() {
           )}
         </div>
       </div>
+
+      {/* 계좌 설정 패널 */}
+      {showAccountPanel && isAdmin && accounts.length > 0 && (
+        <div className="bg-gray-800 rounded-2xl p-5 mb-4">
+          <h3 className="font-semibold mb-4 text-sm">계좌 설정</h3>
+          <div className="flex flex-wrap gap-4 items-end">
+            <div>
+              <label className="text-xs text-gray-400 mb-1 block">
+                계좌 ({accounts[0].broker} {accounts[0].account_no})
+              </label>
+              <div className="text-xs text-gray-500">HTS 아이디 (체결통보 WebSocket용)</div>
+            </div>
+            <div>
+              <label className="text-xs text-gray-400 mb-1 block">HTS 아이디</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={htsId}
+                  onChange={(e) => setHtsId(e.target.value)}
+                  placeholder="예: fireworm"
+                  className="bg-gray-700 rounded-lg px-3 py-2 text-sm w-36 outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <button
+                  onClick={handleSaveHtsId}
+                  disabled={htsLoading}
+                  className="text-xs bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-3 py-2 rounded-lg"
+                >
+                  {htsLoading ? "저장 중..." : "저장"}
+                </button>
+              </div>
+              {htsMsg && <p className="text-xs text-green-400 mt-1">{htsMsg}</p>}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 뉴스 감시 설정 패널 */}
       {showNewsPanel && isAdmin && (
@@ -324,6 +393,8 @@ export default function PositionsPage() {
                 <th className="text-right p-4">매수가</th>
                 <th className="text-right p-4">현재가</th>
                 <th className="text-right p-4">미실현</th>
+                <th className="text-right p-4 text-green-500">익절가</th>
+                <th className="text-right p-4 text-red-500">손절가</th>
                 <th className="text-right p-4">확정손익</th>
                 <th className="text-right p-4">매수일</th>
                 <th className="p-4"></th>
@@ -367,6 +438,12 @@ export default function PositionsPage() {
                     {unrealizedPct != null && pos.status === "HOLDING"
                       ? `${unrealizedPct >= 0 ? "+" : ""}${unrealizedPct.toFixed(2)}%`
                       : "-"}
+                  </td>
+                  <td className="p-4 text-right text-green-500 text-xs">
+                    {pos.target_price ? Number(pos.target_price).toLocaleString() : "-"}
+                  </td>
+                  <td className="p-4 text-right text-red-500 text-xs">
+                    {pos.trailing_stop_price ? Number(pos.trailing_stop_price).toLocaleString() : "-"}
                   </td>
                   <td className={`p-4 text-right font-bold ${pnlColor(pos.pnl_pct)}`}>
                     {pos.pnl_pct

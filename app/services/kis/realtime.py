@@ -23,7 +23,8 @@ _WS_PAPER   = "ws://ops.koreainvestment.com:31000"
 _BASE_REAL  = "https://openapi.koreainvestment.com:9443"
 _BASE_PAPER = "https://openapivts.koreainvestment.com:29443"
 
-PriceCallback = Callable[[str, dict], Awaitable[None]]
+PriceCallback     = Callable[[str, dict], Awaitable[None]]
+ExecutionCallback = Callable[[dict], Awaitable[None]]
 
 
 class KISRealtimeClient:
@@ -37,8 +38,10 @@ class KISRealtimeClient:
         self._approval_key: str | None = None
         self._ws = None
         self._subscribed: set[str] = set()
+        self._exec_cano: str | None = None          # 체결통보 구독용 CANO
         self._prices: dict[str, dict] = {}
         self._callbacks: list[PriceCallback] = []
+        self._exec_callbacks: list[ExecutionCallback] = []
         self._running   = False
         self._task: asyncio.Task | None = None
 
@@ -48,6 +51,13 @@ class KISRealtimeClient:
 
     def add_callback(self, cb: PriceCallback) -> None:
         self._callbacks.append(cb)
+
+    def add_execution_callback(self, cb: ExecutionCallback) -> None:
+        self._exec_callbacks.append(cb)
+
+    def subscribe_execution(self, cano: str) -> None:
+        """체결통보(H0STCNI0) 구독. cano = 계좌번호 앞 8자리."""
+        self._exec_cano = cano
 
     def get_price(self, code: str) -> dict | None:
         return self._prices.get(code)
@@ -122,10 +132,18 @@ class KISRealtimeClient:
             for code in list(self._subscribed):
                 await self._send_sub(code, subscribe=True)
 
+            # 체결통보 구독
+            if self._exec_cano:
+                await self._send_raw_sub("H0STCNI0", self._exec_cano, subscribe=True)
+                logger.info("KIS execution notification subscribed: cano=%s", self._exec_cano)
+
             async for raw in ws:
                 await self._handle(raw)
 
     async def _send_sub(self, code: str, subscribe: bool) -> None:
+        await self._send_raw_sub("H0STCNT0", code, subscribe)
+
+    async def _send_raw_sub(self, tr_id: str, tr_key: str, subscribe: bool) -> None:
         if not self._ws:
             return
         msg = {
@@ -137,8 +155,8 @@ class KISRealtimeClient:
             },
             "body": {
                 "input": {
-                    "tr_id":  "H0STCNT0",
-                    "tr_key": code,
+                    "tr_id":  tr_id,
+                    "tr_key": tr_key,
                 }
             },
         }
@@ -155,21 +173,23 @@ class KISRealtimeClient:
         if raw.startswith("{"):
             return
 
-        # 데이터 메시지: "0|H0STCNT0|001|필드^필드^..."
+        # 데이터 메시지: "0|TR_ID|건수|필드^필드^..."
         parts = raw.split("|")
-        if len(parts) < 4 or parts[1] != "H0STCNT0":
+        if len(parts) < 4:
             return
 
-        # 여러 건이 한 번에 올 수 있음 (parts[2] = 건수)
+        tr_id = parts[1]
         count = int(parts[2]) if parts[2].isdigit() else 1
         body  = parts[3]
         fields_per = len(body.split("^")) // count
 
         for i in range(count):
             f = body.split("^")[i * fields_per : (i + 1) * fields_per]
-            if len(f) < 13:
-                continue
-            await self._parse_price(f)
+            if tr_id == "H0STCNT0":
+                if len(f) >= 13:
+                    await self._parse_price(f)
+            elif tr_id == "H0STCNI0":
+                await self._parse_execution(f)
 
     async def _parse_price(self, f: list[str]) -> None:
         """
@@ -205,6 +225,42 @@ class KISRealtimeClient:
                 await cb(code, price_data)
         except Exception as e:
             logger.debug("Price parse error: %s | fields=%s", e, f)
+
+    async def _parse_execution(self, f: list[str]) -> None:
+        """
+        H0STCNI0 체결통보 파싱.
+        [4]  SELN_BYOV_CLS  매도매수구분 (01=매도, 02=매수)
+        [7]  STCK_SHRN_ISCD 종목코드
+        [8]  CNTG_QTY       체결수량
+        [9]  CNTG_UNPR      체결단가
+        [12] CNTG_YN        체결여부 (1=체결)
+        """
+        try:
+            if len(f) < 13:
+                return
+            cntg_yn       = f[12]
+            if cntg_yn != "1":   # 체결 아닌 이벤트(접수/확인 등) 무시
+                return
+            side       = f[4]    # "01"=매도, "02"=매수
+            stock_code = f[7]
+            fill_qty   = int(f[8]) if f[8].isdigit() else 0
+            fill_price = int(f[9]) if f[9].isdigit() else 0
+
+            if fill_qty <= 0 or fill_price <= 0:
+                return
+
+            data = {
+                "side":        "buy" if side == "02" else "sell",
+                "stock_code":  stock_code,
+                "fill_qty":    fill_qty,
+                "fill_price":  fill_price,
+            }
+            logger.info("Execution: %s %s x%d @ %d", data["side"], stock_code, fill_qty, fill_price)
+
+            for cb in self._exec_callbacks:
+                await cb(data)
+        except Exception as e:
+            logger.debug("Execution parse error: %s | fields=%s", e, f)
 
 
 # ------------------------------------------------------------------ #

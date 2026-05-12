@@ -69,6 +69,19 @@ def job_run_strategies() -> None:
                 )
 
 
+def job_execute_pending_buys() -> None:
+    """분석 완료된 run 중 미체결 매수 실행 (매수 전용 스케줄러)."""
+    from app.services.trading.executor import TradeExecutor
+
+    try:
+        with SessionLocal() as db:
+            executor = TradeExecutor(db)
+            executor.execute_pending_buys()
+    except Exception as e:
+        logger.error("Pending buys execution failed: %s", e)
+        _notify_error("자동매수 실패", str(e))
+
+
 def job_monitor_positions() -> None:
     """보유 포지션 모니터링 (매일 장중)."""
     from app.services.trading.executor import TradeExecutor
@@ -129,6 +142,15 @@ def job_news_watch_tick() -> None:
         run_news_check_and_act()
     except Exception as e:
         logger.error("News watch tick failed: %s", e)
+
+
+def job_verify_news_events() -> None:
+    """1일/3일 경과 뉴스 이벤트 실제 시장 영향 검증."""
+    try:
+        from app.services.news.watcher import verify_news_events
+        verify_news_events()
+    except Exception as e:
+        logger.error("News event verification failed: %s", e)
 
 
 def job_update_stock_master() -> None:
@@ -218,11 +240,19 @@ def start_scheduler() -> None:
 
     _scheduler = BackgroundScheduler(timezone="Asia/Seoul")
 
-    # 3일마다 전략 실행 (평일 08:30)
+    # 분석 잡: 3일마다 (평일 08:30) — AI 분석 + recommendations 저장만
     _scheduler.add_job(
         job_run_strategies,
         trigger=CronTrigger(day_of_week="mon,wed,fri", hour=8, minute=30),
         id="run_strategies",
+        replace_existing=True,
+    )
+
+    # 매수 잡: 평일 09:20 — AI 장중 확인 후 매수 실행
+    _scheduler.add_job(
+        job_execute_pending_buys,
+        trigger=CronTrigger(day_of_week="mon-fri", hour=9, minute=20),
+        id="execute_pending_buys",
         replace_existing=True,
     )
 
@@ -248,6 +278,14 @@ def start_scheduler() -> None:
         job_news_watch_tick,
         trigger=CronTrigger(day_of_week="mon-fri", hour="9-15", minute="*/10"),
         id="news_watch_tick",
+        replace_existing=True,
+    )
+
+    # 매일 장 마감 후: 뉴스 이벤트 시장 영향 검증 (1일/3일 경과분)
+    _scheduler.add_job(
+        job_verify_news_events,
+        trigger=CronTrigger(day_of_week="mon-fri", hour=16, minute=0),
+        id="verify_news_events",
         replace_existing=True,
     )
 

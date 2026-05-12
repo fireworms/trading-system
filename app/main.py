@@ -4,7 +4,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api import users, strategies, recommendations, positions, market, admin, prompt_versions, stock_master, backtest
 from app.api import ws as ws_api
-import app.models.app_config  # noqa: F401 — Alembic autogenerate 인식용
+import app.models.app_config   # noqa: F401 — Alembic autogenerate 인식용
+import app.models.news_event    # noqa: F401
 
 
 @asynccontextmanager
@@ -38,16 +39,66 @@ def _init_realtime_client() -> None:
             if not kis:
                 return
             rt = init_realtime_client(kis._key, kis._secret, kis._is_real)
+            # hts_id가 등록된 경우 체결통보 구독
+            from app.models.user import BrokerAccount
+            from sqlalchemy import select as _select
+            account = db.scalar(_select(BrokerAccount).where(BrokerAccount.is_active == True).limit(1))
+            hts_id = account.hts_id if account else None
 
-        # KIS 가격 업데이트 → WS 브로드캐스트 연결
+        # 가격 업데이트 → WS 브로드캐스트
         async def _on_price(code: str, price: dict) -> None:
             await ws_manager.broadcast(code, price)
 
+        # 체결 통보 → entry_price 즉시 업데이트
+        async def _on_execution(data: dict) -> None:
+            if data.get("side") != "buy":
+                return
+            import asyncio
+            from datetime import date
+            from decimal import Decimal
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, _update_fill_price, data["stock_code"], data["fill_price"])
+
         rt.add_callback(_on_price)
+        rt.add_execution_callback(_on_execution)
+        if hts_id:
+            rt.subscribe_execution(hts_id)
+            logger.info("KIS execution notification enabled (hts_id=%s)", hts_id)
+        else:
+            logger.info("KIS execution notification disabled (hts_id not set)")
         rt.start()
     except Exception as e:
         import logging
         logging.getLogger(__name__).error("Realtime client init failed: %s", e)
+
+
+def _update_fill_price(stock_code: str, fill_price: int) -> None:
+    """체결 직후 오늘 해당 종목 HOLDING 포지션의 entry_price/peak_price 업데이트."""
+    import logging
+    from datetime import date
+    from decimal import Decimal
+    from sqlalchemy import select
+    from app.core.database import SessionLocal
+    from app.models.position import Position, PositionStatus
+
+    log = logging.getLogger(__name__)
+    try:
+        with SessionLocal() as db:
+            pos = db.scalar(
+                select(Position).where(
+                    Position.stock_code == stock_code,
+                    Position.status == PositionStatus.HOLDING,
+                    Position.entry_date == date.today(),
+                ).limit(1)
+            )
+            if pos:
+                price = Decimal(str(fill_price))
+                pos.entry_price = price
+                pos.peak_price  = price
+                db.commit()
+                log.info("Fill price updated: %s entry=%s", stock_code, price)
+    except Exception as e:
+        log.error("Fill price update failed: %s", e)
 
 
 app = FastAPI(
