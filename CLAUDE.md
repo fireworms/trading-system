@@ -155,6 +155,9 @@ trading_system/
 ### 분석 잡 (08:30 Mon/Wed/Fri)
 1. `_should_run()` — run_interval_days 경과한 전략만 선택
 2. stock_master에서 candidate_filter 기준 50~200개 종목 샘플링
+   - **largecap**: KOSPI200 시총 내림차순 상위 90% + stride 다양성 10% (시총 상위 종목 항상 포함 보장)
+   - **mixed**: largecap 우선 + stride (순서 미보장 — 단타 다양성 유지)
+   - **volume**: KIS 시총순위 API 실시간 호출
 3. KIS API로 실시간 데이터 수집 (현재가/RSI/이평선/외국인+기관 순매수)
 4. Gemini 4단계 파이프라인 실행 → recommendations + RecommendationRun 저장
 5. 텔레그램 구독자 알림
@@ -226,8 +229,10 @@ trading_system/
 
 ## 실시간 WebSocket
 - **가격 스트림**: H0STCNT0 → /ws/prices 엔드포인트 → 프론트 포지션 페이지 LIVE 표시
-- **체결통보**: H0STCNI0 (broker_accounts.hts_id 등록 시 활성화)
-  - 매수 체결 이벤트 → Position.entry_price/peak_price 즉시 업데이트
+- **체결통보**: H0STCNI0 — 멀티유저 구조
+  - `_exec_canos: set[str]` — 등록된 모든 계좌 hts_id 동시 구독
+  - 체결 데이터 f[0](hts_id) → account_id → 해당 유저 포지션만 entry_price/peak_price 업데이트
+  - hts_id 저장/변경 시 서버 재시작 없이 즉시 구독 반영 (users API)
   - hts_id 미등록 시: REST 방식(TTTC8001R) fallback으로 체결가 조회
 
 ## 환경변수 (.env)
