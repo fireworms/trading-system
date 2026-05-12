@@ -81,5 +81,6 @@ class PositionOut(BaseModel):
     peak_price: Decimal | None
     target_price: Decimal | None       # rec.target_price
     trailing_stop_price: Decimal | None  # peak_price × (1 - stop_loss_pct/100)
+    target_hit_at: datetime | None = None
 
     model_config = {"from_attributes": True}

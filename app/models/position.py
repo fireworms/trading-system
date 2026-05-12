@@ -51,6 +51,8 @@ class Position(Base):
         nullable=False,
     )
     peak_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 0), nullable=True)
+    target_hit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    target_hit_peak: Mapped[Decimal | None] = mapped_column(Numeric(18, 0), nullable=True)
     exit_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 0), nullable=True)
     exit_date: Mapped[date | None] = mapped_column(Date, nullable=True)
     pnl_pct: Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)

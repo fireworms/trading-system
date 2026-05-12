@@ -4,7 +4,7 @@
 - 매도: 목표가/손절가/만료일 체크 후 시장가 매도
 """
 import logging
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone, time as dtime
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
@@ -335,10 +335,25 @@ class TradeExecutor:
                 self._close_position(pos, current_price, PositionStatus.EXPIRED, client)
                 return
 
-        # 목표가 도달 (AI 분석 기준 절대 가격)
+        # 목표가 도달 → 트레일링 모드 전환 (최초 1회만 매도 안 함)
         if rec.target_price and current_price >= rec.target_price:
-            self._close_position(pos, current_price, PositionStatus.TARGET_HIT, client)
-            return
+            if pos.target_hit_at is None:
+                pos.target_hit_at = datetime.now(timezone.utc)
+                pos.target_hit_peak = pos.peak_price
+                logger.info("Target hit %s @ %s — trailing mode activated", pos.stock_code, current_price)
+                return
+            # 이미 트레일링 중 → 아래 타임아웃/트레일링 로직으로 계속
+
+        # 트레일링 타임아웃: +1거래일 14:30 이후까지 신고점 갱신 없으면 청산
+        if pos.target_hit_at is not None:
+            days_since = self._trading_days_since(pos.target_hit_at.date(), today)
+            if (days_since >= 1
+                    and datetime.now().time() >= dtime(14, 30)
+                    and pos.peak_price <= (pos.target_hit_peak or Decimal(0))):
+                logger.info("Trailing timeout %s: no new peak in 1 trading day (peak=%s base=%s)",
+                            pos.stock_code, pos.peak_price, pos.target_hit_peak)
+                self._close_position(pos, current_price, PositionStatus.TARGET_HIT, client)
+                return
 
         # ATR 기반 트레일링 스탑 (2.5 × ATR14)
         # 변동성이 큰 종목엔 더 넓은 거리, 안정적인 종목엔 더 좁은 거리 적용
@@ -360,6 +375,18 @@ class TradeExecutor:
                             pos.stock_code, pos.peak_price, current_price, trailing_stop)
                 self._close_position(pos, current_price, PositionStatus.STOP_LOSS, client)
                 return
+
+    @staticmethod
+    def _trading_days_since(start: date, end: date) -> int:
+        if start >= end:
+            return 0
+        count = 0
+        cur = start + timedelta(days=1)
+        while cur <= end:
+            if cur.weekday() < 5:
+                count += 1
+            cur += timedelta(days=1)
+        return count
 
     def _close_position(
         self,

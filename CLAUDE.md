@@ -122,6 +122,8 @@ trading_system/
 - user_id, strategy_id (nullable), rec_id (nullable), account_id
 - stock_code, entry_price, entry_date, quantity
 - **peak_price**: 트레일링 스탑 기준 고점 (매수 직후 실 체결가로 초기화)
+- **target_hit_at**: 목표가 최초 도달 시각 (트레일링 모드 전환 시점, nullable)
+- **target_hit_peak**: 트레일링 전환 시점의 peak_price (신고점 갱신 여부 판단 기준, nullable)
 - status: HOLDING / TARGET_HIT / STOP_LOSS / EXPIRED / MANUAL_EXIT
 - exit_price, exit_date, pnl_pct
 
@@ -167,7 +169,8 @@ trading_system/
 
 ### 포지션 모니터링 (09:05, 12:00, 14:50)
 - 09:05: update_entry_prices_from_balance() 백업 실행 (폴링 fallback)
-- 목표가 도달 → 시장가 익절
+- 목표가 도달 → 즉시 익절 대신 트레일링 모드 전환 (target_hit_at, target_hit_peak 기록)
+- +1거래일 14:30까지 신고점(peak_price) 갱신 없으면 TARGET_HIT으로 강제 청산
 - 트레일링 스탑: `peak_price × (1 - stop_loss_pct/100)` 이탈 → 손절
 - Time-based Stop: 5일 후에도 손실 중 → 조기 청산
 - 만료(hold_days 경과) → 시장가 청산
