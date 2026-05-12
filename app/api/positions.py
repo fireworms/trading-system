@@ -84,16 +84,20 @@ def close_position(
         raise HTTPException(status_code=400, detail="Already closed")
 
     from app.services.kis.client import get_kis_client_from_account
+    import time as _time
     client = get_kis_client_from_account(pos.account)
-    current_price = client.get_current_price(pos.stock_code)
 
     try:
         client.sell_market_order(pos.stock_code, pos.quantity)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"주문 실패: {e}")
 
-    pnl = (current_price - pos.entry_price) / pos.entry_price * 100
-    pos.exit_price = current_price
+    _time.sleep(1)
+    fill_price = client.get_today_fill_price(pos.stock_code, side="01") \
+                 or client.get_current_price(pos.stock_code)
+
+    pnl = (fill_price - pos.entry_price) / pos.entry_price * 100
+    pos.exit_price = fill_price
     pos.exit_date   = date.today()
     pos.status      = PositionStatus.MANUAL_EXIT
     pos.pnl_pct     = Decimal(str(round(float(pnl), 4)))
@@ -118,14 +122,17 @@ def close_all_positions(
         )
     ).all()
 
+    import time as _time
     results = []
     for pos in positions:
         try:
             client = get_kis_client_from_account(pos.account)
-            current_price = client.get_current_price(pos.stock_code)
             client.sell_market_order(pos.stock_code, pos.quantity)
-            pnl = (current_price - pos.entry_price) / pos.entry_price * 100
-            pos.exit_price = current_price
+            _time.sleep(1)
+            fill_price = client.get_today_fill_price(pos.stock_code, side="01") \
+                         or client.get_current_price(pos.stock_code)
+            pnl = (fill_price - pos.entry_price) / pos.entry_price * 100
+            pos.exit_price = fill_price
             pos.exit_date   = date.today()
             pos.status      = PositionStatus.MANUAL_EXIT
             pos.pnl_pct     = Decimal(str(round(float(pnl), 4)))

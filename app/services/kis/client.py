@@ -598,10 +598,12 @@ class KISClient:
             },
         )
 
-    def get_today_fill_price(self, stock_code: str) -> Decimal | None:
+    def get_today_fill_price(self, stock_code: str, side: str = "02") -> Decimal | None:
         """
-        당일 특정 종목 매수 체결가 조회 (TTTC8001R).
-        매수 직후 호출해서 실 체결가를 entry_price에 반영할 때 사용.
+        당일 특정 종목 체결가 조회 (TTTC8001R).
+        side="02" → 매수 체결가 (entry_price용)
+        side="01" → 매도 체결가 (exit_price용)
+        INQR_DVSN="00" (역순) 이므로 output1 첫 항목이 가장 최근 주문.
         """
         today = date.today().strftime("%Y%m%d")
         tr_id = "TTTC8001R" if self._is_real else "VTTC8001R"
@@ -610,27 +612,26 @@ class KISClient:
                 "/uapi/domestic-stock/v1/trading/inquire-daily-ccld",
                 tr_id,
                 {
-                    "CANO":           self._cano,
-                    "ACNT_PRDT_CD":   self._acnt_prdt,
-                    "INQR_STRT_DT":   today,
-                    "INQR_END_DT":    today,
-                    "SLL_BUY_DVSN_CD": "02",   # 매수만
-                    "INQR_DVSN":      "00",
-                    "PDNO":           stock_code,
-                    "CCLD_DVSN":      "01",     # 체결분만
-                    "ORD_GNO_BRNO":   "",
-                    "ODNO":           "",
-                    "INQR_DVSN_3":    "00",
-                    "INQR_DVSN_1":    "",
-                    "CTX_AREA_FK100": "",
-                    "CTX_AREA_NK100": "",
+                    "CANO":            self._cano,
+                    "ACNT_PRDT_CD":    self._acnt_prdt,
+                    "INQR_STRT_DT":    today,
+                    "INQR_END_DT":     today,
+                    "SLL_BUY_DVSN_CD": side,
+                    "INQR_DVSN":       "00",    # 역순 → 첫 항목 = 최신 주문
+                    "PDNO":            stock_code,
+                    "CCLD_DVSN":       "01",    # 체결분만
+                    "ORD_GNO_BRNO":    "",
+                    "ODNO":            "",
+                    "INQR_DVSN_3":     "00",
+                    "INQR_DVSN_1":     "",
+                    "CTX_AREA_FK100":  "",
+                    "CTX_AREA_NK100":  "",
                 },
             )
             for item in data.get("output1", []):
                 qty = int(item.get("tot_ccld_qty") or 0)
                 if qty <= 0:
                     continue
-                # avg_prvs: 체결 평균가, 없으면 tot_ccld_amt/tot_ccld_qty 직접 계산
                 avg = item.get("avg_prvs") or ""
                 if avg and Decimal(avg) > 0:
                     return Decimal(avg)
@@ -638,7 +639,7 @@ class KISClient:
                 if amt > 0:
                     return (amt / qty).quantize(Decimal("1"))
         except Exception as e:
-            logger.warning("get_today_fill_price failed for %s: %s", stock_code, e)
+            logger.warning("get_today_fill_price failed for %s side=%s: %s", stock_code, side, e)
         return None
 
     def get_balance(self) -> list[BalanceItem]:

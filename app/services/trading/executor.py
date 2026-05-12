@@ -391,7 +391,7 @@ class TradeExecutor:
     def _close_position(
         self,
         pos: Position,
-        exit_price: Decimal,
+        current_price: Decimal,
         new_status: PositionStatus,
         client,
     ) -> None:
@@ -400,6 +400,10 @@ class TradeExecutor:
         except Exception as e:
             logger.error("Sell order failed for %s: %s", pos.stock_code, e)
             return
+
+        import time as _time
+        _time.sleep(1)
+        exit_price = client.get_today_fill_price(pos.stock_code, side="01") or current_price
 
         pnl = (exit_price - pos.entry_price) / pos.entry_price * 100
 
