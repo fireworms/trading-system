@@ -123,6 +123,15 @@ export default function DashboardPage() {
 
   async function createStrategy() {
     if (!form.name.trim()) { setMsg("전략명을 입력하세요"); return; }
+    const dailyExpected = (parseFloat(form.target_pct) || 0) / (Number(form.hold_days) || 1);
+    if (dailyExpected > 3) {
+      const ok = window.confirm(
+        `일평균 기대수익이 ${dailyExpected.toFixed(1)}%입니다.\n` +
+        `AI가 무리한 근거를 만들어내거나 추천 품질이 크게 저하될 수 있습니다.\n\n` +
+        `그래도 이 전략을 생성하시겠습니까?`
+      );
+      if (!ok) return;
+    }
     setCreating(true); setMsg("");
     try {
       await api.strategies.create({
