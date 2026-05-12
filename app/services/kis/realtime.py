@@ -38,7 +38,7 @@ class KISRealtimeClient:
         self._approval_key: str | None = None
         self._ws = None
         self._subscribed: set[str] = set()
-        self._exec_cano: str | None = None          # 체결통보 구독용 CANO
+        self._exec_canos: set[str] = set()          # 체결통보 구독 hts_id 목록 (멀티계좌)
         self._prices: dict[str, dict] = {}
         self._callbacks: list[PriceCallback] = []
         self._exec_callbacks: list[ExecutionCallback] = []
@@ -55,9 +55,12 @@ class KISRealtimeClient:
     def add_execution_callback(self, cb: ExecutionCallback) -> None:
         self._exec_callbacks.append(cb)
 
-    def subscribe_execution(self, cano: str) -> None:
-        """체결통보(H0STCNI0) 구독. cano = 계좌번호 앞 8자리."""
-        self._exec_cano = cano
+    def subscribe_execution(self, hts_id: str) -> None:
+        """체결통보(H0STCNI0) 구독. hts_id = KIS HTS 아이디 (계좌당 1개)."""
+        self._exec_canos.add(hts_id)
+
+    def unsubscribe_execution(self, hts_id: str) -> None:
+        self._exec_canos.discard(hts_id)
 
     def get_price(self, code: str) -> dict | None:
         return self._prices.get(code)
@@ -132,10 +135,10 @@ class KISRealtimeClient:
             for code in list(self._subscribed):
                 await self._send_sub(code, subscribe=True)
 
-            # 체결통보 구독
-            if self._exec_cano:
-                await self._send_raw_sub("H0STCNI0", self._exec_cano, subscribe=True)
-                logger.info("KIS execution notification subscribed: cano=%s", self._exec_cano)
+            # 체결통보 구독 (등록된 모든 hts_id)
+            for hts_id in self._exec_canos:
+                await self._send_raw_sub("H0STCNI0", hts_id, subscribe=True)
+                logger.info("KIS execution notification subscribed: hts_id=%s", hts_id)
 
             async for raw in ws:
                 await self._handle(raw)
@@ -229,6 +232,7 @@ class KISRealtimeClient:
     async def _parse_execution(self, f: list[str]) -> None:
         """
         H0STCNI0 체결통보 파싱.
+        [0]  CUST_ID        HTS 아이디 (어느 계좌의 체결인지 식별)
         [4]  SELN_BYOV_CLS  매도매수구분 (01=매도, 02=매수)
         [7]  STCK_SHRN_ISCD 종목코드
         [8]  CNTG_QTY       체결수량
@@ -238,9 +242,10 @@ class KISRealtimeClient:
         try:
             if len(f) < 13:
                 return
-            cntg_yn       = f[12]
+            cntg_yn = f[12]
             if cntg_yn != "1":   # 체결 아닌 이벤트(접수/확인 등) 무시
                 return
+            hts_id     = f[0]
             side       = f[4]    # "01"=매도, "02"=매수
             stock_code = f[7]
             fill_qty   = int(f[8]) if f[8].isdigit() else 0
@@ -250,12 +255,13 @@ class KISRealtimeClient:
                 return
 
             data = {
+                "hts_id":      hts_id,
                 "side":        "buy" if side == "02" else "sell",
                 "stock_code":  stock_code,
                 "fill_qty":    fill_qty,
                 "fill_price":  fill_price,
             }
-            logger.info("Execution: %s %s x%d @ %d", data["side"], stock_code, fill_qty, fill_price)
+            logger.info("Execution: %s %s %s x%d @ %d", hts_id, data["side"], stock_code, fill_qty, fill_price)
 
             for cb in self._exec_callbacks:
                 await cb(data)

@@ -152,7 +152,16 @@ def update_broker_account(
     if not account or account.user_id != user_id:
         raise HTTPException(status_code=404, detail="Account not found")
     if body.hts_id is not None:
+        old_hts_id = account.hts_id
         account.hts_id = body.hts_id or None
+        # 실시간 클라이언트에 즉시 반영 (서버 재시작 불필요)
+        from app.services.kis.realtime import get_realtime_client
+        rt = get_realtime_client()
+        if rt:
+            if old_hts_id:
+                rt.unsubscribe_execution(old_hts_id)
+            if account.hts_id:
+                rt.subscribe_execution(account.hts_id)
     db.commit()
     db.refresh(account)
     return account

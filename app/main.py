@@ -30,65 +30,82 @@ async def lifespan(app: FastAPI):
 
 
 def _init_realtime_client() -> None:
-    """DB에서 첫 번째 활성 브로커 계좌로 실시간 클라이언트 초기화."""
+    """DB의 모든 활성 브로커 계좌로 실시간 클라이언트 초기화 (멀티유저)."""
     try:
         from app.core.database import SessionLocal
         from app.services.kis.client import get_kis_client
         from app.services.kis.realtime import init_realtime_client
         from app.api.ws import manager as ws_manager
+        from app.models.user import BrokerAccount
+        from sqlalchemy import select as _select
 
         with SessionLocal() as db:
+            # 가격 스트림용 클라이언트는 첫 번째 활성 계좌로 공유 사용
             kis = get_kis_client(db)
             if not kis:
                 return
             rt = init_realtime_client(kis._key, kis._secret, kis._is_real)
-            # hts_id가 등록된 경우 체결통보 구독
-            from app.models.user import BrokerAccount
-            from sqlalchemy import select as _select
-            account = db.scalar(_select(BrokerAccount).where(BrokerAccount.is_active == True).limit(1))
-            hts_id = account.hts_id if account else None
+
+            # hts_id 등록된 모든 활성 계좌 체결통보 구독
+            accounts = db.scalars(
+                _select(BrokerAccount).where(
+                    BrokerAccount.is_active == True,
+                    BrokerAccount.hts_id.isnot(None),
+                )
+            ).all()
+            hts_ids = [a.hts_id for a in accounts if a.hts_id]
 
         # 가격 업데이트 → WS 브로드캐스트
         async def _on_price(code: str, price: dict) -> None:
             await ws_manager.broadcast(code, price)
 
-        # 체결 통보 → entry_price 즉시 업데이트
+        # 체결 통보 → hts_id로 정확한 계좌/유저 특정 후 entry_price 업데이트
         async def _on_execution(data: dict) -> None:
             if data.get("side") != "buy":
                 return
             import asyncio
-            from datetime import date
-            from decimal import Decimal
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, _update_fill_price, data["stock_code"], data["fill_price"])
+            await loop.run_in_executor(
+                None, _update_fill_price, data["stock_code"], data["fill_price"], data["hts_id"]
+            )
 
         rt.add_callback(_on_price)
         rt.add_execution_callback(_on_execution)
-        if hts_id:
+        for hts_id in hts_ids:
             rt.subscribe_execution(hts_id)
             logger.info("KIS execution notification enabled (hts_id=%s)", hts_id)
-        else:
-            logger.info("KIS execution notification disabled (hts_id not set)")
+        if not hts_ids:
+            logger.info("KIS execution notification disabled (no hts_id registered)")
         rt.start()
     except Exception as e:
-        import logging
-        logging.getLogger(__name__).error("Realtime client init failed: %s", e)
+        logger.error("Realtime client init failed: %s", e)
 
 
-def _update_fill_price(stock_code: str, fill_price: int) -> None:
-    """체결 직후 오늘 해당 종목 HOLDING 포지션의 entry_price/peak_price 업데이트."""
-    import logging
+def _update_fill_price(stock_code: str, fill_price: int, hts_id: str) -> None:
+    """체결 직후 해당 계좌(hts_id) + 종목의 오늘 HOLDING 포지션 entry_price/peak_price 업데이트."""
     from datetime import date
     from decimal import Decimal
     from sqlalchemy import select
     from app.core.database import SessionLocal
     from app.models.position import Position, PositionStatus
+    from app.models.user import BrokerAccount
 
-    log = logging.getLogger(__name__)
     try:
         with SessionLocal() as db:
+            # hts_id → account_id 조회
+            account = db.scalar(
+                select(BrokerAccount).where(
+                    BrokerAccount.hts_id == hts_id,
+                    BrokerAccount.is_active == True,
+                )
+            )
+            if not account:
+                logger.warning("Fill price update: unknown hts_id=%s", hts_id)
+                return
+
             pos = db.scalar(
                 select(Position).where(
+                    Position.account_id == account.account_id,
                     Position.stock_code == stock_code,
                     Position.status == PositionStatus.HOLDING,
                     Position.entry_date == date.today(),
@@ -99,9 +116,9 @@ def _update_fill_price(stock_code: str, fill_price: int) -> None:
                 pos.entry_price = price
                 pos.peak_price  = price
                 db.commit()
-                log.info("Fill price updated: %s entry=%s", stock_code, price)
+                logger.info("Fill price updated: hts_id=%s %s entry=%s", hts_id, stock_code, price)
     except Exception as e:
-        log.error("Fill price update failed: %s", e)
+        logger.error("Fill price update failed: %s", e)
 
 
 app = FastAPI(
