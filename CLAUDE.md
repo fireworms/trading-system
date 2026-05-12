@@ -212,6 +212,8 @@ trading_system/
 - `TTTC0802U` order-cash (매수): 시장가 주문
 - `TTTC0801U` order-cash (매도): 시장가 주문
 - `TTTC8001R` inquire-daily-ccld: 당일 주문 체결 조회 (실 체결가 확인용)
+  - `get_today_fill_price(stock_code, side="02")` — side "02"=매수, "01"=매도
+  - 매수 직후 entry_price, 매도 직후 exit_price에 실 체결가 반영
 - `CTPF1002R` search-stock-info: 종목 기본정보 (섹터)
 - `FHPST01740000` 시총순위: KOSPI200/KOSDAQ150 구성종목 근사치
 
@@ -245,6 +247,8 @@ TELEGRAM_BOT_TOKEN=      # 선택
 - 자동매매 실행 전 is_auto_trade + news_auto_trade_paused 플래그 확인
 - raw_response['macro']['market_theme'] 에서 하락장 판단 (MacroAnalysis 모델에는 없음)
 - 매수 스킵 fallback: AI 확인 실패 시 전종목 skip (안전 방향)
+- HTTP 클라이언트: 전체 코드 httpx 통일 (requests 사용 금지)
+- 매도 후 exit_price: 반드시 `get_today_fill_price(side="01")`로 실 체결가 조회 (현재가 사용 금지)
 
 ## 협업 원칙
 
