@@ -266,6 +266,34 @@ export default function DashboardPage() {
               ))}
             </div>
 
+            {/* 비현실적 목표 경고 */}
+            {(() => {
+              const days = Number(form.hold_days);
+              const tgt  = parseFloat(form.target_pct) || 0;
+              if (!days || !tgt) return null;
+              const dailyExpected = tgt / days;
+              if (dailyExpected <= 3) return null;
+              const level = dailyExpected > 7 ? "red" : "yellow";
+              return (
+                <div className={`mt-3 rounded-lg px-4 py-3 flex items-start gap-2 text-xs ${
+                  level === "red"
+                    ? "bg-red-950/50 border border-red-800/50 text-red-300"
+                    : "bg-yellow-950/50 border border-yellow-800/50 text-yellow-300"
+                }`}>
+                  <span className="shrink-0 mt-0.5">{level === "red" ? "🚨" : "⚠️"}</span>
+                  <div>
+                    <span className="font-medium">
+                      {level === "red" ? "비현실적인 목표입니다 — " : "목표 달성이 어려울 수 있습니다 — "}
+                    </span>
+                    일평균 기대수익 <span className="font-mono font-semibold">{dailyExpected.toFixed(1)}%</span>
+                    {level === "red"
+                      ? " 는 거의 불가능한 수준입니다. AI가 무리한 근거를 만들어낼 가능성이 높습니다."
+                      : " 은 실현 가능성이 낮습니다. AI 추천 품질이 저하될 수 있습니다."}
+                  </div>
+                </div>
+              );
+            })()}
+
             {msg && <p className="text-sm text-red-400 mt-3">{msg}</p>}
             <button onClick={createStrategy} disabled={creating}
               className="mt-4 bg-blue-600 hover:bg-blue-700 text-white rounded-lg px-5 py-2 text-sm font-medium disabled:opacity-50">
