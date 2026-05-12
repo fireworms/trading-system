@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
-import { api, Strategy, StrategyStats, User, CandidateFilter, CandidateMarket, getToken } from "@/lib/api";
+import { api, Strategy, StrategyStats, Subscription, User, CandidateFilter, CandidateMarket, getToken } from "@/lib/api";
 import StatCard from "@/components/StatCard";
 
 interface StrategyWithStats {
@@ -46,6 +46,7 @@ export default function DashboardPage() {
   const router = useRouter();
   const [me, setMe]             = useState<User | null>(null);
   const [items, setItems]       = useState<StrategyWithStats[]>([]);
+  const [subMap, setSubMap]     = useState<Map<string, Subscription>>(new Map());
   const [scheduler, setScheduler] = useState<{ running: boolean; jobs: { id: string; next_run: string | null }[] } | null>(null);
   const [loading, setLoading]   = useState(true);
   const [showCreate, setShowCreate] = useState(false);
@@ -63,10 +64,12 @@ export default function DashboardPage() {
       const user = await api.auth.me();
       setMe(user);
       const isAdmin = user.role === "ADMIN" || user.role === "SUPER_ADMIN";
-      const [strategies, sched] = await Promise.all([
+      const [strategies, sched, subs] = await Promise.all([
         api.strategies.list(),
         isAdmin ? api.admin.schedulerStatus().catch(() => null) : Promise.resolve(null),
+        api.strategies.mySubscriptions().catch(() => [] as Subscription[]),
       ]);
+      setSubMap(new Map(subs.map((s) => [s.strategy_id, s])));
       const withStats = await Promise.all(
         strategies.map(async (s) => ({
           strategy: s,
@@ -216,7 +219,9 @@ export default function DashboardPage() {
           <p className="text-gray-500">등록된 전략이 없습니다. {isAdmin && "위에서 전략을 만들어보세요."}</p>
         ) : (
           <div className="flex flex-col gap-6">
-            {items.map(({ strategy, stats }) => (
+            {items.map(({ strategy, stats }) => {
+              const sub = subMap.get(strategy.strategy_id);
+              return (
               <div key={strategy.strategy_id} className="bg-gray-800 rounded-2xl p-6">
                 <div className="flex items-start justify-between mb-3">
                   <div>
@@ -225,6 +230,18 @@ export default function DashboardPage() {
                       <span className={`text-xs px-2 py-0.5 rounded-full ${strategy.is_active ? "bg-green-900 text-green-400" : "bg-gray-700 text-gray-400"}`}>
                         {strategy.is_active ? "활성" : "비활성"}
                       </span>
+                      {/* 구독 배지 */}
+                      {sub && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-900/60 text-yellow-300 flex items-center gap-1">
+                          ★ 구독 중
+                          <span className={`ml-1 ${sub.is_auto_trade ? "text-green-400" : "text-gray-400"}`}>
+                            · 자동{sub.is_auto_trade ? "ON" : "OFF"}
+                          </span>
+                          <span className="text-gray-400 ml-1">
+                            · {Number(sub.invest_amount_per_pick).toLocaleString()}원
+                          </span>
+                        </span>
+                      )}
                       {/* 후보 필터 배지 */}
                       <span className={`text-xs px-2 py-0.5 rounded-full ${FILTER_COLORS[strategy.candidate_filter] ?? FILTER_COLORS.mixed}`}>
                         {FILTER_LABELS[strategy.candidate_filter] ?? strategy.candidate_filter}
@@ -295,7 +312,8 @@ export default function DashboardPage() {
                   <p className="text-sm text-gray-500">통계 없음</p>
                 )}
               </div>
-            ))}
+              );
+            })}
           </div>
         )}
 
