@@ -8,7 +8,7 @@ import logging
 from decimal import Decimal
 from datetime import date
 
-import requests
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +31,12 @@ class TelegramNotifier:
 
     def _send(self, chat_id: str, text: str) -> None:
         try:
-            resp = requests.post(
+            resp = httpx.post(
                 self._url,
                 json={"chat_id": chat_id, "text": text, "parse_mode": "HTML"},
                 timeout=10,
             )
-            if not resp.ok:
+            if not resp.is_success:
                 logger.warning("Telegram send failed (chat_id=%s): %s %s",
                                chat_id, resp.status_code, resp.text[:200])
         except Exception as e:
