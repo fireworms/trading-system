@@ -63,7 +63,7 @@ export default function PositionsPage() {
   const { prices: livePrices, connected: liveConnected } = usePriceStream(holdingCodes);
 
   // 장 마감 fallback: REST로 가져온 가격 (WebSocket 없을 때 사용)
-  const [restPrices, setRestPrices] = useState<Record<string, { current_price: number; bid_price: number; change_pct: number }>>({});
+  const [restPrices, setRestPrices] = useState<Record<string, { current_price: number; bid_price: number; change: number; change_pct: number; volume: number }>>({});
 
   // livePrices 우선, 없으면 restPrices fallback
   const displayPrices = { ...restPrices, ...livePrices };
@@ -101,8 +101,10 @@ export default function PositionsPage() {
           const code = holdingPos[i].stock_code;
           rp[code] = {
             current_price: r.value.current_price,
-            bid_price: r.value.current_price,  // REST엔 bid 없으므로 current로 대체
+            bid_price: r.value.current_price,
+            change: 0,
             change_pct: r.value.change_pct,
+            volume: 0,
           };
         }
       });

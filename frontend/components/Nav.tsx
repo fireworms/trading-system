@@ -8,6 +8,7 @@ import { api, User, clearToken } from "@/lib/api";
 const links = [
   { href: "/",           label: "대시보드" },
   { href: "/positions",  label: "포지션" },
+  { href: "/stats",      label: "수익통계" },
   { href: "/profile",    label: "프로필" },
 ];
 

@@ -59,6 +59,137 @@ def _enrich(pos: Position) -> PositionOut:
     )
 
 
+@router.get("/stats")
+def get_stats(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """확정손익 통계 — 전체 KPI / 전략별 / 월별 / 종목별."""
+    from app.models.strategy import Strategy
+    from app.models.stock_master import StockMaster
+    from collections import defaultdict
+
+    closed = db.scalars(
+        select(Position).where(
+            Position.user_id == current_user.user_id,
+            Position.status != PositionStatus.HOLDING,
+            Position.exit_price.isnot(None),
+            Position.pnl_pct.isnot(None),
+        ).order_by(Position.exit_date.desc())
+    ).all()
+
+    # stock_code → stock_name 캐시 (stock_master 단건 조회)
+    codes = {pos.stock_code for pos in closed}
+    name_map: dict[str, str] = {}
+    if codes:
+        masters = db.scalars(
+            select(StockMaster).where(StockMaster.stock_code.in_(codes))
+        ).all()
+        name_map = {m.stock_code: m.stock_name for m in masters}
+
+    def pnl_amount(pos: Position) -> float:
+        return float(pos.pnl_pct) / 100 * float(pos.entry_price) * pos.quantity
+
+    def build_kpi(positions):
+        if not positions:
+            return {"total_trades": 0, "win_count": 0, "loss_count": 0,
+                    "win_rate": None, "avg_win_pct": None, "avg_loss_pct": None,
+                    "profit_factor": None, "total_pnl_amount": 0, "avg_hold_days": None}
+        wins   = [p for p in positions if float(p.pnl_pct) > 0]
+        losses = [p for p in positions if float(p.pnl_pct) <= 0]
+        avg_win  = sum(float(p.pnl_pct) for p in wins)  / len(wins)  if wins   else None
+        avg_loss = sum(float(p.pnl_pct) for p in losses) / len(losses) if losses else None
+        pf = abs(avg_win / avg_loss) if avg_win and avg_loss else None
+        hold_days = [
+            (p.exit_date - p.entry_date).days for p in positions
+            if p.exit_date and p.entry_date
+        ]
+        return {
+            "total_trades":     len(positions),
+            "win_count":        len(wins),
+            "loss_count":       len(losses),
+            "win_rate":         round(len(wins) / len(positions), 4) if positions else None,
+            "avg_win_pct":      round(avg_win, 4)  if avg_win  is not None else None,
+            "avg_loss_pct":     round(avg_loss, 4) if avg_loss is not None else None,
+            "profit_factor":    round(pf, 4) if pf is not None else None,
+            "total_pnl_amount": round(sum(pnl_amount(p) for p in positions)),
+            "avg_hold_days":    round(sum(hold_days) / len(hold_days), 1) if hold_days else None,
+        }
+
+    # 전략별
+    by_strat: dict[str, list] = defaultdict(list)
+    for pos in closed:
+        key = str(pos.strategy_id) if pos.strategy_id else "__none__"
+        by_strat[key].append(pos)
+
+    strategy_stats = []
+    for sid, positions in by_strat.items():
+        strat = db.get(Strategy, sid) if sid != "__none__" else None
+        kpi = build_kpi(positions)
+        kpi["strategy_id"]   = sid
+        kpi["strategy_name"] = strat.name if strat else "전략 없음"
+        strategy_stats.append(kpi)
+
+    # 월별
+    by_month: dict[str, list] = defaultdict(list)
+    for pos in closed:
+        if pos.exit_date:
+            by_month[pos.exit_date.strftime("%Y-%m")].append(pos)
+    month_stats = [
+        {
+            "month":            m,
+            "total_trades":     len(ps),
+            "win_count":        sum(1 for p in ps if float(p.pnl_pct) > 0),
+            "total_pnl_amount": round(sum(pnl_amount(p) for p in ps)),
+            "avg_pnl_pct":      round(sum(float(p.pnl_pct) for p in ps) / len(ps), 2),
+        }
+        for m, ps in sorted(by_month.items())
+    ]
+
+    # 종목별
+    by_stock: dict[str, list] = defaultdict(list)
+    for pos in closed:
+        by_stock[pos.stock_code].append(pos)
+    stock_stats = sorted([
+        {
+            "stock_code":       code,
+            "stock_name":       name_map.get(code, ""),
+            "total_trades":     len(ps),
+            "win_count":        sum(1 for p in ps if float(p.pnl_pct) > 0),
+            "total_pnl_amount": round(sum(pnl_amount(p) for p in ps)),
+            "avg_pnl_pct":      round(sum(float(p.pnl_pct) for p in ps) / len(ps), 2),
+        }
+        for code, ps in by_stock.items()
+    ], key=lambda x: x["total_pnl_amount"], reverse=True)
+
+    # 거래 목록 (확정손익 내림차순)
+    trade_list = [
+        {
+            "position_id":  str(pos.position_id),
+            "stock_code":   pos.stock_code,
+            "stock_name":   name_map.get(pos.stock_code, ""),
+            "strategy_name": pos.strategy.name if pos.strategy else "전략 없음",
+            "entry_price":  float(pos.entry_price),
+            "exit_price":   float(pos.exit_price),
+            "quantity":     pos.quantity,
+            "pnl_pct":      float(pos.pnl_pct),
+            "pnl_amount":   round(pnl_amount(pos)),
+            "hold_days":    (pos.exit_date - pos.entry_date).days if pos.exit_date and pos.entry_date else None,
+            "exit_date":    pos.exit_date.isoformat() if pos.exit_date else None,
+            "status":       pos.status.value,
+        }
+        for pos in closed
+    ]
+
+    return {
+        "overall":    build_kpi(closed),
+        "by_strategy": strategy_stats,
+        "by_month":   month_stats,
+        "by_stock":   stock_stats,
+        "trades":     trade_list,
+    }
+
+
 @router.get("", response_model=list[PositionOut])
 def list_positions(
     status: PositionStatus | None = None,

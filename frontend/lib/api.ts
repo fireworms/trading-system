@@ -76,6 +76,7 @@ export interface Strategy {
   candidate_filter: CandidateFilter;
   candidate_market: CandidateMarket;
   is_active: boolean;
+  created_by: string;
 }
 
 export interface Verification {
@@ -297,6 +298,63 @@ export interface MarketOverview {
   cached_at: number;
 }
 
+export interface TradeKPI {
+  total_trades: number;
+  win_count: number;
+  loss_count: number;
+  win_rate: number | null;
+  avg_win_pct: number | null;
+  avg_loss_pct: number | null;
+  profit_factor: number | null;
+  total_pnl_amount: number;
+  avg_hold_days: number | null;
+}
+
+export interface StrategyKPI extends TradeKPI {
+  strategy_id: string;
+  strategy_name: string;
+}
+
+export interface MonthStat {
+  month: string;
+  total_trades: number;
+  win_count: number;
+  total_pnl_amount: number;
+  avg_pnl_pct: number;
+}
+
+export interface StockStat {
+  stock_code: string;
+  stock_name: string;
+  total_trades: number;
+  win_count: number;
+  total_pnl_amount: number;
+  avg_pnl_pct: number;
+}
+
+export interface TradeRow {
+  position_id: string;
+  stock_code: string;
+  stock_name: string;
+  strategy_name: string;
+  entry_price: number;
+  exit_price: number;
+  quantity: number;
+  pnl_pct: number;
+  pnl_amount: number;
+  hold_days: number | null;
+  exit_date: string | null;
+  status: string;
+}
+
+export interface ProfitStats {
+  overall: TradeKPI;
+  by_strategy: StrategyKPI[];
+  by_month: MonthStat[];
+  by_stock: StockStat[];
+  trades: TradeRow[];
+}
+
 // ------------------------------------------------------------------ //
 // API
 // ------------------------------------------------------------------ //
@@ -362,6 +420,7 @@ export const api = {
   },
 
   positions: {
+    stats: () => authFetch<ProfitStats>("/positions/stats"),
     list: (status?: PositionStatus) =>
       authFetch<Position[]>(`/positions${status ? `?status=${status}` : ""}`),
     close: (positionId: string) =>

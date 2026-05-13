@@ -43,7 +43,7 @@ trading_system/
 │   │   ├── users.py             # 회원가입, 로그인, 브로커계좌 CRUD (hts_id 수정 포함)
 │   │   ├── strategies.py        # 전략 CRUD, 구독 관리
 │   │   ├── recommendations.py   # 추천 조회, 통계
-│   │   ├── positions.py         # 포지션 CRUD, 수동매수/청산 (실 체결가 반영)
+│   │   ├── positions.py         # 포지션 CRUD, 수동매수/청산 (실 체결가 반영), GET /positions/stats (수익통계)
 │   │   ├── market.py            # 시세 조회 API
 │   │   ├── admin.py             # 수동 트리거, 스케줄러 상태
 │   │   ├── prompt_versions.py   # 프롬프트 버전 관리
