@@ -29,7 +29,7 @@ class TradeExecutor:
     # 매수
     # ------------------------------------------------------------------ #
 
-    def execute_buys_for_run(self, sub: UserStrategy, run: RecommendationRun) -> None:
+def execute_buys_for_run(self, sub: UserStrategy, run: RecommendationRun) -> None:
         """추천 run의 종목들을 구독자 계좌로 시장가 매수."""
         if not sub.is_auto_trade:
             logger.warning("Auto trade is OFF for sub=%s, skipping", sub.id)
@@ -118,7 +118,6 @@ class TradeExecutor:
                 buyable_cash -= order_amount
                 sector_counts[sector] = sector_counts.get(sector, 0) + 1
 
-                # 실 체결가 즉시 조회 (TTTC8001R)
                 import time as _time
                 _time.sleep(1)
                 fill_price = client.get_today_fill_price(rec.stock_code) or current_price
