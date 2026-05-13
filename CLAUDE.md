@@ -229,7 +229,8 @@ trading_system/
 
 ## 실시간 WebSocket
 - **가격 스트림**: H0STCNT0 → /ws/prices 엔드포인트 → 프론트 포지션 페이지 LIVE 표시
-  - H0STCNT0 필드: [0]코드, [2]현재가, [3]전일대비부호, [4]전일대비, [5]등락률, [13]누적거래량
+  - H0STCNT0 필드: [0]코드, [2]현재가, [3]전일대비부호, [4]전일대비, [5]등락률, [11]매수호가1(bid), [13]누적거래량
+  - 프론트 미실현 손익: bid_price 기준 계산 (시장가 매도 실체결 기준), 퍼센트+원화 금액 표시
 - **체결통보**: H0STCNI0 — 멀티유저 구조
   - `_exec_canos: set[str]` — 등록된 모든 계좌 hts_id 동시 구독
   - 체결 데이터 f[0](hts_id) → account_id → 해당 유저 포지션만 entry_price/peak_price 업데이트
