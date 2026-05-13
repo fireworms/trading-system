@@ -62,6 +62,12 @@ export default function PositionsPage() {
     .map((p) => p.stock_code);
   const { prices: livePrices, connected: liveConnected } = usePriceStream(holdingCodes);
 
+  // 장 마감 fallback: REST로 가져온 가격 (WebSocket 없을 때 사용)
+  const [restPrices, setRestPrices] = useState<Record<string, { current_price: number; bid_price: number; change_pct: number }>>({});
+
+  // livePrices 우선, 없으면 restPrices fallback
+  const displayPrices = { ...restPrices, ...livePrices };
+
   useEffect(() => {
     if (!getToken()) { router.push("/login"); return; }
     load();
@@ -83,6 +89,24 @@ export default function PositionsPage() {
         setBuyAccountId(activeAccs[0].account_id);
         setHtsId(activeAccs[0].hts_id ?? "");
       }
+
+      // HOLDING 포지션 REST 가격 조회 (장 마감 후 fallback)
+      const holdingPos = posData.filter((p) => p.status === "HOLDING");
+      const priceResults = await Promise.allSettled(
+        holdingPos.map((p) => api.market.price(p.stock_code))
+      );
+      const rp: typeof restPrices = {};
+      priceResults.forEach((r, i) => {
+        if (r.status === "fulfilled") {
+          const code = holdingPos[i].stock_code;
+          rp[code] = {
+            current_price: r.value.current_price,
+            bid_price: r.value.current_price,  // REST엔 bid 없으므로 current로 대체
+            change_pct: r.value.change_pct,
+          };
+        }
+      });
+      setRestPrices(rp);
     } finally {
       setLoading(false);
     }
@@ -404,7 +428,7 @@ export default function PositionsPage() {
             </thead>
             <tbody>
               {filtered.map((pos) => {
-                const live = livePrices[pos.stock_code];
+                const live = displayPrices[pos.stock_code];
                 const entryPrice = Number(pos.entry_price);
                 // 시장가 매도 시 bid_price(매수호가1) 기준으로 미실현 손익 계산
                 const sellPrice = live ? (live.bid_price || live.current_price) : null;

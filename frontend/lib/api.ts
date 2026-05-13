@@ -349,6 +349,7 @@ export const api = {
     mySubscriptions: () => authFetch<Subscription[]>("/strategies/my/subscriptions"),
     updateSubscription: (subId: number, body: { invest_amount_per_pick?: number; is_auto_trade?: boolean; account_id?: string }) =>
       authFetch<Subscription>(`/strategies/subscriptions/${subId}`, { method: "PATCH", body: JSON.stringify(body) }),
+    deactivate: (id: string) => authFetch<void>(`/strategies/${id}`, { method: "DELETE" }),
     unsubscribe: (subId: number) => authFetch<void>(`/strategies/subscriptions/${subId}`, { method: "DELETE" }),
     toggleAutoTrade: (subId: number) => authFetch<Subscription>(`/strategies/subscriptions/${subId}/auto-trade`, { method: "PATCH" }),
   },

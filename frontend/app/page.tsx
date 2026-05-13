@@ -203,8 +203,8 @@ export default function DashboardPage() {
           </div>
         </div>
 
-        {/* 시장 현황 */}
-        <MarketOverviewPanel />
+        {/* 시장 현황 — 전략 생성 폼 열리면 숨김 */}
+        {!showCreate && <MarketOverviewPanel />}
 
         {/* 전략 생성 폼 */}
         {showCreate && (
@@ -273,47 +273,64 @@ export default function DashboardPage() {
 
               {/* 수치 파라미터 */}
               {([
-                ["보유기간 (일)", "hold_days", 1, 365],
-                ["목표수익률 (%)", "target_pct", 0.1, 100],
-                ["손절라인 (%)", "stop_loss_pct", 0.1, 50],
-                ["최소확률 (%)", "min_probability", 0, 100],
-                ["픽 종목 수", "pick_count", 1, 4],
-                ["실행 주기 (일)", "run_interval_days", 1, 30],
-              ] as [string, keyof typeof form, number, number][]).map(([label, key, min, max]) => (
+                ["보유기간 (일)", "hold_days", 1, 365, null],
+                ["목표수익률 (%)", "target_pct", 0.1, 100, null],
+                ["손절라인 (%)", "stop_loss_pct", 0.1, 50, null],
+                ["최소확률 (%, 최소 55)", "min_probability", 55, 100, null],
+                ["픽 종목 수 (최대 4)", "pick_count", 1, 4, null],
+                ["실행 주기 (일)", "run_interval_days", 1, 30, null],
+              ] as [string, keyof typeof form, number, number, null][]).map(([label, key, min, max]) => (
                 <div key={key}>
                   <label className="text-xs text-gray-400 mb-1 block">{label}</label>
                   <input type="number" min={min} max={max}
                     value={form[key] as string | number}
                     onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
+                    onBlur={(e) => {
+                      const val = parseFloat(e.target.value);
+                      if (!isNaN(val)) {
+                        const clamped = Math.min(max, Math.max(min, val));
+                        if (clamped !== val) setForm((f) => ({ ...f, [key]: String(clamped) }));
+                      }
+                    }}
                     className="w-full bg-gray-700 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-blue-500" />
                 </div>
               ))}
             </div>
 
-            {/* 비현실적 목표 경고 */}
+            {/* 경고 메시지 */}
             {(() => {
               const days = Number(form.hold_days);
               const tgt  = parseFloat(form.target_pct) || 0;
-              if (!days || !tgt) return null;
-              const dailyExpected = tgt / days;
-              if (dailyExpected <= 0.5) return null;
-              const level = dailyExpected > 0.7 ? "red" : "yellow";
+              const stop = parseFloat(form.stop_loss_pct) || 0;
+              const warnings: { level: "red" | "yellow"; msg: string }[] = [];
+
+              if (days && tgt) {
+                const daily = tgt / days;
+                if (daily > 0.7)
+                  warnings.push({ level: "red", msg: `일평균 기대수익 ${daily.toFixed(2)}% — 거의 불가능한 수준입니다. AI가 무리한 근거를 만들어낼 가능성이 높습니다.` });
+                else if (daily > 0.5)
+                  warnings.push({ level: "yellow", msg: `일평균 기대수익 ${daily.toFixed(2)}% — 달성이 어려울 수 있습니다.` });
+              }
+
+              if (tgt && stop) {
+                const rr = tgt / stop;
+                if (rr < 1.5)
+                  warnings.push({ level: "red", msg: `R/R 비율 ${rr.toFixed(2)} — 최소 1.5 이상이어야 기대값이 양수입니다. 손절라인을 낮추거나 목표수익률을 높이세요.` });
+              }
+
+              if (!warnings.length) return null;
               return (
-                <div className={`mt-3 rounded-lg px-4 py-3 flex items-start gap-2 text-xs ${
-                  level === "red"
-                    ? "bg-red-950/50 border border-red-800/50 text-red-300"
-                    : "bg-yellow-950/50 border border-yellow-800/50 text-yellow-300"
-                }`}>
-                  <span className="shrink-0 mt-0.5">{level === "red" ? "🚨" : "⚠️"}</span>
-                  <div>
-                    <span className="font-medium">
-                      {level === "red" ? "비현실적인 목표입니다 — " : "목표 달성이 어려울 수 있습니다 — "}
-                    </span>
-                    일평균 기대수익 <span className="font-mono font-semibold">{dailyExpected.toFixed(1)}%</span>
-                    {level === "red"
-                      ? " 는 거의 불가능한 수준입니다. AI가 무리한 근거를 만들어낼 가능성이 높습니다."
-                      : " 은 실현 가능성이 낮습니다. AI 추천 품질이 저하될 수 있습니다."}
-                  </div>
+                <div className="mt-3 flex flex-col gap-2">
+                  {warnings.map((w, i) => (
+                    <div key={i} className={`rounded-lg px-4 py-3 flex items-start gap-2 text-xs ${
+                      w.level === "red"
+                        ? "bg-red-950/50 border border-red-800/50 text-red-300"
+                        : "bg-yellow-950/50 border border-yellow-800/50 text-yellow-300"
+                    }`}>
+                      <span className="shrink-0 mt-0.5">{w.level === "red" ? "🚨" : "⚠️"}</span>
+                      <span>{w.msg}</span>
+                    </div>
+                  ))}
                 </div>
               );
             })()}
@@ -364,12 +381,26 @@ export default function DashboardPage() {
                     </div>
                     <p className="text-sm text-gray-400 mt-1">{strategy.description ?? ""}</p>
                   </div>
-                  <Link
-                    href={`/strategies/${strategy.strategy_id}`}
-                    className="text-sm text-blue-400 hover:text-blue-300 whitespace-nowrap ml-4"
-                  >
-                    추천 결과 보기 →
-                  </Link>
+                  <div className="flex items-center gap-3 ml-4 shrink-0">
+                    <Link
+                      href={`/strategies/${strategy.strategy_id}`}
+                      className="text-sm text-blue-400 hover:text-blue-300 whitespace-nowrap"
+                    >
+                      추천 결과 보기 →
+                    </Link>
+                    {(isAdmin || String(strategy.created_by) === String(me?.user_id)) && (
+                      <button
+                        onClick={async () => {
+                          if (!confirm(`"${strategy.name}" 전략을 비활성화하시겠습니까?\n스케줄러 분석이 중단되며 기존 데이터는 유지됩니다.`)) return;
+                          try {
+                            await api.strategies.deactivate(strategy.strategy_id);
+                            await load();
+                          } catch { alert("비활성화 실패"); }
+                        }}
+                        className="text-xs text-gray-500 hover:text-red-400 border border-gray-700 hover:border-red-800 px-2 py-1 rounded transition-colors"
+                      >비활성화</button>
+                    )}
+                  </div>
                 </div>
 
                 {/* 파라미터 */}
