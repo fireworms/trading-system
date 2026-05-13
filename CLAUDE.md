@@ -229,6 +229,7 @@ trading_system/
 
 ## 실시간 WebSocket
 - **가격 스트림**: H0STCNT0 → /ws/prices 엔드포인트 → 프론트 포지션 페이지 LIVE 표시
+  - H0STCNT0 필드: [0]코드, [2]현재가, [3]전일대비부호, [4]전일대비, [5]등락률, [13]누적거래량
 - **체결통보**: H0STCNI0 — 멀티유저 구조
   - `_exec_canos: set[str]` — 등록된 모든 계좌 hts_id 동시 구독
   - 체결 데이터 f[0](hts_id) → account_id → 해당 유저 포지션만 entry_price/peak_price 업데이트
@@ -254,6 +255,9 @@ TELEGRAM_BOT_TOKEN=      # 선택
 - 매수 스킵 fallback: AI 확인 실패 시 전종목 skip (안전 방향)
 - HTTP 클라이언트: 전체 코드 httpx 통일 (requests 사용 금지)
 - 매도 후 exit_price: 반드시 `get_today_fill_price(side="01")`로 실 체결가 조회 (현재가 사용 금지)
+- 수동 매수 + 전략 선택 시 실제 자동 청산 편입 (monitor_positions가 HOLDING 전체 순회)
+- _enrich(): rec_id 없어도 strategy.target_pct × entry_price로 익절가 계산
+- systemd 서비스: trading-backend (uvicorn), trading-frontend (npm run dev) — WSL2 부팅 시 자동 시작
 
 ## 협업 원칙
 
