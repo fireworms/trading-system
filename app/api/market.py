@@ -1,8 +1,13 @@
+import logging
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from decimal import Decimal
 from sqlalchemy.orm import Session
 from sqlalchemy import select
+
+logger = logging.getLogger(__name__)
 
 from app.core.database import get_db
 from app.models.user import User, BrokerAccount
@@ -10,6 +15,27 @@ from app.services.kis.client import get_kis_client, get_kis_client_from_account,
 from app.api.deps import get_current_user
 
 router = APIRouter(prefix="/market", tags=["market"])
+
+# ------------------------------------------------------------------ #
+# 시장 현황 캐시 + 대표 종목 목록
+# ------------------------------------------------------------------ #
+_overview_cache: dict | None = None
+_overview_cache_ts: float = 0.0
+_OVERVIEW_TTL = 60.0
+
+_KOSPI_STOCKS = [
+    ("005930", "삼성전자"), ("000660", "SK하이닉스"), ("373220", "LG에너지솔루션"), ("005380", "현대차"),
+    ("005490", "POSCO홀딩스"), ("207940", "삼성바이오"), ("105560", "KB금융"), ("000270", "기아"),
+]
+_KOSDAQ_STOCKS = [
+    ("247540", "에코프로비엠"), ("028300", "HLB"), ("196170", "알테오젠"),
+    ("141080", "리가켐바이오"), ("403870", "HPSP"), ("277810", "레인보우로보틱스"),
+]
+_NAS_STOCKS = [
+    ("NVDA", "NVIDIA"), ("AAPL", "Apple"), ("MSFT", "Microsoft"), ("AMZN", "Amazon"),
+    ("META", "Meta"), ("GOOGL", "Alphabet"), ("TSLA", "Tesla"), ("AVGO", "Broadcom"),
+]
+_QQQ = ("QQQ", "NASDAQ-100 ETF")
 
 
 class StockInfoOut(BaseModel):
@@ -44,6 +70,28 @@ class BalanceItemOut(BaseModel):
     avg_price: Decimal
     current_price: Decimal
     pnl_pct: Decimal
+
+
+class IndexInfo(BaseModel):
+    level: float
+    change_pct: float
+
+
+class StockSnap(BaseModel):
+    code: str
+    name: str
+    price: float
+    change_pct: float
+
+
+class MarketOverviewOut(BaseModel):
+    kospi: IndexInfo
+    kosdaq: IndexInfo
+    nasdaq: IndexInfo
+    kospi_stocks: list[StockSnap]
+    kosdaq_stocks: list[StockSnap]
+    nasdaq_stocks: list[StockSnap]
+    cached_at: float
 
 
 def _user_account(user: User, db: Session) -> BrokerAccount:
@@ -113,8 +161,26 @@ def get_price(
             exchange = (market or "NAS").upper()
             price = client.get_us_current_price(stock_code, exchange)
             return {"stock_code": stock_code, "currency": "USD", "current_price": float(price)}
-        price = client.get_current_price(stock_code)
-        return {"stock_code": stock_code, "currency": "KRW", "current_price": int(price)}
+        data = client._get(
+            "/uapi/domestic-stock/v1/quotations/inquire-price",
+            "FHKST01010100",
+            {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": stock_code},
+        )
+        o = data.get("output", {})
+        price = int(o.get("stck_prpr") or 0)
+        change_pct = float(o.get("prdy_ctrt") or 0)
+        if abs(change_pct) > 100:
+            vrss = float(o.get("prdy_vrss") or 0)
+            sign = 1 if o.get("prdy_vrss_sign", "3") in ("1", "2") else (-1 if o.get("prdy_vrss_sign") in ("4", "5") else 0)
+            prev_close = price - vrss * sign
+            change_pct = round(vrss * sign / prev_close * 100, 2) if prev_close else 0.0
+        return {
+            "stock_code": stock_code,
+            "currency": "KRW",
+            "current_price": price,
+            "open_price": int(o.get("stck_oprc") or 0),
+            "change_pct": change_pct,
+        }
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"KIS API error: {e}")
 
@@ -156,6 +222,66 @@ def get_ohlcv(
         ]
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"KIS API error: {e}")
+
+
+# ------------------------------------------------------------------ #
+# 시장 현황 스냅샷 (60초 캐시)
+# ------------------------------------------------------------------ #
+
+@router.get("/overview", response_model=MarketOverviewOut)
+def get_market_overview(
+    db: Session = Depends(get_db),
+    _: User = Depends(get_current_user),
+):
+    """KOSPI/KOSDAQ 지수 + 대표 종목 현재가 스냅샷 (60초 캐시)."""
+    global _overview_cache, _overview_cache_ts
+
+    now = time.monotonic()
+    if _overview_cache is not None and (now - _overview_cache_ts) < _OVERVIEW_TTL:
+        return _overview_cache
+
+    client = get_kis_client(db)
+
+    def _qqq_as_index() -> dict:
+        r = client.get_us_price_with_change(_QQQ[0], "NAS")
+        return {"level": r["price"], "change_pct": r["change_pct"]}
+
+    tasks: list[tuple[str, object]] = [
+        ("idx_kospi",  lambda: client.get_index_overview("0001")),
+        ("idx_kosdaq", lambda: client.get_index_overview("1001")),
+        ("idx_nasdaq", _qqq_as_index),
+        *[(f"kospi_{c}",  lambda c=c: client.get_price_with_change(c))       for c, _ in _KOSPI_STOCKS],
+        *[(f"kosdaq_{c}", lambda c=c: client.get_price_with_change(c))       for c, _ in _KOSDAQ_STOCKS],
+        *[(f"nas_{c}",    lambda c=c: client.get_us_price_with_change(c, "NAS")) for c, _ in _NAS_STOCKS],
+    ]
+
+    results: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        future_to_key = {pool.submit(fn): key for key, fn in tasks}
+        for future in as_completed(future_to_key):
+            key = future_to_key[future]
+            try:
+                results[key] = future.result()
+            except Exception as e:
+                logger.warning("overview task %s failed: %s", key, e)
+                results[key] = {}
+
+    def _snap(code: str, name: str, prefix: str) -> StockSnap:
+        r = results.get(f"{prefix}_{code}", {})
+        return StockSnap(code=code, name=name, price=r.get("price", 0), change_pct=r.get("change_pct", 0.0))
+
+    payload = MarketOverviewOut(
+        kospi=IndexInfo(**results.get("idx_kospi",  {"level": 0.0, "change_pct": 0.0})),
+        kosdaq=IndexInfo(**results.get("idx_kosdaq", {"level": 0.0, "change_pct": 0.0})),
+        nasdaq=IndexInfo(**results.get("idx_nasdaq", {"level": 0.0, "change_pct": 0.0})),
+        kospi_stocks =[_snap(c, n, "kospi")  for c, n in _KOSPI_STOCKS],
+        kosdaq_stocks=[_snap(c, n, "kosdaq") for c, n in _KOSDAQ_STOCKS],
+        nasdaq_stocks=[_snap(c, n, "nas")    for c, n in _NAS_STOCKS],
+        cached_at=time.time(),
+    )
+    _overview_cache = payload
+    _overview_cache_ts = now
+    return payload
 
 
 # ------------------------------------------------------------------ #

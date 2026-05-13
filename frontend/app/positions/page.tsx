@@ -37,6 +37,8 @@ export default function PositionsPage() {
   const [buyStrategyId, setBuyStrategyId] = useState("");
   const [buyLoading, setBuyLoading]     = useState(false);
   const [buyError, setBuyError]         = useState("");
+  const [buyPriceInfo, setBuyPriceInfo] = useState<{ current_price: number; open_price: number; change_pct: number } | null>(null);
+  const [buyPriceLoading, setBuyPriceLoading] = useState(false);
   const [accounts, setAccounts]         = useState<BrokerAccount[]>([]);
   const [strategies, setStrategies]     = useState<Strategy[]>([]);
 
@@ -476,10 +478,34 @@ export default function PositionsPage() {
               <div>
                 <label className="text-xs text-gray-400 mb-1 block">종목</label>
                 <StockSearch
-                  onSelect={(stock: StockItem) => setBuyStockCode(stock.code)}
+                  onSelect={async (stock: StockItem) => {
+                    setBuyStockCode(stock.code);
+                    setBuyPriceInfo(null);
+                    setBuyPriceLoading(true);
+                    try {
+                      const p = await api.market.price(stock.code);
+                      setBuyPriceInfo({ current_price: p.current_price, open_price: p.open_price, change_pct: p.change_pct });
+                    } catch { /* 조회 실패 시 무시 */ } finally {
+                      setBuyPriceLoading(false);
+                    }
+                  }}
                   placeholder="종목명 또는 코드 검색"
                 />
-                {buyStockCode && <p className="text-xs text-blue-400 mt-1">선택: {buyStockCode}</p>}
+                {buyStockCode && (
+                  <div className="mt-1 flex items-center gap-3 text-xs">
+                    <span className="text-blue-400">선택: {buyStockCode}</span>
+                    {buyPriceLoading && <span className="text-gray-500">조회 중...</span>}
+                    {buyPriceInfo && (
+                      <>
+                        <span className="text-gray-400">시가 <span className="text-white">{buyPriceInfo.open_price.toLocaleString()}</span></span>
+                        <span className="text-gray-400">현재가 <span className="text-yellow-300 font-medium">{buyPriceInfo.current_price.toLocaleString()}</span></span>
+                        <span className={buyPriceInfo.change_pct >= 0 ? "text-red-400" : "text-blue-400"}>
+                          {buyPriceInfo.change_pct >= 0 ? "+" : ""}{buyPriceInfo.change_pct.toFixed(2)}%
+                        </span>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
               <div>
                 <label className="text-xs text-gray-400 mb-1 block">계좌</label>

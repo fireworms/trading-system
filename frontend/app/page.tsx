@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { api, Strategy, StrategyStats, Subscription, User, CandidateFilter, CandidateMarket, getToken } from "@/lib/api";
 import StatCard from "@/components/StatCard";
+import MarketOverviewPanel from "@/components/MarketOverview";
 
 interface StrategyWithStats {
   strategy: Strategy;
@@ -190,6 +191,9 @@ export default function DashboardPage() {
             )}
           </div>
         </div>
+
+        {/* 시장 현황 */}
+        <MarketOverviewPanel />
 
         {/* 전략 생성 폼 */}
         {showCreate && (

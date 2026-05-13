@@ -189,7 +189,7 @@ class KISRealtimeClient:
         for i in range(count):
             f = body.split("^")[i * fields_per : (i + 1) * fields_per]
             if tr_id == "H0STCNT0":
-                if len(f) >= 13:
+                if len(f) >= 14:
                     await self._parse_price(f)
             elif tr_id == "H0STCNI0":
                 await self._parse_execution(f)
@@ -199,18 +199,18 @@ class KISRealtimeClient:
         H0STCNT0 필드 순서 (주요 필드만):
         [0]  MKSC_SHRN_ISCD  종목코드
         [2]  STCK_PRPR       현재가
-        [5]  PRDY_VRSS_SIGN  전일대비부호 (1상한/2상승/3보합/4하한/5하락)
-        [6]  PRDY_VRSS       전일대비
-        [7]  PRDY_CTRT       전일대비율
-        [12] ACML_VOL        누적거래량
+        [3]  PRDY_VRSS_SIGN  전일대비부호 (1상한/2상승/3보합/4하한/5하락)
+        [4]  PRDY_VRSS       전일대비
+        [5]  PRDY_CTRT       전일대비율
+        [13] ACML_VOL        누적거래량
         """
         try:
             code  = f[0]
             price = int(f[2])
-            sign  = f[5]   # 2=상승, 5=하락, 3=보합
-            delta = int(f[6]) if f[6].isdigit() else 0
-            pct   = float(f[7]) if f[7] else 0.0
-            vol   = int(f[12]) if f[12].isdigit() else 0
+            sign  = f[3]   # 2=상승, 5=하락, 3=보합
+            delta = int(float(f[4])) if f[4] else 0
+            pct   = float(f[5]) if f[5] else 0.0
+            vol   = int(f[13]) if f[13].isdigit() else 0
 
             if sign in ("4", "5"):   # 하락/하한
                 delta = -delta

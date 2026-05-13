@@ -275,6 +275,28 @@ export interface BacktestOverallSummary {
   monthly: BacktestMonthlyRow[];
 }
 
+export interface IndexInfo {
+  level: number;
+  change_pct: number;
+}
+
+export interface StockSnap {
+  code: string;
+  name: string;
+  price: number;   // KRW: int, USD: float
+  change_pct: number;
+}
+
+export interface MarketOverview {
+  kospi: IndexInfo;
+  kosdaq: IndexInfo;
+  nasdaq: IndexInfo;
+  kospi_stocks: StockSnap[];
+  kosdaq_stocks: StockSnap[];
+  nasdaq_stocks: StockSnap[];
+  cached_at: number;
+}
+
 // ------------------------------------------------------------------ //
 // API
 // ------------------------------------------------------------------ //
@@ -379,6 +401,11 @@ export const api = {
       authFetch<{ stock_code: string; stock_name: string; market: string; sector: string }>(
         `/market/stock-basic/${code}`
       ),
+    price: (code: string) =>
+      authFetch<{ stock_code: string; currency: string; current_price: number; open_price: number; change_pct: number }>(
+        `/market/price/${code}`
+      ),
+    overview: () => authFetch<MarketOverview>("/market/overview"),
   },
 
   stockMaster: {

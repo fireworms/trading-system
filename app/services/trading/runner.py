@@ -4,6 +4,7 @@ AI 파이프라인 실행 → DB 저장 → 자동매매 실행을 조율한다.
 """
 import logging
 from datetime import date, datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy.orm import Session
 from sqlalchemy import select

@@ -262,6 +262,22 @@ class KISClient:
                 result[name] = 0.0
         return result
 
+    def get_index_overview(self, code: str) -> dict:
+        """단일 지수 레벨 + 등락률을 1회 API 호출로 반환. code: '0001'=KOSPI, '1001'=KOSDAQ"""
+        try:
+            data = self._get(
+                "/uapi/domestic-stock/v1/quotations/inquire-index-price",
+                "FHPUP02100000",
+                {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": code},
+            )
+            o = data.get("output", {})
+            return {
+                "level":      float(o.get("bstp_nmix_prpr") or 0),
+                "change_pct": float(o.get("bstp_nmix_prdy_ctrt") or 0),
+            }
+        except Exception:
+            return {"level": 0.0, "change_pct": 0.0}
+
     def get_current_price(self, stock_code: str) -> Decimal:
         """현재가 조회."""
         data = self._get(
@@ -270,6 +286,38 @@ class KISClient:
             {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": stock_code},
         )
         return Decimal(data["output"]["stck_prpr"])
+
+    def get_price_with_change(self, stock_code: str) -> dict:
+        """현재가 + 전일대비 등락률을 1회 API 호출로 반환."""
+        data = self._get(
+            "/uapi/domestic-stock/v1/quotations/inquire-price",
+            "FHKST01010100",
+            {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": stock_code},
+        )
+        o = data.get("output", {})
+        price = int(o.get("stck_prpr") or 0)
+        change_pct = float(o.get("prdy_ctrt") or 0)
+        # prdy_ctrt가 가격값을 반환하는 경우 방어: prdy_vrss/sign으로 직접 계산
+        if abs(change_pct) > 100:
+            vrss = float(o.get("prdy_vrss") or 0)
+            sign_code = o.get("prdy_vrss_sign", "3")
+            sign = 1 if sign_code in ("1", "2") else (-1 if sign_code in ("4", "5") else 0)
+            prev_close = price - vrss * sign
+            change_pct = round(vrss * sign / prev_close * 100, 2) if prev_close else 0.0
+        return {"price": price, "change_pct": change_pct}
+
+    def get_us_price_with_change(self, symbol: str, exchange: str) -> dict:
+        """해외주식 현재가 + 등락률 1회 API 호출로 반환. 반환: {price: float, change_pct: float}"""
+        data = self._get(
+            "/uapi/overseas-price/v1/quotations/price",
+            "HHDFS00000300",
+            {"AUTH": "", "EXCD": exchange.upper(), "SYMB": symbol.upper()},
+        )
+        o = data.get("output", {})
+        return {
+            "price":      float(o.get("last") or 0),
+            "change_pct": float(str(o.get("rate") or "0").replace("+", "")),
+        }
 
     def get_ohlcv(self, stock_code: str, days: int = 100) -> list[OHLCVBar]:
         """

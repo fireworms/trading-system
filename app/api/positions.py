@@ -20,6 +20,8 @@ def _enrich(pos: Position) -> PositionOut:
 
     if pos.recommendation:
         target_price = pos.recommendation.target_price
+    elif pos.strategy and pos.entry_price:
+        target_price = (pos.entry_price * (1 + pos.strategy.target_pct / 100)).quantize(Decimal("1"))
 
     if pos.peak_price and pos.strategy:
         stop_loss_pct = pos.strategy.stop_loss_pct
