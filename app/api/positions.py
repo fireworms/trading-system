@@ -12,6 +12,18 @@ from app.api.deps import get_current_user
 
 router = APIRouter(prefix="/positions", tags=["positions"])
 
+_COMMISSION: dict[str, Decimal] = {
+    "KOSPI":  Decimal("0.0027"),
+    "KOSDAQ": Decimal("0.0023"),
+    "NAS":    Decimal("0.0050"),
+}
+
+def _commission_rate(stock_code: str, db: Session) -> Decimal:
+    from app.models.stock_master import StockMaster
+    row = db.scalar(select(StockMaster).where(StockMaster.stock_code == stock_code))
+    market = (row.market if row else None) or "KOSPI"
+    return _COMMISSION.get(market, _COMMISSION["KOSPI"])
+
 
 def _enrich(pos: Position) -> PositionOut:
     """Position 모델 → PositionOut (익절가/손절가 계산 포함)."""
@@ -98,7 +110,8 @@ def close_position(
     fill_price = client.get_today_fill_price(pos.stock_code, side="01") \
                  or client.get_current_price(pos.stock_code)
 
-    pnl = (fill_price - pos.entry_price) / pos.entry_price * 100
+    commission = _commission_rate(pos.stock_code, db)
+    pnl = (fill_price - pos.entry_price) / pos.entry_price * 100 - commission * 100
     pos.exit_price = fill_price
     pos.exit_date   = date.today()
     pos.status      = PositionStatus.MANUAL_EXIT
@@ -133,7 +146,8 @@ def close_all_positions(
             _time.sleep(1)
             fill_price = client.get_today_fill_price(pos.stock_code, side="01") \
                          or client.get_current_price(pos.stock_code)
-            pnl = (fill_price - pos.entry_price) / pos.entry_price * 100
+            commission = _commission_rate(pos.stock_code, db)
+            pnl = (fill_price - pos.entry_price) / pos.entry_price * 100 - commission * 100
             pos.exit_price = fill_price
             pos.exit_date   = date.today()
             pos.status      = PositionStatus.MANUAL_EXIT

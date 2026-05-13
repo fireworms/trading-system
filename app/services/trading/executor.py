@@ -20,6 +20,16 @@ logger = logging.getLogger(__name__)
 MAX_PER_SECTOR = 2      # 섹터당 최대 매수 종목 수
 RSI_OVERBOUGHT  = 70    # 이 이상이면 과매수로 스킵
 
+# 시장별 왕복 거래비용 (수수료 + 세금)
+# KOSPI : 매수 0.015% + 매도(0.015% + 거래세 0.20% + 농특세 0.04%) = 0.27%
+# KOSDAQ: 매수 0.015% + 매도(0.015% + 거래세 0.20%) = 0.23%  (농특세 없음)
+# NAS   : 매수 0.25% + 매도 0.25% = 0.50%
+_COMMISSION: dict[str, Decimal] = {
+    "KOSPI":  Decimal("0.0027"),
+    "KOSDAQ": Decimal("0.0023"),
+    "NAS":    Decimal("0.0050"),
+}
+
 
 class TradeExecutor:
     def __init__(self, db: Session):
@@ -396,6 +406,15 @@ def execute_buys_for_run(self, sub: UserStrategy, run: RecommendationRun) -> Non
             cur += timedelta(days=1)
         return count
 
+    def _get_commission_rate(self, stock_code: str) -> Decimal:
+        """stock_master에서 시장 조회 후 왕복 수수료율 반환."""
+        from app.models.stock_master import StockMaster
+        row = self.db.scalar(
+            select(StockMaster).where(StockMaster.stock_code == stock_code)
+        )
+        market = (row.market if row else None) or "KOSPI"
+        return _COMMISSION.get(market, _COMMISSION["KOSPI"])
+
     def _close_position(
         self,
         pos: Position,
@@ -413,7 +432,8 @@ def execute_buys_for_run(self, sub: UserStrategy, run: RecommendationRun) -> Non
         _time.sleep(1)
         exit_price = client.get_today_fill_price(pos.stock_code, side="01") or current_price
 
-        pnl = (exit_price - pos.entry_price) / pos.entry_price * 100
+        commission = self._get_commission_rate(pos.stock_code)
+        pnl = (exit_price - pos.entry_price) / pos.entry_price * 100 - commission * 100
 
         pos.exit_price = exit_price
         pos.exit_date = date.today()
