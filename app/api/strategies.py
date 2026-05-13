@@ -14,6 +14,45 @@ from app.api.deps import get_current_user
 
 router = APIRouter(prefix="/strategies", tags=["strategies"])
 
+PICK_COUNT_MAX       = 4
+DAILY_RETURN_MAX_PCT = 0.7   # target_pct / hold_days 상한
+RR_RATIO_MIN         = 1.5   # target_pct / stop_loss_pct 하한
+MIN_PROBABILITY_MIN  = 55.0  # AI 확률 최소값
+
+
+def _validate_strategy(body) -> None:
+    """전략 파라미터 상호 검증."""
+    pick_count     = getattr(body, "pick_count", None)
+    target_pct     = float(getattr(body, "target_pct", 0) or 0)
+    hold_days      = int(getattr(body, "hold_days", 1) or 1)
+    stop_loss_pct  = float(getattr(body, "stop_loss_pct", 0) or 0)
+    min_probability = float(getattr(body, "min_probability", 0) or 0)
+
+    if pick_count is not None and pick_count > PICK_COUNT_MAX:
+        raise HTTPException(status_code=422, detail=f"pick_count는 최대 {PICK_COUNT_MAX}개입니다.")
+
+    if target_pct and hold_days:
+        daily = target_pct / hold_days
+        if daily > DAILY_RETURN_MAX_PCT:
+            raise HTTPException(
+                status_code=422,
+                detail=f"일평균 기대수익률 {daily:.2f}%는 현실적이지 않습니다 (상한 {DAILY_RETURN_MAX_PCT}%/일)."
+            )
+
+    if target_pct and stop_loss_pct:
+        rr = target_pct / stop_loss_pct
+        if rr < RR_RATIO_MIN:
+            raise HTTPException(
+                status_code=422,
+                detail=f"R/R 비율 {rr:.2f}가 너무 낮습니다 (최소 {RR_RATIO_MIN})."
+            )
+
+    if min_probability and min_probability < MIN_PROBABILITY_MIN:
+        raise HTTPException(
+            status_code=422,
+            detail=f"min_probability는 최소 {MIN_PROBABILITY_MIN}% 이상이어야 합니다."
+        )
+
 
 @router.post("", response_model=StrategyOut, status_code=201)
 def create_strategy(
@@ -21,6 +60,7 @@ def create_strategy(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    _validate_strategy(body)
     strategy = Strategy(**body.model_dump(), created_by=current_user.user_id)
     db.add(strategy)
     db.commit()
@@ -53,6 +93,17 @@ def update_strategy(
         raise HTTPException(status_code=404, detail="Strategy not found")
     if str(strategy.created_by) != str(current_user.user_id) and current_user.role not in ("ADMIN", "SUPER_ADMIN"):
         raise HTTPException(status_code=403, detail="Forbidden")
+
+    # 수정 후 전략의 최종 값으로 검증
+    merged = strategy.__dict__.copy()
+    merged.update(body.model_dump(exclude_none=True))
+
+    class _Merged:
+        def __init__(self, d):
+            for k, v in d.items():
+                setattr(self, k, v)
+
+    _validate_strategy(_Merged(merged))
 
     for field, value in body.model_dump(exclude_none=True).items():
         setattr(strategy, field, value)

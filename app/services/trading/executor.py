@@ -354,9 +354,19 @@ def execute_buys_for_run(self, sub: UserStrategy, run: RecommendationRun) -> Non
                 self._close_position(pos, current_price, PositionStatus.TARGET_HIT, client)
                 return
 
-        # ATR 기반 트레일링 스탑 (2.5 × ATR14)
-        # 변동성이 큰 종목엔 더 넓은 거리, 안정적인 종목엔 더 좁은 거리 적용
-        if pos.peak_price:
+        # 2단계 손절 로직
+        # Phase 1 (목표가 미달): 고정 stop_loss_pct 기준 (조기 손절 방지)
+        # Phase 2 (목표가 도달 후 trailing mode): ATR 기반으로 수익 보호
+        if pos.target_hit_at is None:
+            # Phase 1: entry_price 기준 고정 손절
+            fixed_stop = pos.entry_price * (1 - strategy.stop_loss_pct / 100)
+            if current_price <= fixed_stop:
+                logger.info("Fixed stop for %s: entry=%s current=%s stop=%s",
+                            pos.stock_code, pos.entry_price, current_price, fixed_stop)
+                self._close_position(pos, current_price, PositionStatus.STOP_LOSS, client)
+                return
+        elif pos.peak_price:
+            # Phase 2: ATR 기반 트레일링 (수익 보호)
             trailing_stop = None
             try:
                 bars = client.get_ohlcv(pos.stock_code, days=20)
@@ -365,12 +375,11 @@ def execute_buys_for_run(self, sub: UserStrategy, run: RecommendationRun) -> Non
                     trailing_stop = pos.peak_price - Decimal(str(round(2.5 * atr, 0)))
             except Exception:
                 pass
-            # ATR 계산 실패 시 fixed % fallback
             if trailing_stop is None:
                 trailing_stop = pos.peak_price * (1 - strategy.stop_loss_pct / 100)
 
             if current_price <= trailing_stop:
-                logger.info("Trailing stop for %s: peak=%s current=%s stop=%s (ATR-based)",
+                logger.info("ATR trailing stop for %s: peak=%s current=%s stop=%s",
                             pos.stock_code, pos.peak_price, current_price, trailing_stop)
                 self._close_position(pos, current_price, PositionStatus.STOP_LOSS, client)
                 return

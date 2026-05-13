@@ -73,8 +73,8 @@ function getStrategyHint(hold_days: number, target_pct: string): {
 
 const DEFAULT_FORM = {
   name: "", description: "",
-  hold_days: 10, target_pct: "15", stop_loss_pct: "7",
-  min_probability: "60", pick_count: 5, run_interval_days: 3,
+  hold_days: 20, target_pct: "6", stop_loss_pct: "3",
+  min_probability: "60", pick_count: 3, run_interval_days: 3,
   candidate_filter: "mixed" as CandidateFilter,
   candidate_market: "ALL" as CandidateMarket,
 };
@@ -124,10 +124,21 @@ export default function DashboardPage() {
 
   async function createStrategy() {
     if (!form.name.trim()) { setMsg("전략명을 입력하세요"); return; }
-    const dailyExpected = (parseFloat(form.target_pct) || 0) / (Number(form.hold_days) || 1);
-    if (dailyExpected > 3) {
+
+    const tgt   = parseFloat(form.target_pct) || 0;
+    const days  = Number(form.hold_days) || 1;
+    const stop  = parseFloat(form.stop_loss_pct) || 0;
+    const prob  = parseFloat(form.min_probability) || 0;
+    const picks = Number(form.pick_count);
+
+    if (picks > 4) { setMsg("픽 종목 수는 최대 4개입니다."); return; }
+    if (prob < 55) { setMsg("최소 확률은 55% 이상이어야 합니다."); return; }
+    if (stop > 0 && tgt / stop < 1.5) { setMsg(`R/R 비율 ${(tgt/stop).toFixed(2)}가 너무 낮습니다 (최소 1.5).`); return; }
+
+    const dailyExpected = tgt / days;
+    if (dailyExpected > 0.7) {
       const ok = window.confirm(
-        `일평균 기대수익이 ${dailyExpected.toFixed(1)}%입니다.\n` +
+        `일평균 기대수익이 ${dailyExpected.toFixed(2)}%입니다.\n` +
         `AI가 무리한 근거를 만들어내거나 추천 품질이 크게 저하될 수 있습니다.\n\n` +
         `그래도 이 전략을 생성하시겠습니까?`
       );
@@ -266,7 +277,7 @@ export default function DashboardPage() {
                 ["목표수익률 (%)", "target_pct", 0.1, 100],
                 ["손절라인 (%)", "stop_loss_pct", 0.1, 50],
                 ["최소확률 (%)", "min_probability", 0, 100],
-                ["픽 종목 수", "pick_count", 1, 20],
+                ["픽 종목 수", "pick_count", 1, 4],
                 ["실행 주기 (일)", "run_interval_days", 1, 30],
               ] as [string, keyof typeof form, number, number][]).map(([label, key, min, max]) => (
                 <div key={key}>
@@ -285,8 +296,8 @@ export default function DashboardPage() {
               const tgt  = parseFloat(form.target_pct) || 0;
               if (!days || !tgt) return null;
               const dailyExpected = tgt / days;
-              if (dailyExpected <= 3) return null;
-              const level = dailyExpected > 7 ? "red" : "yellow";
+              if (dailyExpected <= 0.5) return null;
+              const level = dailyExpected > 0.7 ? "red" : "yellow";
               return (
                 <div className={`mt-3 rounded-lg px-4 py-3 flex items-start gap-2 text-xs ${
                   level === "red"
