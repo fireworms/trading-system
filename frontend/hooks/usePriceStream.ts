@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 
 export interface LivePrice {
   current_price: number;
+  bid_price: number;
   change: number;
   change_pct: number;
   volume: number;

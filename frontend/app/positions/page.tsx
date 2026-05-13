@@ -406,8 +406,13 @@ export default function PositionsPage() {
               {filtered.map((pos) => {
                 const live = livePrices[pos.stock_code];
                 const entryPrice = Number(pos.entry_price);
-                const unrealizedPct = live
-                  ? ((live.current_price - entryPrice) / entryPrice * 100)
+                // 시장가 매도 시 bid_price(매수호가1) 기준으로 미실현 손익 계산
+                const sellPrice = live ? (live.bid_price || live.current_price) : null;
+                const unrealizedPct = sellPrice != null ? ((sellPrice - entryPrice) / entryPrice * 100) : null;
+                const unrealizedAmt = sellPrice != null ? Math.round((sellPrice - entryPrice) * pos.quantity) : null;
+                // 확정손익 금액
+                const pnlAmt = pos.exit_price
+                  ? Math.round((Number(pos.exit_price) - entryPrice) * pos.quantity)
                   : null;
                 return (
                 <tr key={pos.position_id} className="border-b border-gray-700/50 hover:bg-gray-700/30">
@@ -433,13 +438,16 @@ export default function PositionsPage() {
                       </span>
                     )}
                   </td>
-                  <td className={`p-4 text-right font-bold ${
+                  <td className={`p-4 text-right ${
                     unrealizedPct == null ? "text-gray-500"
                     : unrealizedPct >= 0 ? "text-red-400" : "text-blue-400"
                   }`}>
-                    {unrealizedPct != null && pos.status === "HOLDING"
-                      ? `${unrealizedPct >= 0 ? "+" : ""}${unrealizedPct.toFixed(2)}%`
-                      : "-"}
+                    {unrealizedPct != null && pos.status === "HOLDING" ? (
+                      <div>
+                        <div className="font-bold">{unrealizedPct >= 0 ? "+" : ""}{unrealizedPct.toFixed(2)}%</div>
+                        <div className="text-xs">{unrealizedAmt! >= 0 ? "+" : ""}{unrealizedAmt!.toLocaleString()}원</div>
+                      </div>
+                    ) : "-"}
                   </td>
                   <td className="p-4 text-right text-green-500 text-xs">
                     {pos.target_price ? Number(pos.target_price).toLocaleString() : "-"}
@@ -447,10 +455,15 @@ export default function PositionsPage() {
                   <td className="p-4 text-right text-red-500 text-xs">
                     {pos.trailing_stop_price ? Number(pos.trailing_stop_price).toLocaleString() : "-"}
                   </td>
-                  <td className={`p-4 text-right font-bold ${pnlColor(pos.pnl_pct)}`}>
-                    {pos.pnl_pct
-                      ? `${parseFloat(pos.pnl_pct) >= 0 ? "+" : ""}${parseFloat(pos.pnl_pct).toFixed(2)}%`
-                      : "-"}
+                  <td className={`p-4 text-right ${pnlColor(pos.pnl_pct)}`}>
+                    {pos.pnl_pct ? (
+                      <div>
+                        <div className="font-bold">{parseFloat(pos.pnl_pct) >= 0 ? "+" : ""}{parseFloat(pos.pnl_pct).toFixed(2)}%</div>
+                        {pnlAmt != null && (
+                          <div className="text-xs">{pnlAmt >= 0 ? "+" : ""}{pnlAmt.toLocaleString()}원</div>
+                        )}
+                      </div>
+                    ) : "-"}
                   </td>
                   <td className="p-4 text-right text-gray-400 text-xs">{pos.entry_date}</td>
                   <td className="p-4 text-right">

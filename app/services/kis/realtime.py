@@ -202,6 +202,7 @@ class KISRealtimeClient:
         [3]  PRDY_VRSS_SIGN  전일대비부호 (1상한/2상승/3보합/4하한/5하락)
         [4]  PRDY_VRSS       전일대비
         [5]  PRDY_CTRT       전일대비율
+        [11] BIDP1           매수호가1 (시장가 매도 시 실제 체결 기준가)
         [13] ACML_VOL        누적거래량
         """
         try:
@@ -210,6 +211,7 @@ class KISRealtimeClient:
             sign  = f[3]   # 2=상승, 5=하락, 3=보합
             delta = int(float(f[4])) if f[4] else 0
             pct   = float(f[5]) if f[5] else 0.0
+            bid   = int(f[11]) if f[11].isdigit() else price
             vol   = int(f[13]) if f[13].isdigit() else 0
 
             if sign in ("4", "5"):   # 하락/하한
@@ -218,6 +220,7 @@ class KISRealtimeClient:
 
             price_data = {
                 "current_price": price,
+                "bid_price":     bid,
                 "change":        delta,
                 "change_pct":    round(pct, 2),
                 "volume":        vol,
