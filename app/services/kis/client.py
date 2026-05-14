@@ -6,6 +6,8 @@ httpx로 REST API 직접 호출. pykis 의존성 없음.
 토큰: 인스턴스당 1회 발급, 만료 5분 전 자동 갱신
 """
 import logging
+import threading
+import time
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from dataclasses import dataclass
@@ -15,6 +17,29 @@ import tempfile
 from pathlib import Path
 
 import httpx
+
+
+class _RateLimiter:
+    """초당 최대 N회 호출을 보장하는 sliding window rate limiter."""
+
+    def __init__(self, max_per_second: int = 18):  # 한도 20, 여유 2 확보
+        self._lock = threading.Lock()
+        self._timestamps: list[float] = []
+        self._max = max_per_second
+
+    def acquire(self) -> None:
+        with self._lock:
+            now = time.monotonic()
+            self._timestamps = [t for t in self._timestamps if now - t < 1.0]
+            if len(self._timestamps) >= self._max:
+                wait = 1.0 - (now - self._timestamps[0])
+                if wait > 0:
+                    time.sleep(wait)
+                self._timestamps = [t for t in self._timestamps if time.monotonic() - t < 1.0]
+            self._timestamps.append(time.monotonic())
+
+
+_rate_limiter = _RateLimiter()
 
 from app.core.config import get_settings
 from app.core.security import decrypt_secret
@@ -141,6 +166,7 @@ class KISClient:
     # ------------------------------------------------------------------ #
 
     def _get(self, path: str, tr_id: str, params: dict) -> dict:
+        _rate_limiter.acquire()
         resp = httpx.get(
             f"{self._base}{path}",
             headers=self._headers(tr_id),
@@ -154,6 +180,7 @@ class KISClient:
         return data
 
     def _post(self, path: str, tr_id: str, body: dict) -> dict:
+        _rate_limiter.acquire()
         hash_key = self._hash_key(body)
         headers  = self._headers(tr_id)
         headers["hashkey"] = hash_key

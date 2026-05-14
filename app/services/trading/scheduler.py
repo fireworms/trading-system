@@ -256,14 +256,13 @@ def start_scheduler() -> None:
         replace_existing=True,
     )
 
-    # 매일 장중 포지션 모니터링 (09:05, 12:00, 14:50)
-    for hour, minute in [(9, 5), (12, 0), (14, 50)]:
-        _scheduler.add_job(
-            job_monitor_positions,
-            trigger=CronTrigger(day_of_week="mon-fri", hour=hour, minute=minute),
-            id=f"monitor_{hour}{minute:02d}",
-            replace_existing=True,
-        )
+    # 장중 포지션 모니터링: 09:05~15:20 10분 간격
+    _scheduler.add_job(
+        job_monitor_positions,
+        trigger=CronTrigger(day_of_week="mon-fri", hour="9-15", minute="5,15,25,35,45,55"),
+        id="monitor_positions",
+        replace_existing=True,
+    )
 
     # 매일 자정: 10일 경과 종목 검증
     _scheduler.add_job(
