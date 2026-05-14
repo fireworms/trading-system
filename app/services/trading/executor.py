@@ -394,55 +394,20 @@ class TradeExecutor:
             if strategy and pos.entry_price else None
         )
 
-        # 목표가 도달 → 트레일링 모드 전환 (최초 1회만 매도 안 함)
+        # 목표가 도달 → 즉시 익절 (AI thesis 완료, 이후 방향에 대한 근거 없음)
         if target_price and current_price >= target_price:
-            if pos.target_hit_at is None:
-                pos.target_hit_at = datetime.now(timezone.utc)
-                pos.target_hit_peak = pos.peak_price
-                logger.info("Target hit %s @ %s — trailing mode activated", pos.stock_code, current_price)
-                return
-            # 이미 트레일링 중 → 아래 타임아웃/트레일링 로직으로 계속
+            logger.info("Target hit %s @ %s (target=%s) — closing immediately",
+                        pos.stock_code, current_price, target_price)
+            self._close_position(pos, current_price, PositionStatus.TARGET_HIT, client)
+            return
 
-        # 트레일링 타임아웃: +1거래일 14:30 이후까지 신고점 갱신 없으면 청산
-        if pos.target_hit_at is not None:
-            days_since = self._trading_days_since(pos.target_hit_at.date(), today)
-            if (days_since >= 1
-                    and datetime.now().time() >= dtime(14, 30)
-                    and pos.peak_price <= (pos.target_hit_peak or Decimal(0))):
-                logger.info("Trailing timeout %s: no new peak in 1 trading day (peak=%s base=%s)",
-                            pos.stock_code, pos.peak_price, pos.target_hit_peak)
-                self._close_position(pos, current_price, PositionStatus.TARGET_HIT, client)
-                return
-
-        # 2단계 손절 로직
-        # Phase 1 (목표가 미달): 고정 stop_loss_pct 기준 (조기 손절 방지)
-        # Phase 2 (목표가 도달 후 trailing mode): ATR 기반으로 수익 보호
-        if pos.target_hit_at is None:
-            # Phase 1: entry_price 기준 고정 손절
-            fixed_stop = pos.entry_price * (1 - strategy.stop_loss_pct / 100)
-            if current_price <= fixed_stop:
-                logger.info("Fixed stop for %s: entry=%s current=%s stop=%s",
-                            pos.stock_code, pos.entry_price, current_price, fixed_stop)
-                self._close_position(pos, current_price, PositionStatus.STOP_LOSS, client)
-                return
-        elif pos.peak_price:
-            # Phase 2: ATR 기반 트레일링 (수익 보호)
-            trailing_stop = None
-            try:
-                bars = client.get_ohlcv(pos.stock_code, days=20)
-                atr = client._compute_atr(bars)
-                if atr and atr > 0:
-                    trailing_stop = pos.peak_price - Decimal(str(round(2.5 * atr, 0)))
-            except Exception:
-                pass
-            if trailing_stop is None:
-                trailing_stop = pos.peak_price * (1 - strategy.stop_loss_pct / 100)
-
-            if current_price <= trailing_stop:
-                logger.info("ATR trailing stop for %s: peak=%s current=%s stop=%s",
-                            pos.stock_code, pos.peak_price, current_price, trailing_stop)
-                self._close_position(pos, current_price, PositionStatus.STOP_LOSS, client)
-                return
+        # 손절: entry_price 기준 고정 stop_loss_pct
+        fixed_stop = pos.entry_price * (1 - strategy.stop_loss_pct / 100)
+        if current_price <= fixed_stop:
+            logger.info("Stop loss %s: entry=%s current=%s stop=%s",
+                        pos.stock_code, pos.entry_price, current_price, fixed_stop)
+            self._close_position(pos, current_price, PositionStatus.STOP_LOSS, client)
+            return
 
     @staticmethod
     def _trading_days_since(start: date, end: date) -> int:
