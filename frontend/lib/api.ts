@@ -160,6 +160,7 @@ export interface Position {
   peak_price: string | null;
   target_price: string | null;
   trailing_stop_price: string | null;
+  trailing_stop_override: boolean | null;
 }
 
 export interface BrokerAccount {
@@ -451,6 +452,11 @@ export const api = {
       authFetch<CloseAllResult>("/positions/close-all", { method: "POST" }),
     manualBuy: (body: { stock_code: string; account_id: string; amount: number; strategy_id?: string }) =>
       authFetch<Position>("/positions/manual-buy", { method: "POST", body: JSON.stringify(body) }),
+    setTrailing: (positionId: string, override: "strategy" | boolean) =>
+      authFetch<Position>(`/positions/${positionId}/trailing`, {
+        method: "PATCH",
+        body: JSON.stringify({ override }),
+      }),
   },
 
   users: {

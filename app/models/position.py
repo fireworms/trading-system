@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, date, timezone
 from decimal import Decimal
 from sqlalchemy import (
-    String, DateTime, Date, ForeignKey, Integer, Numeric, Enum as SAEnum
+    String, DateTime, Date, ForeignKey, Integer, Numeric, Boolean, Enum as SAEnum
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
@@ -51,6 +51,8 @@ class Position(Base):
         nullable=False,
     )
     peak_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 0), nullable=True)
+    # None=전략에 따름, True=trailing ON, False=trailing OFF
+    trailing_stop_override: Mapped[bool | None] = mapped_column(Boolean, nullable=True, default=None)
     target_hit_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     target_hit_peak: Mapped[Decimal | None] = mapped_column(Numeric(18, 0), nullable=True)
     exit_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 0), nullable=True)

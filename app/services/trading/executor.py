@@ -394,9 +394,16 @@ class TradeExecutor:
             if strategy and pos.entry_price else None
         )
 
+        # trailing 여부: 포지션 override 우선, 없으면 전략 기본값
+        use_trailing = (
+            pos.trailing_stop_override
+            if pos.trailing_stop_override is not None
+            else getattr(strategy, "use_trailing_stop", False)
+        )
+
         # 목표가 도달
         if target_price and current_price >= target_price:
-            if getattr(strategy, "use_trailing_stop", False):
+            if use_trailing:
                 # 트레일링 옵션 ON: 목표가 최초 도달 시 트레일링 모드 전환
                 if pos.target_hit_at is None:
                     pos.target_hit_at = datetime.now(timezone.utc)
@@ -411,7 +418,7 @@ class TradeExecutor:
                 return
 
         # 손절
-        if pos.target_hit_at is not None:
+        if pos.target_hit_at is not None and use_trailing:
             # 트레일링 모드: peak 기준 trailing stop
             trailing_stop = pos.peak_price * (1 - strategy.stop_loss_pct / 100)
             if current_price <= trailing_stop:

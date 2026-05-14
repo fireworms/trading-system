@@ -395,6 +395,11 @@ export default function DashboardPage() {
                       <span className={`text-xs px-2 py-0.5 rounded-full ${MARKET_COLORS[strategy.candidate_market] ?? MARKET_COLORS.ALL}`}>
                         {MARKET_LABELS[strategy.candidate_market] ?? strategy.candidate_market}
                       </span>
+                      {strategy.use_trailing_stop && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-purple-900/60 text-purple-300 border border-purple-700">
+                          트레일링
+                        </span>
+                      )}
                     </div>
                     <p className="text-sm text-gray-400 mt-1">{strategy.description ?? ""}</p>
                   </div>

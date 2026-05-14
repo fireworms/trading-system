@@ -196,6 +196,14 @@ export default function PositionsPage() {
     }
   }
 
+  async function handleTrailingOverride(positionId: string, value: "strategy" | "on" | "off") {
+    const override = value === "strategy" ? "strategy" : value === "on";
+    try {
+      await api.positions.setTrailing(positionId, override);
+      await load();
+    } catch { alert("설정 실패"); }
+  }
+
   async function handleResumeAutoTrade() {
     if (!confirm("자동매매를 재개하시겠습니까?")) return;
     await api.admin.resumeAutoTrade();
@@ -425,6 +433,7 @@ export default function PositionsPage() {
                 <th className="text-right p-4 text-blue-500">손절가</th>
                 <th className="text-right p-4">확정손익</th>
                 <th className="text-right p-4">매수일</th>
+                <th className="text-center p-4">트레일링</th>
                 <th className="p-4"></th>
               </tr>
             </thead>
@@ -492,6 +501,25 @@ export default function PositionsPage() {
                     ) : "-"}
                   </td>
                   <td className="p-4 text-right text-gray-400 text-xs">{pos.entry_date}</td>
+                  <td className="p-4 text-center">
+                    {pos.status === "HOLDING" ? (
+                      <select
+                        value={
+                          pos.trailing_stop_override === null || pos.trailing_stop_override === undefined
+                            ? "strategy"
+                            : pos.trailing_stop_override ? "on" : "off"
+                        }
+                        onChange={(e) => handleTrailingOverride(pos.position_id, e.target.value as "strategy" | "on" | "off")}
+                        className="text-xs bg-gray-700 border border-gray-600 rounded px-2 py-1 outline-none focus:ring-1 focus:ring-blue-500"
+                      >
+                        <option value="strategy">전략에 따름</option>
+                        <option value="on">ON</option>
+                        <option value="off">OFF</option>
+                      </select>
+                    ) : (
+                      <span className="text-xs text-gray-600">-</span>
+                    )}
+                  </td>
                   <td className="p-4 text-right">
                     {pos.status === "HOLDING" && (
                       <button

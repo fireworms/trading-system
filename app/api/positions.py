@@ -58,6 +58,7 @@ def _enrich(pos: Position) -> PositionOut:
         peak_price=pos.peak_price,
         target_price=target_price,
         trailing_stop_price=trailing_stop_price,
+        trailing_stop_override=pos.trailing_stop_override,
     )
 
 
@@ -237,6 +238,29 @@ def get_position(
     pos = db.get(Position, position_id)
     if not pos or pos.user_id != current_user.user_id:
         raise HTTPException(status_code=404, detail="Position not found")
+    return _enrich(pos)
+
+
+@router.patch("/{position_id}/trailing", response_model=PositionOut)
+def set_trailing_override(
+    position_id: uuid.UUID,
+    body: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """포지션별 트레일링 스탑 override 설정. override: null=전략에 따름, true=ON, false=OFF"""
+    pos = db.get(Position, position_id)
+    if not pos or pos.user_id != current_user.user_id:
+        raise HTTPException(status_code=404, detail="Position not found")
+    if pos.status != PositionStatus.HOLDING:
+        raise HTTPException(status_code=400, detail="Already closed")
+    override = body.get("override", "strategy")  # "strategy" | True | False
+    if override == "strategy" or override is None:
+        pos.trailing_stop_override = None
+    else:
+        pos.trailing_stop_override = bool(override)
+    db.commit()
+    db.refresh(pos)
     return _enrich(pos)
 
 

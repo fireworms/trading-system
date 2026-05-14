@@ -79,8 +79,9 @@ class PositionOut(BaseModel):
     exit_date: date | None
     pnl_pct: Decimal | None
     peak_price: Decimal | None
-    target_price: Decimal | None       # rec.target_price
-    trailing_stop_price: Decimal | None  # peak_price × (1 - stop_loss_pct/100)
+    target_price: Decimal | None
+    trailing_stop_price: Decimal | None
     target_hit_at: datetime | None = None
+    trailing_stop_override: bool | None = None  # None=전략에 따름, True=ON, False=OFF
 
     model_config = {"from_attributes": True}
