@@ -75,6 +75,7 @@ export interface Strategy {
   run_interval_days: number;
   candidate_filter: CandidateFilter;
   candidate_market: CandidateMarket;
+  use_trailing_stop: boolean;
   is_active: boolean;
   created_by: string;
 }
@@ -394,12 +395,14 @@ export const api = {
       hold_days: number; target_pct: string; stop_loss_pct: string;
       min_probability: string; pick_count: number; run_interval_days: number;
       candidate_filter: CandidateFilter; candidate_market: CandidateMarket;
+      use_trailing_stop?: boolean;
     }) => authFetch<Strategy>("/strategies", { method: "POST", body: JSON.stringify(body) }),
     update: (id: string, body: Partial<{
       name: string; description: string | null;
       hold_days: number; target_pct: string; stop_loss_pct: string;
       min_probability: string; pick_count: number; run_interval_days: number;
       candidate_filter: CandidateFilter; candidate_market: CandidateMarket;
+      use_trailing_stop: boolean;
       is_active: boolean;
     }>) => authFetch<Strategy>(`/strategies/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
     subscribe: (body: {

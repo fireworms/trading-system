@@ -394,20 +394,39 @@ class TradeExecutor:
             if strategy and pos.entry_price else None
         )
 
-        # 목표가 도달 → 즉시 익절 (AI thesis 완료, 이후 방향에 대한 근거 없음)
+        # 목표가 도달
         if target_price and current_price >= target_price:
-            logger.info("Target hit %s @ %s (target=%s) — closing immediately",
-                        pos.stock_code, current_price, target_price)
-            self._close_position(pos, current_price, PositionStatus.TARGET_HIT, client)
-            return
+            if getattr(strategy, "use_trailing_stop", False):
+                # 트레일링 옵션 ON: 목표가 최초 도달 시 트레일링 모드 전환
+                if pos.target_hit_at is None:
+                    pos.target_hit_at = datetime.now(timezone.utc)
+                    pos.target_hit_peak = pos.peak_price
+                    logger.info("Target hit %s @ %s — trailing mode activated", pos.stock_code, current_price)
+                    return
+                # 이미 트레일링 중 → 아래 손절 로직에서 처리
+            else:
+                # 트레일링 옵션 OFF (기본): 즉시 익절 (AI thesis 완료)
+                logger.info("Target hit %s @ %s — closing immediately", pos.stock_code, current_price)
+                self._close_position(pos, current_price, PositionStatus.TARGET_HIT, client)
+                return
 
-        # 손절: entry_price 기준 고정 stop_loss_pct
-        fixed_stop = pos.entry_price * (1 - strategy.stop_loss_pct / 100)
-        if current_price <= fixed_stop:
-            logger.info("Stop loss %s: entry=%s current=%s stop=%s",
-                        pos.stock_code, pos.entry_price, current_price, fixed_stop)
-            self._close_position(pos, current_price, PositionStatus.STOP_LOSS, client)
-            return
+        # 손절
+        if pos.target_hit_at is not None:
+            # 트레일링 모드: peak 기준 trailing stop
+            trailing_stop = pos.peak_price * (1 - strategy.stop_loss_pct / 100)
+            if current_price <= trailing_stop:
+                logger.info("Trailing stop %s: peak=%s current=%s stop=%s",
+                            pos.stock_code, pos.peak_price, current_price, trailing_stop)
+                self._close_position(pos, current_price, PositionStatus.STOP_LOSS, client)
+                return
+        else:
+            # 일반 모드: entry 기준 고정 손절
+            fixed_stop = pos.entry_price * (1 - strategy.stop_loss_pct / 100)
+            if current_price <= fixed_stop:
+                logger.info("Fixed stop %s: entry=%s current=%s stop=%s",
+                            pos.stock_code, pos.entry_price, current_price, fixed_stop)
+                self._close_position(pos, current_price, PositionStatus.STOP_LOSS, client)
+                return
 
     @staticmethod
     def _trading_days_since(start: date, end: date) -> int:

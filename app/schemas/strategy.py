@@ -19,6 +19,7 @@ class StrategyCreate(BaseModel):
     run_interval_days: int = Field(default=3, ge=1, le=30)
     candidate_filter: CandidateFilter = "mixed"
     candidate_market: CandidateMarket = "ALL"
+    use_trailing_stop: bool = False
 
 
 class StrategyUpdate(BaseModel):
@@ -32,6 +33,7 @@ class StrategyUpdate(BaseModel):
     run_interval_days: int | None = None
     candidate_filter: CandidateFilter | None = None
     candidate_market: CandidateMarket | None = None
+    use_trailing_stop: bool | None = None
     is_active: bool | None = None
 
 
@@ -48,6 +50,7 @@ class StrategyOut(BaseModel):
     run_interval_days: int
     candidate_filter: str
     candidate_market: str
+    use_trailing_stop: bool
     is_active: bool
     created_at: datetime
 

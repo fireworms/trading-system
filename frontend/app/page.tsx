@@ -77,6 +77,7 @@ const DEFAULT_FORM = {
   min_probability: "60", pick_count: 3, run_interval_days: 3,
   candidate_filter: "mixed" as CandidateFilter,
   candidate_market: "ALL" as CandidateMarket,
+  use_trailing_stop: false,
 };
 
 export default function DashboardPage() {
@@ -155,8 +156,9 @@ export default function DashboardPage() {
         min_probability:   form.min_probability,
         pick_count:        Number(form.pick_count),
         run_interval_days: Number(form.run_interval_days),
-        candidate_filter:  form.candidate_filter,
-        candidate_market:  form.candidate_market,
+        candidate_filter:   form.candidate_filter,
+        candidate_market:   form.candidate_market,
+        use_trailing_stop:  form.use_trailing_stop,
       });
       setForm(DEFAULT_FORM);
       setShowCreate(false);
@@ -269,6 +271,21 @@ export default function DashboardPage() {
                   <option value="KOSDAQ">KOSDAQ만</option>
                   <option value="NAS">NASDAQ만</option>
                 </select>
+              </div>
+
+              {/* 트레일링 스탑 */}
+              <div className="flex items-center justify-between bg-gray-700/50 rounded-lg px-3 py-2.5">
+                <div>
+                  <p className="text-sm text-gray-200">트레일링 스탑</p>
+                  <p className="text-xs text-gray-400 mt-0.5">목표가 도달 후 즉시 익절 대신 고점 추적 후 손절</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setForm((f) => ({ ...f, use_trailing_stop: !f.use_trailing_stop }))}
+                  className={`relative w-11 h-6 rounded-full transition-colors ${form.use_trailing_stop ? "bg-blue-500" : "bg-gray-600"}`}
+                >
+                  <span className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${form.use_trailing_stop ? "translate-x-5" : ""}`} />
+                </button>
               </div>
 
               {/* 수치 파라미터 */}

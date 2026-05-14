@@ -33,6 +33,7 @@ class Strategy(Base):
     run_interval_days: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     candidate_filter: Mapped[str] = mapped_column(String(20), default="mixed", nullable=False)
     candidate_market: Mapped[str] = mapped_column(String(20), default="ALL", nullable=False)
+    use_trailing_stop: Mapped[bool] = mapped_column(Boolean, server_default="false", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False
