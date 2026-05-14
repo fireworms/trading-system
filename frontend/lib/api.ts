@@ -150,6 +150,7 @@ export interface Position {
   rec_id: string | null;
   account_id: string;
   stock_code: string;
+  stock_name: string;
   entry_price: string;
   entry_date: string;
   quantity: number;

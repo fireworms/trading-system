@@ -71,6 +71,7 @@ class PositionOut(BaseModel):
     rec_id: uuid.UUID | None
     account_id: uuid.UUID
     stock_code: str
+    stock_name: str = ""
     entry_price: Decimal
     entry_date: date
     quantity: int

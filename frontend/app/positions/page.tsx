@@ -415,124 +415,93 @@ export default function PositionsPage() {
         ))}
       </div>
 
-      {/* 테이블 */}
+      {/* 포지션 카드 목록 */}
       {filtered.length === 0 ? (
         <p className="text-gray-500 text-center py-12">포지션 없음</p>
       ) : (
-        <div className="bg-gray-800 rounded-2xl overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="text-gray-400 border-b border-gray-700">
-              <tr>
-                <th className="text-left p-4">종목</th>
-                <th className="text-left p-4">상태</th>
-                <th className="text-right p-4">수량</th>
-                <th className="text-right p-4">매수가</th>
-                <th className="text-right p-4">현재가</th>
-                <th className="text-right p-4">미실현</th>
-                <th className="text-right p-4 text-red-500">익절가</th>
-                <th className="text-right p-4 text-blue-500">손절가</th>
-                <th className="text-right p-4">확정손익</th>
-                <th className="text-right p-4">매수일</th>
-                <th className="text-center p-4">트레일링</th>
-                <th className="p-4"></th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((pos) => {
-                const live = displayPrices[pos.stock_code];
-                const entryPrice = Number(pos.entry_price);
-                // 시장가 매도 시 bid_price(매수호가1) 기준으로 미실현 손익 계산
-                const sellPrice = live ? (live.bid_price || live.current_price) : null;
-                const unrealizedPct = sellPrice != null ? ((sellPrice - entryPrice) / entryPrice * 100) : null;
-                const unrealizedAmt = sellPrice != null ? Math.round((sellPrice - entryPrice) * pos.quantity) : null;
-                // 확정손익 금액
-                const pnlAmt = pos.exit_price
-                  ? Math.round((Number(pos.exit_price) - entryPrice) * pos.quantity)
-                  : null;
-                return (
-                <tr key={pos.position_id} className="border-b border-gray-700/50 hover:bg-gray-700/30">
-                  <td className="p-4 font-medium">{pos.stock_code}</td>
-                  <td className="p-4"><Badge value={pos.status} /></td>
-                  <td className="p-4 text-right text-gray-300">{pos.quantity}</td>
-                  <td className="p-4 text-right text-gray-300">
-                    {entryPrice.toLocaleString()}
-                  </td>
-                  <td className="p-4 text-right">
+        <div className="flex flex-col gap-2">
+          {filtered.map((pos) => {
+            const live = displayPrices[pos.stock_code];
+            const entryPrice = Number(pos.entry_price);
+            const sellPrice = live ? (live.bid_price || live.current_price) : null;
+            const unrealizedPct = sellPrice != null ? ((sellPrice - entryPrice) / entryPrice * 100) : null;
+            const unrealizedAmt = sellPrice != null ? Math.round((sellPrice - entryPrice) * pos.quantity) : null;
+            const pnlAmt = pos.exit_price
+              ? Math.round((Number(pos.exit_price) - entryPrice) * pos.quantity)
+              : null;
+            const trailingVal =
+              pos.trailing_stop_override === null || pos.trailing_stop_override === undefined
+                ? "strategy" : pos.trailing_stop_override ? "on" : "off";
+
+            return (
+              <div key={pos.position_id} className="bg-gray-800 rounded-xl px-4 py-3 flex flex-col gap-2">
+                {/* 1행: 종목명 / 상태 / 손익 / 트레일링 / 청산 */}
+                <div className="flex items-center gap-3 flex-wrap">
+                  <div className="flex-1 min-w-0">
+                    <span className="font-semibold text-white">
+                      {pos.stock_name || pos.stock_code}
+                    </span>
+                    <span className="ml-1.5 text-xs text-gray-500">{pos.stock_name ? pos.stock_code : ""}</span>
+                  </div>
+                  <Badge value={pos.status} />
+                  {/* 보유중: 미실현 손익 */}
+                  {pos.status === "HOLDING" && unrealizedPct != null && (
+                    <div className={`text-right ${unrealizedPct >= 0 ? "text-red-400" : "text-blue-400"}`}>
+                      <span className="font-bold text-sm">{unrealizedPct >= 0 ? "+" : ""}{unrealizedPct.toFixed(2)}%</span>
+                      <span className="text-xs ml-1">({unrealizedAmt! >= 0 ? "+" : ""}{unrealizedAmt!.toLocaleString()}원)</span>
+                    </div>
+                  )}
+                  {/* 청산됨: 확정손익 */}
+                  {pos.pnl_pct && (
+                    <div className={`text-right ${pnlColor(pos.pnl_pct)}`}>
+                      <span className="font-bold text-sm">{parseFloat(pos.pnl_pct) >= 0 ? "+" : ""}{parseFloat(pos.pnl_pct).toFixed(2)}%</span>
+                      {pnlAmt != null && (
+                        <span className="text-xs ml-1">({pnlAmt >= 0 ? "+" : ""}{pnlAmt.toLocaleString()}원)</span>
+                      )}
+                    </div>
+                  )}
+                  {pos.status === "HOLDING" && (
+                    <select
+                      value={trailingVal}
+                      onChange={(e) => handleTrailingOverride(pos.position_id, e.target.value as "strategy" | "on" | "off")}
+                      className="text-xs bg-gray-700 border border-gray-600 rounded px-2 py-1 outline-none focus:ring-1 focus:ring-blue-500"
+                    >
+                      <option value="strategy">트레일링: 전략</option>
+                      <option value="on">트레일링: ON</option>
+                      <option value="off">트레일링: OFF</option>
+                    </select>
+                  )}
+                  {pos.status === "HOLDING" && (
+                    <button
+                      onClick={() => handleClosePosition(pos.position_id)}
+                      className="text-xs text-red-400 hover:text-red-300 border border-red-800 hover:border-red-600 px-2 py-1 rounded transition-colors"
+                    >청산</button>
+                  )}
+                </div>
+
+                {/* 2행: 세부 수치 */}
+                <div className="flex flex-wrap gap-x-5 gap-y-1 text-xs text-gray-400">
+                  <span>{pos.entry_date} · {pos.quantity}주</span>
+                  <span>
+                    매수 <span className="text-gray-200">{entryPrice.toLocaleString()}</span>
                     {pos.status === "HOLDING" && live ? (
-                      <div>
-                        <div className={`font-medium ${live.change >= 0 ? "text-red-400" : "text-blue-400"}`}>
-                          {live.current_price.toLocaleString()}
-                        </div>
-                        <div className={`text-xs ${live.change >= 0 ? "text-red-400" : "text-blue-400"}`}>
-                          {live.change >= 0 ? "+" : ""}{live.change.toLocaleString()} ({live.change_pct >= 0 ? "+" : ""}{live.change_pct.toFixed(2)}%)
-                        </div>
-                      </div>
-                    ) : (
-                      <span className="text-gray-500">
-                        {pos.exit_price ? Number(pos.exit_price).toLocaleString() : "-"}
+                      <span className={`ml-1 ${live.change >= 0 ? "text-red-400" : "text-blue-400"}`}>
+                        → {live.current_price.toLocaleString()} ({live.change_pct >= 0 ? "+" : ""}{live.change_pct.toFixed(2)}%)
                       </span>
-                    )}
-                  </td>
-                  <td className={`p-4 text-right ${
-                    unrealizedPct == null ? "text-gray-500"
-                    : unrealizedPct >= 0 ? "text-red-400" : "text-blue-400"
-                  }`}>
-                    {unrealizedPct != null && pos.status === "HOLDING" ? (
-                      <div>
-                        <div className="font-bold">{unrealizedPct >= 0 ? "+" : ""}{unrealizedPct.toFixed(2)}%</div>
-                        <div className="text-xs">{unrealizedAmt! >= 0 ? "+" : ""}{unrealizedAmt!.toLocaleString()}원</div>
-                      </div>
-                    ) : "-"}
-                  </td>
-                  <td className="p-4 text-right text-red-500 text-xs">
-                    {pos.target_price ? Number(pos.target_price).toLocaleString() : "-"}
-                  </td>
-                  <td className="p-4 text-right text-blue-500 text-xs">
-                    {pos.trailing_stop_price ? Number(pos.trailing_stop_price).toLocaleString() : "-"}
-                  </td>
-                  <td className={`p-4 text-right ${pnlColor(pos.pnl_pct)}`}>
-                    {pos.pnl_pct ? (
-                      <div>
-                        <div className="font-bold">{parseFloat(pos.pnl_pct) >= 0 ? "+" : ""}{parseFloat(pos.pnl_pct).toFixed(2)}%</div>
-                        {pnlAmt != null && (
-                          <div className="text-xs">{pnlAmt >= 0 ? "+" : ""}{pnlAmt.toLocaleString()}원</div>
-                        )}
-                      </div>
-                    ) : "-"}
-                  </td>
-                  <td className="p-4 text-right text-gray-400 text-xs">{pos.entry_date}</td>
-                  <td className="p-4 text-center">
-                    {pos.status === "HOLDING" ? (
-                      <select
-                        value={
-                          pos.trailing_stop_override === null || pos.trailing_stop_override === undefined
-                            ? "strategy"
-                            : pos.trailing_stop_override ? "on" : "off"
-                        }
-                        onChange={(e) => handleTrailingOverride(pos.position_id, e.target.value as "strategy" | "on" | "off")}
-                        className="text-xs bg-gray-700 border border-gray-600 rounded px-2 py-1 outline-none focus:ring-1 focus:ring-blue-500"
-                      >
-                        <option value="strategy">전략에 따름</option>
-                        <option value="on">ON</option>
-                        <option value="off">OFF</option>
-                      </select>
-                    ) : (
-                      <span className="text-xs text-gray-600">-</span>
-                    )}
-                  </td>
-                  <td className="p-4 text-right">
-                    {pos.status === "HOLDING" && (
-                      <button
-                        onClick={() => handleClosePosition(pos.position_id)}
-                        className="text-xs text-red-400 hover:text-red-300 border border-red-800 hover:border-red-600 px-2 py-1 rounded transition-colors"
-                      >청산</button>
-                    )}
-                  </td>
-                </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                    ) : pos.exit_price ? (
+                      <span className="ml-1 text-gray-400">→ {Number(pos.exit_price).toLocaleString()}</span>
+                    ) : null}
+                  </span>
+                  {pos.target_price && (
+                    <span>익절 <span className="text-red-400">{Number(pos.target_price).toLocaleString()}</span></span>
+                  )}
+                  {pos.trailing_stop_price && (
+                    <span>손절 <span className="text-blue-400">{Number(pos.trailing_stop_price).toLocaleString()}</span></span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
 

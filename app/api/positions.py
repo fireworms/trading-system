@@ -27,7 +27,7 @@ def _commission_rate(stock_code: str, db: Session) -> Decimal:
     return _COMMISSION.get(market, _COMMISSION["KOSPI"])
 
 
-def _enrich(pos: Position) -> PositionOut:
+def _enrich(pos: Position, stock_name: str = "") -> PositionOut:
     """Position 모델 → PositionOut (익절가/손절가 계산 포함)."""
     target_price = None
     trailing_stop_price = None
@@ -48,6 +48,7 @@ def _enrich(pos: Position) -> PositionOut:
         rec_id=pos.rec_id,
         account_id=pos.account_id,
         stock_code=pos.stock_code,
+        stock_name=stock_name,
         entry_price=pos.entry_price,
         entry_date=pos.entry_date,
         quantity=pos.quantity,
@@ -217,6 +218,14 @@ def get_stats(
     }
 
 
+def _name_map(codes: set[str], db: Session) -> dict[str, str]:
+    from app.models.stock_master import StockMaster
+    if not codes:
+        return {}
+    rows = db.scalars(select(StockMaster).where(StockMaster.stock_code.in_(codes))).all()
+    return {r.stock_code: r.stock_name for r in rows}
+
+
 @router.get("", response_model=list[PositionOut])
 def list_positions(
     status: PositionStatus | None = None,
@@ -226,7 +235,9 @@ def list_positions(
     q = select(Position).where(Position.user_id == current_user.user_id)
     if status:
         q = q.where(Position.status == status)
-    return [_enrich(p) for p in db.scalars(q.order_by(Position.entry_date.desc())).all()]
+    positions = db.scalars(q.order_by(Position.entry_date.desc())).all()
+    nm = _name_map({p.stock_code for p in positions}, db)
+    return [_enrich(p, nm.get(p.stock_code, "")) for p in positions]
 
 
 @router.get("/{position_id}", response_model=PositionOut)
