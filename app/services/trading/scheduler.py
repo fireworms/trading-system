@@ -153,6 +153,55 @@ def job_verify_news_events() -> None:
         logger.error("News event verification failed: %s", e)
 
 
+def job_backup_db() -> None:
+    """매일 03:30 pg_dump로 DB 백업, 최근 7개 유지."""
+    import subprocess
+    from pathlib import Path
+    from datetime import datetime
+
+    backup_dir = Path(__file__).resolve().parents[3] / "backups"
+    backup_dir.mkdir(exist_ok=True)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_path = backup_dir / f"trading_db_{ts}.sql.gz"
+
+    try:
+        from app.core.config import get_settings
+        db_url = get_settings().database_url
+        # postgresql+asyncpg://user:pass@host/db → user:pass@host/db
+        dsn = db_url.replace("postgresql+asyncpg://", "").replace("postgresql://", "")
+        # user:pass@host/db 파싱
+        at = dsn.rfind("@")
+        userpass = dsn[:at]
+        hostdb   = dsn[at+1:]
+        user, password = (userpass.split(":", 1) + [""])[:2]
+        host_part, dbname = hostdb.rsplit("/", 1)
+        host = host_part.split(":")[0]
+        port = host_part.split(":")[1] if ":" in host_part else "5432"
+
+        env = {"PGPASSWORD": password}
+        cmd = [
+            "pg_dump",
+            "-h", host, "-p", port, "-U", user, dbname,
+            "--format=custom", "--compress=9",
+        ]
+        with open(out_path, "wb") as f:
+            subprocess.run(cmd, stdout=f, env={**__import__("os").environ, **env}, check=True)
+
+        size_kb = out_path.stat().st_size // 1024
+        logger.info("DB backup done: %s (%d KB)", out_path.name, size_kb)
+
+        # 최근 7개만 유지
+        backups = sorted(backup_dir.glob("trading_db_*.sql.gz"))
+        for old in backups[:-7]:
+            old.unlink()
+            logger.info("Removed old backup: %s", old.name)
+
+    except Exception as e:
+        logger.error("DB backup failed: %s", e)
+        _notify_error("DB 백업 실패", str(e))
+
+
 def job_update_stock_master() -> None:
     """주 1회 KIS MST 파일로 stock_master 갱신 + 지수 구성종목 캐시 갱신."""
     from app.services.stock_master.updater import update_stock_master
@@ -285,6 +334,14 @@ def start_scheduler() -> None:
         job_verify_news_events,
         trigger=CronTrigger(day_of_week="mon-fri", hour=16, minute=0),
         id="verify_news_events",
+        replace_existing=True,
+    )
+
+    # 매일 03:30: DB 백업 (최근 7개 유지)
+    _scheduler.add_job(
+        job_backup_db,
+        trigger=CronTrigger(hour=3, minute=30),
+        id="backup_db",
         replace_existing=True,
     )
 
