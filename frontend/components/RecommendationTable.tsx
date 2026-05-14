@@ -65,7 +65,7 @@ export default function RecommendationTable({ recommendations }: Props) {
                 <td className={`py-2 text-right font-bold ${prob ? probColor(prob) : "text-gray-400"}`}>
                   {prob != null ? `${prob.toFixed(1)}%` : "-"}
                 </td>
-                <td className="py-2 text-right text-blue-400">
+                <td className="py-2 text-right text-green-400">
                   {rec.target_price ? Number(rec.target_price).toLocaleString() : "-"}
                 </td>
                 <td className="py-2 text-right text-red-400">
