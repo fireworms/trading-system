@@ -24,7 +24,7 @@ function VerificationBadge({ v }: { v: Recommendation["verification"] }) {
         {v.result === "SUCCESS" ? "✓ 성공" : "✗ 실패"}
       </span>
       {pnl != null && (
-        <span className={`text-xs ${pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+        <span className={`text-xs ${pnl >= 0 ? "text-red-400" : "text-blue-400"}`}>
           {sign}{pnl.toFixed(2)}%
         </span>
       )}
@@ -65,10 +65,10 @@ export default function RecommendationTable({ recommendations }: Props) {
                 <td className={`py-2 text-right font-bold ${prob ? probColor(prob) : "text-gray-400"}`}>
                   {prob != null ? `${prob.toFixed(1)}%` : "-"}
                 </td>
-                <td className="py-2 text-right text-green-400">
+                <td className="py-2 text-right text-red-400">
                   {rec.target_price ? Number(rec.target_price).toLocaleString() : "-"}
                 </td>
-                <td className="py-2 text-right text-red-400">
+                <td className="py-2 text-right text-blue-400">
                   {rec.stop_loss_price ? Number(rec.stop_loss_price).toLocaleString() : "-"}
                 </td>
                 {hasVerification && (

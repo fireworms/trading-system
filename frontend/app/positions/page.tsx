@@ -19,7 +19,7 @@ const STATUS_TABS: { value: PositionStatus | "ALL"; label: string }[] = [
 
 function pnlColor(pnl: string | null) {
   if (!pnl) return "text-gray-400";
-  return parseFloat(pnl) >= 0 ? "text-green-400" : "text-red-400";
+  return parseFloat(pnl) >= 0 ? "text-red-400" : "text-blue-400";
 }
 
 export default function PositionsPage() {
@@ -384,7 +384,7 @@ export default function PositionsPage() {
         </div>
         <div className="bg-gray-800 rounded-xl p-4">
           <div className="text-xs text-gray-400">평균 수익률</div>
-          <div className={`text-2xl font-bold ${avgPnl && parseFloat(avgPnl) >= 0 ? "text-green-400" : "text-red-400"}`}>
+          <div className={`text-2xl font-bold ${avgPnl && parseFloat(avgPnl) >= 0 ? "text-red-400" : "text-blue-400"}`}>
             {avgPnl ? `${parseFloat(avgPnl) >= 0 ? "+" : ""}${avgPnl}%` : "-"}
           </div>
         </div>
@@ -421,8 +421,8 @@ export default function PositionsPage() {
                 <th className="text-right p-4">매수가</th>
                 <th className="text-right p-4">현재가</th>
                 <th className="text-right p-4">미실현</th>
-                <th className="text-right p-4 text-green-500">익절가</th>
-                <th className="text-right p-4 text-red-500">손절가</th>
+                <th className="text-right p-4 text-red-500">익절가</th>
+                <th className="text-right p-4 text-blue-500">손절가</th>
                 <th className="text-right p-4">확정손익</th>
                 <th className="text-right p-4">매수일</th>
                 <th className="p-4"></th>
@@ -475,10 +475,10 @@ export default function PositionsPage() {
                       </div>
                     ) : "-"}
                   </td>
-                  <td className="p-4 text-right text-green-500 text-xs">
+                  <td className="p-4 text-right text-red-500 text-xs">
                     {pos.target_price ? Number(pos.target_price).toLocaleString() : "-"}
                   </td>
-                  <td className="p-4 text-right text-red-500 text-xs">
+                  <td className="p-4 text-right text-blue-500 text-xs">
                     {pos.trailing_stop_price ? Number(pos.trailing_stop_price).toLocaleString() : "-"}
                   </td>
                   <td className={`p-4 text-right ${pnlColor(pos.pnl_pct)}`}>

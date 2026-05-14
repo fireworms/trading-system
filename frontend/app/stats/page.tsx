@@ -15,6 +15,7 @@ function KpiCard({
   const colorClass =
     color === "green" ? "text-green-400"
     : color === "red" ? "text-red-400"
+    : color === "blue" ? "text-blue-400"
     : "text-white";
   return (
     <div className="bg-gray-800 rounded-xl p-4">
@@ -37,7 +38,7 @@ function fmtAmt(n: number) {
 function OverallKpi({ kpi }: { kpi: TradeKPI }) {
   const winColor    = kpi.win_rate != null ? (kpi.win_rate >= 0.5 ? "green" : "red") : "white";
   const pfColor     = kpi.profit_factor != null ? (kpi.profit_factor >= 1.5 ? "green" : kpi.profit_factor >= 1 ? "white" : "red") : "white";
-  const amtColor    = kpi.total_pnl_amount >= 0 ? "green" : "red";
+  const amtColor    = kpi.total_pnl_amount >= 0 ? "red" : "blue";
   const sharpeColor = kpi.sharpe != null ? (kpi.sharpe >= 1 ? "green" : kpi.sharpe >= 0 ? "white" : "red") : "white";
   const mddColor    = kpi.max_drawdown_pct != null ? (kpi.max_drawdown_pct <= 5 ? "green" : kpi.max_drawdown_pct <= 15 ? "white" : "red") : "white";
   return (
@@ -143,12 +144,12 @@ export default function StatsPage() {
                     <td className={`p-3 text-right font-medium ${s.win_rate != null && s.win_rate >= 0.5 ? "text-green-400" : "text-red-400"}`}>
                       {s.win_rate != null ? `${(s.win_rate * 100).toFixed(1)}%` : "-"}
                     </td>
-                    <td className="p-3 text-right text-green-400">{fmt(s.avg_win_pct, 2, "+")}</td>
-                    <td className="p-3 text-right text-red-400">{fmt(s.avg_loss_pct, 2)}</td>
+                    <td className="p-3 text-right text-red-400">{fmt(s.avg_win_pct, 2, "+")}</td>
+                    <td className="p-3 text-right text-blue-400">{fmt(s.avg_loss_pct, 2)}</td>
                     <td className={`p-3 text-right ${s.profit_factor != null && s.profit_factor >= 1.5 ? "text-green-400" : "text-gray-300"}`}>
                       {fmt(s.profit_factor)}
                     </td>
-                    <td className={`p-3 text-right font-bold ${s.total_pnl_amount >= 0 ? "text-green-400" : "text-red-400"}`}>
+                    <td className={`p-3 text-right font-bold ${s.total_pnl_amount >= 0 ? "text-red-400" : "text-blue-400"}`}>
                       {fmtAmt(s.total_pnl_amount)}
                     </td>
                   </tr>
@@ -208,10 +209,10 @@ export default function StatsPage() {
                     </td>
                     <td className="p-3 text-right text-gray-300">{s.total_trades}</td>
                     <td className="p-3 text-right text-gray-300">{s.win_count}/{s.total_trades - s.win_count}</td>
-                    <td className={`p-3 text-right font-medium ${s.avg_pnl_pct >= 0 ? "text-green-400" : "text-red-400"}`}>
+                    <td className={`p-3 text-right font-medium ${s.avg_pnl_pct >= 0 ? "text-red-400" : "text-blue-400"}`}>
                       {s.avg_pnl_pct >= 0 ? "+" : ""}{s.avg_pnl_pct.toFixed(2)}%
                     </td>
-                    <td className={`p-3 text-right font-bold ${s.total_pnl_amount >= 0 ? "text-green-400" : "text-red-400"}`}>
+                    <td className={`p-3 text-right font-bold ${s.total_pnl_amount >= 0 ? "text-red-400" : "text-blue-400"}`}>
                       {fmtAmt(s.total_pnl_amount)}
                     </td>
                   </tr>
@@ -253,10 +254,10 @@ export default function StatsPage() {
                     <td className="p-3 text-right text-gray-300">{t.entry_price.toLocaleString()}</td>
                     <td className="p-3 text-right text-gray-300">{t.exit_price.toLocaleString()}</td>
                     <td className="p-3 text-right text-gray-400">{t.hold_days ?? "-"}일</td>
-                    <td className={`p-3 text-right font-bold ${t.pnl_pct >= 0 ? "text-green-400" : "text-red-400"}`}>
+                    <td className={`p-3 text-right font-bold ${t.pnl_pct >= 0 ? "text-red-400" : "text-blue-400"}`}>
                       {t.pnl_pct >= 0 ? "+" : ""}{t.pnl_pct.toFixed(2)}%
                     </td>
-                    <td className={`p-3 text-right font-bold ${t.pnl_amount >= 0 ? "text-green-400" : "text-red-400"}`}>
+                    <td className={`p-3 text-right font-bold ${t.pnl_amount >= 0 ? "text-red-400" : "text-blue-400"}`}>
                       {fmtAmt(t.pnl_amount)}
                     </td>
                     <td className="p-3 text-right text-xs text-gray-500">{t.status}</td>
