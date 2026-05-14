@@ -190,7 +190,7 @@ trading_system/
 |-------|------|------|
 | run_strategies | 08:30 Mon/Wed/Fri | AI 분석 (매수 없음) |
 | execute_pending_buys | 09:20 평일 | AI 장중 확인 + 매수 |
-| monitor_905/1200/1450 | 09:05, 12:00, 14:50 평일 | 포지션 손절/익절 모니터링 |
+| monitor_positions | 09:05~15:55 매 10분 평일 | 포지션 손절/익절 모니터링 |
 | verify_recommendations | 00:10 매일 | 추천 결과 사후 검증 |
 | verify_news_events | 16:00 평일 | 뉴스 이벤트 시장 영향 검증 |
 | news_watch_tick | 09:00~15:30 10분마다 평일 | 뉴스 감시 tick (40분마다 실행) |
@@ -273,6 +273,7 @@ TELEGRAM_BOT_TOKEN=      # 선택
 - raw_response['macro']['market_theme'] 에서 하락장 판단 (MacroAnalysis 모델에는 없음)
 - 매수 스킵 fallback: AI 확인 실패 시 전종목 skip (안전 방향)
 - HTTP 클라이언트: 전체 코드 httpx 통일 (requests 사용 금지)
+- KIS API rate limit: client.py `_RateLimiter(18/초)` 전역 싱글턴 — _get/_post 모든 호출 자동 적용
 - 매도 후 exit_price: 반드시 `get_today_fill_price(side="01")`로 실 체결가 조회 (현재가 사용 금지)
 - 수동 매수 + 전략 선택 시 실제 자동 청산 편입 (monitor_positions가 HOLDING 전체 순회)
 - _check_position(): rec 없으면 strategy.target_pct × entry_price로 목표가 계산 (수동매수 포함)
