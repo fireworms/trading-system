@@ -387,8 +387,15 @@ class TradeExecutor:
                 self._close_position(pos, current_price, PositionStatus.EXPIRED, client)
                 return
 
+        # 목표가: rec 있으면 rec.target_price, 없으면 strategy × entry_price (수동매수 포함)
+        target_price = (
+            rec.target_price if rec and rec.target_price
+            else (pos.entry_price * (1 + strategy.target_pct / 100)).quantize(Decimal("1"))
+            if strategy and pos.entry_price else None
+        )
+
         # 목표가 도달 → 트레일링 모드 전환 (최초 1회만 매도 안 함)
-        if rec.target_price and current_price >= rec.target_price:
+        if target_price and current_price >= target_price:
             if pos.target_hit_at is None:
                 pos.target_hit_at = datetime.now(timezone.utc)
                 pos.target_hit_peak = pos.peak_price
