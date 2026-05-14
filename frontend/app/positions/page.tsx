@@ -485,8 +485,8 @@ export default function PositionsPage() {
                   <span>
                     매수 <span className="text-gray-200">{entryPrice.toLocaleString()}</span>
                     {pos.status === "HOLDING" && live ? (
-                      <span className={`ml-1 ${live.change >= 0 ? "text-red-400" : "text-blue-400"}`}>
-                        → {live.current_price.toLocaleString()} ({live.change_pct >= 0 ? "+" : ""}{live.change_pct.toFixed(2)}%)
+                      <span className={`ml-1 ${live.current_price >= entryPrice ? "text-red-400" : "text-blue-400"}`}>
+                        {`→ ${live.current_price.toLocaleString()} (${((live.current_price - entryPrice) / entryPrice * 100) >= 0 ? "+" : ""}${((live.current_price - entryPrice) / entryPrice * 100).toFixed(2)}%)`}
                       </span>
                     ) : pos.exit_price ? (
                       <span className="ml-1 text-gray-400">→ {Number(pos.exit_price).toLocaleString()}</span>
