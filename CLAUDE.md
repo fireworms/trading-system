@@ -275,6 +275,8 @@ TELEGRAM_BOT_TOKEN=      # 선택
 - HTTP 클라이언트: 전체 코드 httpx 통일 (requests 사용 금지)
 - 매도 후 exit_price: 반드시 `get_today_fill_price(side="01")`로 실 체결가 조회 (현재가 사용 금지)
 - 수동 매수 + 전략 선택 시 실제 자동 청산 편입 (monitor_positions가 HOLDING 전체 순회)
+- _check_position(): rec 없으면 strategy.target_pct × entry_price로 목표가 계산 (수동매수 포함)
+- 전략 없이 수동매수 시 자동 청산 미작동 — 수동매수는 반드시 전략 선택 필요
 - _enrich(): rec_id 없어도 strategy.target_pct × entry_price로 익절가 계산
 - systemd 서비스: trading-backend (uvicorn), trading-frontend (npm run dev) — WSL2 부팅 시 자동 시작
 - 손절 2단계: Phase1(목표가 전)=고정 stop_loss_pct, Phase2(trailing mode)=ATR 2.5× 트레일링
