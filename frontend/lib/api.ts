@@ -358,6 +358,23 @@ export interface ProfitStats {
   trades: TradeRow[];
 }
 
+export interface NewsEvent {
+  event_id: string;
+  detected_at: string;
+  severity: "NORMAL" | "WARNING" | "CRITICAL";
+  event_description: string;
+  keywords: string[];
+  ai_confidence: number | null;
+  kospi_at_detection: number | null;
+  kosdaq_at_detection: number | null;
+  kospi_change_1d: number | null;
+  kospi_change_3d: number | null;
+  kosdaq_change_1d: number | null;
+  kosdaq_change_3d: number | null;
+  verified_1d: boolean;
+  verified_3d: boolean;
+}
+
 // ------------------------------------------------------------------ //
 // API
 // ------------------------------------------------------------------ //
@@ -505,5 +522,10 @@ export const api = {
         method: "PATCH", body: JSON.stringify({ interval_min }),
       }),
     resumeAutoTrade: () => authFetch("/admin/news-watch/resume", { method: "POST" }),
+  },
+
+  newsEvents: {
+    list: (severity?: string) =>
+      authFetch<NewsEvent[]>(`/news-events${severity ? `?severity=${severity}` : ""}`),
   },
 };
