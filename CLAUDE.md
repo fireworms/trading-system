@@ -280,7 +280,8 @@ TELEGRAM_BOT_TOKEN=      # 선택
 - 전략 없이 수동매수 시 자동 청산 미작동 — 수동매수는 반드시 전략 선택 필요
 - _enrich(): rec_id 없어도 strategy.target_pct × entry_price로 익절가 계산
 - systemd 서비스: trading-backend (uvicorn), trading-frontend (npm run dev) — WSL2 부팅 시 자동 시작
-- 손절 2단계: Phase1(목표가 전)=고정 stop_loss_pct, Phase2(trailing mode)=ATR 2.5× 트레일링
+- 목표가 도달 시 즉시 TARGET_HIT 청산 (AI thesis 완료 기준, trailing 없음)
+- 손절: entry_price × (1 - stop_loss_pct/100) 고정선
 - 전략 검증: pick_count≤4, 일평균≤0.7%/일, R/R≥1.5, min_probability≥55 (API+프론트 동일 기준)
 
 ## 협업 원칙
