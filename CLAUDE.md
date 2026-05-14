@@ -202,10 +202,28 @@ trading_system/
 | Stage1 (매크로+그라운딩) | gemini-2.5-flash | - |
 | Stage2 (역사 분석) | gemini-3-flash-preview | gemini-3.1-flash-lite |
 | Stage3 (산업 분석) | gemini-3.1-flash-lite | gemini-2.5-flash-lite |
-| Stage4 (종목 선정) | gemini-3-flash-preview | gemini-3.1-flash-lite → gemini-2.5-flash-lite |
+| Stage4-A (자유형식 분석) | gemini-3-flash-preview | gemini-3.1-flash-lite → gemini-2.5-flash-lite |
+| Stage4-B (코드 추출) | gemini-3.1-flash-lite | gemini-2.5-flash-lite |
 | BUY_CONFIRM (09:20 확인) | gemini-3.1-flash-lite | gemini-2.5-flash-lite |
 | 뉴스 감시 | gemini-2.5-flash | - |
 | JSON 정제 | gemma-4-31b-it | - |
+
+## Stage4 환각 방어 구조
+Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
+1. **사전필터**: KIS 75개 → RSI·수급·거래량 기준 20개 압축 (runner._prefilter_stocks)
+2. **그룹 분할**: 10개씩 2그룹, 각 그룹 독립 실행 (runner._run_stage4_grouped)
+3. **2단계 생성**:
+   - Stage4-A: Flash-preview가 자유형식 텍스트로 분석 ("330860(네패스아크) 기관 순매수...")
+   - Stage4-B: Flash-lite가 텍스트에서 코드 추출 (패턴 매칭, 창의적 판단 불필요)
+4. **서버 검증**: price_map 외 코드 저장 거부 + stock_master 이름 교정 + KIS 가격 덮어쓰기
+- stock_data에 stock_name 사전 주입 (AI 훈련 기억 대신 DB 이름 사용)
+- raw_response.price_snapshot: KIS 수집 시점 가격 감사 로그 저장
+
+## Circuit Breaker
+- 직전 4건 청산이 전부 손실이면 해당 유저 매수 자동 차단 (4건 미만은 체크 안 함)
+- app_config: `cb_paused_{user_id}`, `cb_reason_{user_id}`
+- 트리거 시 어드민 텔레그램 알림, 수동 해제만 가능
+- GET /admin/circuit-breaker/status, POST /admin/circuit-breaker/resume/{user_id}
 
 ## KIS API 주요 엔드포인트
 - `FHKST01010100` inquire-price: 현재가 + 시가/고가/체결강도(cttr)/거래량
@@ -251,7 +269,7 @@ TELEGRAM_BOT_TOKEN=      # 선택
 - API 키는 절대 코드에 하드코딩 금지
 - broker_accounts의 api_key, api_secret은 Fernet 암호화 (security.py)
 - 모든 금액/수량은 Decimal 타입 사용 (float 금지)
-- 자동매매 실행 전 is_auto_trade + news_auto_trade_paused 플래그 확인
+- 자동매매 실행 전 is_auto_trade + news_auto_trade_paused + cb_paused_{user_id} 플래그 확인
 - raw_response['macro']['market_theme'] 에서 하락장 판단 (MacroAnalysis 모델에는 없음)
 - 매수 스킵 fallback: AI 확인 실패 시 전종목 skip (안전 방향)
 - HTTP 클라이언트: 전체 코드 httpx 통일 (requests 사용 금지)
