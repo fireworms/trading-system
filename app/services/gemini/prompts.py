@@ -124,6 +124,9 @@ STAGE4_PICKS = """
 === 수혜 예상 섹터 ===
 {expected_beneficiary}
 
+=== 선택 가능한 종목 목록 (반드시 이 목록의 코드만 사용) ===
+{valid_codes}
+
 === 기술적 데이터 ===
 {stocks_data}
 
@@ -136,15 +139,20 @@ STAGE4_PICKS = """
 
 === 전략 파라미터 ===
 - 보유기간: {hold_days}일
-- 목표수익률: +{target_pct}%  → target_price = current_price × (1 + {target_pct}/100)
-- 손절라인: -{stop_loss_pct}%  → stop_loss_price = current_price × (1 - {stop_loss_pct}/100)
+- 목표수익률: +{target_pct}%
+- 손절라인: -{stop_loss_pct}%
 - AI 최소 확률: {min_probability}% (이 확률 미달 종목은 제외)
 - 선정 종목 수: {pick_count}개
 
 {filter_guidance}
 
 위 정보를 종합하여 최적 종목을 {pick_count}개 선정하세요.
-target_price와 stop_loss_price는 반드시 위 공식으로 계산하세요.
+
+【중요 규칙】
+1. stock_code는 반드시 위 "선택 가능한 종목 목록"에 있는 코드를 그대로 복사하세요.
+2. 목록에 없는 코드는 절대 사용하지 마세요.
+3. 응답에 종목명·가격·목표가·손절가를 포함하지 마세요. 분석 근거만 반환합니다.
+
 다음 JSON 형식으로만 응답하세요. 다른 설명 없이 JSON만 반환하세요.
 
 {{
@@ -152,10 +160,6 @@ target_price와 stop_loss_price는 반드시 위 공식으로 계산하세요.
     {{
       "rank": 1,
       "stock_code": "005930",
-      "stock_name": "삼성전자",
-      "current_price": 75000,
-      "target_price": 86250,
-      "stop_loss_price": 69750,
       "ai_probability": 78.5,
       "ai_reason": "선정 근거 2-3문장",
       "historical_basis": "역사적 유사 사례 근거",
@@ -163,6 +167,77 @@ target_price와 stop_loss_price는 반드시 위 공식으로 계산하세요.
     }}
   ],
   "excluded_reason": "min_probability 미달 또는 제외 이유 간략 설명"
+}}
+"""
+
+STAGE4A_ANALYSIS = """
+당신은 퀀트 트레이딩 전문가입니다.
+
+=== 매크로 분석 ===
+{macro_summary}
+테마: {market_theme}
+
+=== 수혜 예상 섹터 ===
+{expected_beneficiary}
+
+=== 분석 대상 종목 ===
+{stocks_data}
+
+각 종목의 데이터 설명:
+- current_price: 현재가
+- rsi_14: RSI(14일), 30 이하=과매도, 70 이상=과매수
+- ma5/ma20/ma60: 5/20/60일 이동평균
+- frgn_net_buy_1d/5d: 외국인 1일/5일 순매수 수량 (양수=순매수)
+- orgn_net_buy_1d/5d: 기관 1일/5일 순매수 수량
+
+=== 전략 파라미터 ===
+- 보유기간: {hold_days}일
+- 목표수익률: +{target_pct}%
+- 손절라인: -{stop_loss_pct}%
+- AI 최소 확률: {min_probability}% (미달 종목은 언급 생략)
+- 선정 종목 수: {pick_count}개
+
+{filter_guidance}
+
+위 종목들을 분석하여 상위 {pick_count}개를 선정하고 근거를 서술하세요.
+
+【작성 규칙】
+- 종목을 언급할 때 반드시 코드와 이름을 함께 쓰세요. 예: 330860(네패스아크)
+- 각 종목의 선정 근거, 역사적 유사 사례, 리스크를 포함하세요.
+- JSON 없이 자연스러운 분석 텍스트로 작성하세요.
+"""
+
+STAGE4B_EXTRACT = """
+아래 분석 텍스트에서 추천 종목을 추출하여 JSON으로 정리하세요.
+
+=== 유효 종목 코드 목록 (이 목록에 있는 코드만 사용) ===
+{valid_codes}
+
+=== 분석 텍스트 ===
+{analysis_text}
+
+【추출 규칙】
+1. stock_code는 반드시 위 유효 코드 목록에서만 선택하세요.
+2. 목록에 없는 코드는 절대 사용하지 마세요.
+3. ai_probability: 분석 내용 기반 성공 확률 (0~100)
+4. ai_reason: 해당 종목의 핵심 선정 근거 1~2문장
+5. historical_basis: 텍스트에 언급된 역사적 근거 (없으면 빈 문자열)
+6. risk_factors: 텍스트에 언급된 리스크 (없으면 빈 문자열)
+
+최대 {pick_count}개를 다음 JSON 형식으로만 응답하세요. 다른 설명 없이 JSON만 반환하세요.
+
+{{
+  "picks": [
+    {{
+      "rank": 1,
+      "stock_code": "330860",
+      "ai_probability": 78.5,
+      "ai_reason": "선정 근거 1~2문장",
+      "historical_basis": "역사적 근거",
+      "risk_factors": "주요 리스크"
+    }}
+  ],
+  "excluded_reason": "제외 이유 간략 설명"
 }}
 """
 

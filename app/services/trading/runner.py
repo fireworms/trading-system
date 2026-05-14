@@ -146,11 +146,92 @@ class StrategyRunner:
                 )
         return result
 
+    def _prefilter_stocks(
+        self, stocks_data: list[dict], candidate_filter: str, target: int = 20
+    ) -> list[dict]:
+        """RSI·수급·거래량 기준으로 target개로 압축. 환각 억제용."""
+        def _score(s: dict) -> float:
+            rsi = s.get("rsi_14") or 50.0
+            net_buy_5d = (s.get("frgn_net_buy_5d") or 0) + (s.get("orgn_net_buy_5d") or 0)
+            avg_vol = s.get("avg_volume_20d") or 1
+            recent = s.get("recent_ohlcv", [])
+            vol_ratio = (recent[0]["volume"] / avg_vol) if recent else 0.0
+
+            rsi_score = max(0.0, 1.0 - abs(rsi - 55) / 30)   # 55 근처 최고
+            buy_score = 1.0 if net_buy_5d > 0 else 0.0
+            vol_score = min(vol_ratio / 2.0, 1.0) if candidate_filter == "volume" else 0.5
+
+            return rsi_score * 0.4 + buy_score * 0.3 + vol_score * 0.3
+
+        # 1차: RSI 극단값 제거 (30 미만 / 72 초과)
+        strict = [s for s in stocks_data if s.get("rsi_14") is not None and 30 <= s["rsi_14"] <= 72]
+        pool = strict if len(strict) >= target else (
+            [s for s in stocks_data if s.get("rsi_14") is not None and 25 <= s["rsi_14"] <= 78]
+        )
+        if len(pool) < target:
+            pool = stocks_data  # 그래도 부족하면 전체
+
+        result = sorted(pool, key=_score, reverse=True)[:target]
+        logger.info("Pre-filter: %d → %d stocks (filter=%s)", len(stocks_data), len(result), candidate_filter)
+        return result
+
+    def _run_stage4_grouped(self, macro, industry, stock_data: list[dict], strategy: Strategy):
+        """사전필터(20개) → 10개씩 그룹 → Stage4 반복 실행 → 집계."""
+        from app.services.gemini.analyzer import PickResult
+
+        filtered = self._prefilter_stocks(stock_data, strategy.candidate_filter, target=20)
+        groups = [filtered[i:i + 10] for i in range(0, len(filtered), 10)]
+
+        all_picks: list[dict] = []
+        model_used = ""
+        raw_groups = []
+
+        for i, group in enumerate(groups):
+            logger.info("Stage4 group %d/%d (%d stocks)", i + 1, len(groups), len(group))
+            result = self.analyzer.stage4_picks(
+                macro=macro,
+                industry=industry,
+                stocks_data=group,
+                hold_days=strategy.hold_days,
+                target_pct=strategy.target_pct,
+                stop_loss_pct=strategy.stop_loss_pct,
+                min_probability=strategy.min_probability,
+                pick_count=strategy.pick_count,
+                candidate_filter=strategy.candidate_filter,
+            )
+            all_picks.extend(result.picks)
+            model_used = result.model_used or model_used
+            raw_groups.append({"group": i + 1, "stock_count": len(group), "raw": result.raw})
+
+        # 중복 제거 + 확률 내림차순 → pick_count개 + rank 재부여
+        seen: set[str] = set()
+        unique: list[dict] = []
+        for p in sorted(all_picks, key=lambda x: x.get("ai_probability") or 0, reverse=True):
+            code = p.get("stock_code", "")
+            if code and code not in seen:
+                seen.add(code)
+                unique.append(p)
+            if len(unique) >= strategy.pick_count:
+                break
+        for idx, p in enumerate(unique, 1):
+            p["rank"] = idx
+
+        logger.info(
+            "Stage4 grouped done: %d groups → %d candidates → %d picks [%s]",
+            len(groups), len(all_picks), len(unique), model_used,
+        )
+        return PickResult(
+            picks=unique,
+            excluded_reason=f"{len(groups)} groups processed",
+            model_used=model_used,
+            raw={"groups": raw_groups},
+        )
+
     def run_strategy(self, strategy: Strategy, today: date | None = None) -> RecommendationRun:
         """
         전략 1회 실행:
         1. 후보 종목 시세 수집
-        2. AI 4단계 파이프라인
+        2. AI 4단계 파이프라인 (Stage4는 그룹 분할 실행)
         3. 결과 DB 저장
         4. 자동매매 구독자에게 주문 실행
         """
@@ -163,12 +244,26 @@ class StrategyRunner:
         if not stock_data:
             raise RuntimeError("No stock data collected")
 
-        # 2. AI 파이프라인 실행
-        macro, historical, industry, picks_result = self.analyzer.run_full_pipeline(
-            strategy=strategy,
-            candidate_stocks=stock_data,
-            today=run_date,
-        )
+        # stock_name 주입: AI가 훈련 기억 대신 stock_master의 정확한 이름 사용
+        from sqlalchemy import select as _select
+        codes_in_data = [s["stock_code"] for s in stock_data if s.get("stock_code")]
+        sm_rows = self.db.scalars(
+            _select(StockMaster).where(StockMaster.stock_code.in_(codes_in_data))
+        ).all()
+        name_map_pre = {r.stock_code: r.stock_name for r in sm_rows}
+        for s in stock_data:
+            s["stock_name"] = name_map_pre.get(s.get("stock_code", ""), "")
+
+        # 2. AI 파이프라인: Stage 1-3 순차 실행
+        macro = self.analyzer.stage1_macro(run_date)
+        logger.info("Stage1 done: theme=%s [%s]", macro.market_theme, macro.model_used)
+        historical = self.analyzer.stage2_historical(macro)
+        logger.info("Stage2 done: %d matches [%s]", len(historical.historical_matches), historical.model_used)
+        industry = self.analyzer.stage3_industry(macro, historical)
+        logger.info("Stage3 done: beneficiary=%s [%s]", industry.expected_beneficiary[:40], industry.model_used)
+
+        # Stage4: 사전필터 + 10개씩 그룹 분할 실행
+        picks_result = self._run_stage4_grouped(macro, industry, stock_data, strategy)
 
         # 3. 랜덤 대조군 진입가 기록 (같은 종목 풀에서 pick_count개 무작위)
         import random as _random
@@ -193,6 +288,11 @@ class StrategyRunner:
                 "industry": industry.raw,
                 "picks": picks_result.raw,
                 "random_baseline": {"entries": random_entries},
+                # KIS 수집 시점 가격 감사 로그 (환각 검증용)
+                "price_snapshot": {
+                    s["stock_code"]: float(s["current_price"])
+                    for s in stock_data if s.get("stock_code") and s.get("current_price")
+                },
             },
         )
         self.db.add(run)
@@ -208,23 +308,50 @@ class StrategyRunner:
         )
         self.db.add(analysis)
 
-        # Recommendations 저장 (current_price_at_rec: 검증 pnl 기준가)
-        # stock_data에서 종목코드 → 현재가 맵 구성
+        # Recommendations 저장
+        # KIS 실측 가격맵 (AI 반환값보다 항상 우선)
         price_map: dict[str, Decimal] = {
             s["stock_code"]: Decimal(str(s["current_price"]))
             for s in stock_data if s.get("stock_code") and s.get("current_price")
         }
+
+        # stock_master에서 종목명 맵 구성 (AI 이름 환각 차단)
+        from app.models.stock_master import StockMaster
+        from sqlalchemy import select as _select
+        name_map: dict[str, str] = {}
+        if price_map:
+            masters = self.db.scalars(
+                _select(StockMaster).where(StockMaster.stock_code.in_(price_map.keys()))
+            ).all()
+            name_map = {m.stock_code: m.stock_name for m in masters}
+
+        saved_count = 0
         for pick in picks_result.picks:
             code = pick.get("stock_code", "")
-            # AI가 반환한 current_price 우선, 없으면 수집 데이터에서 조회
-            raw_price = pick.get("current_price") or price_map.get(code)
+
+            # 샘플에 없는 코드 = AI가 코드를 환각한 것 → 저장 거부
+            if code not in price_map:
+                logger.warning(
+                    "Pick rejected — code not in sample (hallucinated?): code=%s ai_name=%s",
+                    code, pick.get("stock_name"),
+                )
+                continue
+
+            # 가격: KIS 실측값 (AI 반환 current_price 무시)
+            kis_price = price_map[code]
+            # 종목명: stock_master 우선 (AI 반환 stock_name 무시)
+            stock_name = name_map.get(code) or pick.get("stock_name", "")
+            # target/stop: 전략 파라미터로 서버에서 직접 계산 (AI 계산값 무시)
+            target_price = (kis_price * (1 + strategy.target_pct / 100)).quantize(Decimal("1"))
+            stop_price   = (kis_price * (1 - strategy.stop_loss_pct / 100)).quantize(Decimal("1"))
+
             rec = Recommendation(
                 run_id=run.run_id,
                 stock_code=code,
-                stock_name=pick.get("stock_name", ""),
-                current_price_at_rec=Decimal(str(raw_price)) if raw_price else None,
-                target_price=Decimal(str(pick.get("target_price", 0))) if pick.get("target_price") else None,
-                stop_loss_price=Decimal(str(pick.get("stop_loss_price", 0))) if pick.get("stop_loss_price") else None,
+                stock_name=stock_name,
+                current_price_at_rec=kis_price,
+                target_price=target_price,
+                stop_loss_price=stop_price,
                 ai_probability=Decimal(str(pick.get("ai_probability", 0))) if pick.get("ai_probability") else None,
                 ai_reason=pick.get("ai_reason"),
                 historical_basis=pick.get("historical_basis"),
@@ -232,10 +359,14 @@ class StrategyRunner:
                 rank=pick.get("rank"),
             )
             self.db.add(rec)
+            saved_count += 1
 
         self.db.commit()
         self.db.refresh(run)
-        logger.info("Strategy run saved: run_id=%s, picks=%d", run.run_id, len(picks_result.picks))
+        logger.info(
+            "Strategy run saved: run_id=%s, picks=%d (hallucinated/rejected=%d)",
+            run.run_id, saved_count, len(picks_result.picks) - saved_count,
+        )
 
         # 4. 텔레그램 알림 — 구독자 각각 전송
         from app.services.telegram.notifier import get_notifier

@@ -35,11 +35,13 @@ function fmtAmt(n: number) {
 }
 
 function OverallKpi({ kpi }: { kpi: TradeKPI }) {
-  const winColor = kpi.win_rate != null ? (kpi.win_rate >= 0.5 ? "green" : "red") : "white";
-  const pfColor  = kpi.profit_factor != null ? (kpi.profit_factor >= 1.5 ? "green" : kpi.profit_factor >= 1 ? "white" : "red") : "white";
-  const amtColor = kpi.total_pnl_amount >= 0 ? "green" : "red";
+  const winColor    = kpi.win_rate != null ? (kpi.win_rate >= 0.5 ? "green" : "red") : "white";
+  const pfColor     = kpi.profit_factor != null ? (kpi.profit_factor >= 1.5 ? "green" : kpi.profit_factor >= 1 ? "white" : "red") : "white";
+  const amtColor    = kpi.total_pnl_amount >= 0 ? "green" : "red";
+  const sharpeColor = kpi.sharpe != null ? (kpi.sharpe >= 1 ? "green" : kpi.sharpe >= 0 ? "white" : "red") : "white";
+  const mddColor    = kpi.max_drawdown_pct != null ? (kpi.max_drawdown_pct <= 5 ? "green" : kpi.max_drawdown_pct <= 15 ? "white" : "red") : "white";
   return (
-    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+    <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
       <KpiCard label="총 실현손익" value={fmtAmt(kpi.total_pnl_amount)} color={amtColor} />
       <KpiCard
         label="승률"
@@ -59,6 +61,18 @@ function OverallKpi({ kpi }: { kpi: TradeKPI }) {
         label="평균 보유기간"
         value={kpi.avg_hold_days != null ? `${kpi.avg_hold_days}일` : "-"}
         sub={`총 ${kpi.total_trades}건`}
+      />
+      <KpiCard
+        label="샤프지수"
+        value={kpi.sharpe != null ? fmt(kpi.sharpe) : "-"}
+        sub="트레이드 단위 (3건+)"
+        color={sharpeColor}
+      />
+      <KpiCard
+        label="최대낙폭 (MDD)"
+        value={kpi.max_drawdown_pct != null ? `-${kpi.max_drawdown_pct.toFixed(2)}%` : "-"}
+        sub="equity curve 기준"
+        color={mddColor}
       />
     </div>
   );

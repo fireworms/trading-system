@@ -20,9 +20,12 @@ from google.genai import types
 
 from app.core.config import get_settings
 from app.services.gemini.prompts import (
-    STAGE1_MACRO, STAGE2_HISTORICAL, STAGE3_INDUSTRY, STAGE4_PICKS,
+    STAGE1_MACRO, STAGE2_HISTORICAL, STAGE3_INDUSTRY,
+    STAGE4A_ANALYSIS, STAGE4B_EXTRACT,
     _FILTER_GUIDANCE, BUY_CONFIRM,
 )
+
+_CHAIN_STAGE4B = ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite"]
 
 logger = logging.getLogger(__name__)
 
@@ -215,9 +218,16 @@ class GeminiAnalyzer:
         pick_count: int,
         candidate_filter: str = "mixed",
     ) -> PickResult:
-        """4단계: 종목 선정 (최고 품질 모델 우선)."""
+        """4단계: 종목 선정 — 분석(Flash-preview) + 추출(Flash-lite) 2단계."""
         guidance = _FILTER_GUIDANCE.get(candidate_filter, _FILTER_GUIDANCE["mixed"])
-        prompt = STAGE4_PICKS.format(
+        valid_codes = ", ".join(
+            f"{s['stock_code']}({s.get('stock_name', '')})"
+            for s in stocks_data if s.get("stock_code")
+        )
+
+        # Step A: Flash-preview — 자유형식 분석 텍스트 생성
+        # JSON 구조 출력 압박 없이 종목명·코드를 함께 쓴 분석에만 집중
+        prompt_a = STAGE4A_ANALYSIS.format(
             macro_summary=macro.macro_summary,
             market_theme=macro.market_theme,
             expected_beneficiary=industry.expected_beneficiary,
@@ -229,13 +239,24 @@ class GeminiAnalyzer:
             pick_count=pick_count,
             filter_guidance=guidance,
         )
-        text, model = self._call_with_fallback(prompt, _CHAIN_STAGE4)
-        data = self._parse_json(text)
+        analysis_text, model_a = self._call_with_fallback(prompt_a, _CHAIN_STAGE4)
+        logger.info("Stage4-A done [%s]: %d chars", model_a, len(analysis_text))
+
+        # Step B: Flash-lite — 분석 텍스트에서 코드 추출 (패턴 매칭 수준의 단순 작업)
+        prompt_b = STAGE4B_EXTRACT.format(
+            valid_codes=valid_codes,
+            analysis_text=analysis_text,
+            pick_count=pick_count,
+        )
+        text_b, model_b = self._call_with_fallback(prompt_b, _CHAIN_STAGE4B)
+        data = self._parse_json(text_b)
+        logger.info("Stage4-B done [%s]: %d picks", model_b, len(data.get("picks", [])))
+
         return PickResult(
             picks=data.get("picks", []),
             excluded_reason=data.get("excluded_reason", ""),
-            model_used=model,
-            raw=data,
+            model_used=model_a,
+            raw={"analysis": analysis_text, "extraction": data, "model_extract": model_b},
         )
 
     def stage4_picks_backtest(
@@ -249,10 +270,16 @@ class GeminiAnalyzer:
         candidate_filter: str,
         backtest_date,
     ) -> PickResult:
-        """백테스트용 Stage4. Lite 모델만 사용, 매크로 컨텍스트는 placeholder."""
+        """백테스트용 Stage4. 2단계 분석+추출 구조 동일하게 적용."""
         guidance = _FILTER_GUIDANCE.get(candidate_filter, _FILTER_GUIDANCE["mixed"])
-        prompt = STAGE4_PICKS.format(
-            macro_summary=f"{backtest_date} 기준 과거 데이터 백테스트 시뮬레이션. 기술적 지표 중심으로 판단.",
+        valid_codes = ", ".join(
+            f"{s['stock_code']}({s.get('stock_name', '')})"
+            for s in stocks_data if s.get("stock_code")
+        )
+        macro_placeholder = f"{backtest_date} 기준 과거 데이터 백테스트 시뮬레이션. 기술적 지표 중심으로 판단."
+
+        prompt_a = STAGE4A_ANALYSIS.format(
+            macro_summary=macro_placeholder,
             market_theme="백테스트",
             expected_beneficiary="기술적 지표 우수 종목",
             stocks_data=json.dumps(stocks_data, ensure_ascii=False, indent=2),
@@ -263,13 +290,20 @@ class GeminiAnalyzer:
             pick_count=pick_count,
             filter_guidance=guidance,
         )
-        text, model = self._call_with_fallback(prompt, _CHAIN_BACKTEST)
-        data = self._parse_json(text)
+        analysis_text, model_a = self._call_with_fallback(prompt_a, _CHAIN_BACKTEST)
+
+        prompt_b = STAGE4B_EXTRACT.format(
+            valid_codes=valid_codes,
+            analysis_text=analysis_text,
+            pick_count=pick_count,
+        )
+        text_b, model_b = self._call_with_fallback(prompt_b, _CHAIN_STAGE4B)
+        data = self._parse_json(text_b)
         return PickResult(
             picks=data.get("picks", []),
             excluded_reason=data.get("excluded_reason", ""),
-            model_used=model,
-            raw=data,
+            model_used=model_a,
+            raw={"analysis": analysis_text, "extraction": data, "model_extract": model_b},
         )
 
     # ------------------------------------------------------------------ #

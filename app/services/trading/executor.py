@@ -39,17 +39,60 @@ class TradeExecutor:
     # 매수
     # ------------------------------------------------------------------ #
 
-def execute_buys_for_run(self, sub: UserStrategy, run: RecommendationRun) -> None:
+    def _check_circuit_breaker(self, user_id) -> bool:
+        """직전 4건 청산이 모두 손실이면 circuit breaker 트리거. 이미 활성화됐으면 True 반환."""
+        from app.core.config_store import get_config, set_config
+        uid = str(user_id)
+        paused_key = f"cb_paused_{uid}"
+        reason_key = f"cb_reason_{uid}"
+
+        if get_config(self.db, paused_key, "false") == "true":
+            logger.warning("Circuit breaker active for user=%s: %s", uid,
+                           get_config(self.db, reason_key, ""))
+            return True
+
+        recent = self.db.scalars(
+            select(Position)
+            .where(
+                Position.user_id == user_id,
+                Position.status != PositionStatus.HOLDING,
+                Position.pnl_pct.isnot(None),
+            )
+            .order_by(Position.exit_date.desc())
+            .limit(4)
+        ).all()
+
+        if len(recent) < 4:
+            return False
+
+        if all(float(p.pnl_pct) < 0 for p in recent):
+            avg_pnl = sum(float(p.pnl_pct) for p in recent) / 4
+            reason = f"직전 4건 청산 전부 손실 (평균 {avg_pnl:.2f}%)"
+            set_config(self.db, paused_key, "true")
+            set_config(self.db, reason_key, reason)
+            logger.warning("Circuit breaker triggered for user=%s: %s", uid, reason)
+            from app.services.telegram.notifier import notify_admins_error
+            notify_admins_error("Circuit Breaker 발동", f"user={uid}\n{reason}")
+            return True
+
+        return False
+
+    def execute_buys_for_run(self, sub: UserStrategy, run: RecommendationRun) -> None:
         """추천 run의 종목들을 구독자 계좌로 시장가 매수."""
         if not sub.is_auto_trade:
             logger.warning("Auto trade is OFF for sub=%s, skipping", sub.id)
             return
 
-        # 뉴스 감시에 의한 자동매매 정지 체크
         from app.core.config_store import get_config
+
+        # 뉴스 감시에 의한 자동매매 정지 체크
         if get_config(self.db, "news_auto_trade_paused", "false") == "true":
             reason = get_config(self.db, "news_pause_reason", "")
             logger.warning("Auto trade paused by news watch: %s", reason)
+            return
+
+        # Circuit breaker 체크 (유저별)
+        if self._check_circuit_breaker(sub.user_id):
             return
 
         client = get_kis_client_from_account(sub.account)

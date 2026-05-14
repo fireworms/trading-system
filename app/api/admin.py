@@ -141,3 +141,44 @@ def resume_auto_trade(
     set_config(db, "news_auto_trade_paused", "false")
     set_config(db, "news_pause_reason", "")
     return {"message": "자동매매 재개됨"}
+
+
+# ------------------------------------------------------------------ #
+# Circuit Breaker
+# ------------------------------------------------------------------ #
+
+@router.get("/circuit-breaker/status")
+def get_circuit_breaker_status(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """전체 유저의 circuit breaker 상태 조회."""
+    from app.core.config_store import get_config
+    from sqlalchemy import select as _select
+
+    users = db.scalars(_select(User).where(User.is_active == True)).all()  # noqa: E712
+    result = []
+    for u in users:
+        uid = str(u.user_id)
+        paused = get_config(db, f"cb_paused_{uid}", "false") == "true"
+        reason = get_config(db, f"cb_reason_{uid}", "")
+        result.append({
+            "user_id":  uid,
+            "username": u.username,
+            "paused":   paused,
+            "reason":   reason,
+        })
+    return result
+
+
+@router.post("/circuit-breaker/resume/{user_id}")
+def resume_circuit_breaker(
+    user_id: str,
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """특정 유저의 circuit breaker 해제."""
+    from app.core.config_store import set_config
+    set_config(db, f"cb_paused_{user_id}", "false")
+    set_config(db, f"cb_reason_{user_id}", "")
+    return {"message": f"user={user_id} circuit breaker 해제됨"}

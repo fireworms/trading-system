@@ -308,6 +308,8 @@ export interface TradeKPI {
   profit_factor: number | null;
   total_pnl_amount: number;
   avg_hold_days: number | null;
+  sharpe: number | null;
+  max_drawdown_pct: number | null;
 }
 
 export interface StrategyKPI extends TradeKPI {

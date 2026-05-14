@@ -1,3 +1,5 @@
+import math
+import statistics as _stats
 import uuid
 from decimal import Decimal
 from fastapi import APIRouter, Depends, HTTPException
@@ -94,7 +96,8 @@ def get_stats(
         if not positions:
             return {"total_trades": 0, "win_count": 0, "loss_count": 0,
                     "win_rate": None, "avg_win_pct": None, "avg_loss_pct": None,
-                    "profit_factor": None, "total_pnl_amount": 0, "avg_hold_days": None}
+                    "profit_factor": None, "total_pnl_amount": 0, "avg_hold_days": None,
+                    "sharpe": None, "max_drawdown_pct": None}
         wins   = [p for p in positions if float(p.pnl_pct) > 0]
         losses = [p for p in positions if float(p.pnl_pct) <= 0]
         avg_win  = sum(float(p.pnl_pct) for p in wins)  / len(wins)  if wins   else None
@@ -104,6 +107,27 @@ def get_stats(
             (p.exit_date - p.entry_date).days for p in positions
             if p.exit_date and p.entry_date
         ]
+
+        # 샤프지수 (트레이드 단위: mean(pnl) / std(pnl), 3건 이상 시 계산)
+        pnl_list = [float(p.pnl_pct) for p in positions]
+        sharpe = None
+        if len(pnl_list) >= 3:
+            mean_r = sum(pnl_list) / len(pnl_list)
+            std_r = _stats.stdev(pnl_list)
+            sharpe = round(mean_r / std_r, 2) if std_r > 0 else None
+
+        # MDD (청산일 순 equity curve 기준)
+        sorted_pos = sorted(
+            [p for p in positions if p.exit_date and p.pnl_pct],
+            key=lambda p: p.exit_date,
+        )
+        max_dd = 0.0
+        equity, peak = 1.0, 1.0
+        for p in sorted_pos:
+            equity *= (1 + float(p.pnl_pct) / 100)
+            peak = max(peak, equity)
+            max_dd = max(max_dd, (peak - equity) / peak)
+
         return {
             "total_trades":     len(positions),
             "win_count":        len(wins),
@@ -114,6 +138,8 @@ def get_stats(
             "profit_factor":    round(pf, 4) if pf is not None else None,
             "total_pnl_amount": round(sum(pnl_amount(p) for p in positions)),
             "avg_hold_days":    round(sum(hold_days) / len(hold_days), 1) if hold_days else None,
+            "sharpe":           sharpe,
+            "max_drawdown_pct": round(max_dd * 100, 2) if sorted_pos else None,
         }
 
     # 전략별
