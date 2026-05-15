@@ -30,7 +30,8 @@ trading_system/
 │   │   ├── config.py            # Settings (pydantic)
 │   │   ├── database.py          # SessionLocal, Base
 │   │   ├── security.py          # JWT, bcrypt, Fernet 암호화
-│   │   └── config_store.py      # AppConfig key-value (DB 기반 동적 설정)
+│   │   ├── config_store.py      # AppConfig key-value (DB 기반 동적 설정)
+│   │   └── loop.py              # async 이벤트루프 싱글턴 (APScheduler 스레드↔async 브리지)
 │   ├── models/
 │   │   ├── user.py              # User, BrokerAccount (hts_id 포함)
 │   │   ├── strategy.py          # Strategy, UserStrategy
@@ -65,6 +66,7 @@ trading_system/
 │   │   ├── telegram/
 │   │   │   └── notifier.py      # TelegramNotifier (멀티유저, chat_id별 전송)
 │   │   └── trading/
+│   │       ├── realtime_monitor.py  # 실시간 포지션 모니터 (서버사이드 상시 구독, 즉시 손절/익절)
 │   │       ├── scheduler.py     # APScheduler 잡 정의
 │   │       ├── runner.py        # StrategyRunner (AI 파이프라인, 분석만)
 │   │       ├── executor.py      # TradeExecutor (매수/매도/모니터링)
@@ -246,6 +248,12 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 - **WARNING 감지 시**: news_auto_trade_paused=true + 텔레그램 어드민 알림 → 수동 재개
 
 ## 실시간 WebSocket
+- **서버사이드 포지션 모니터** (`realtime_monitor.py`): 프론트 연결 무관하게 HOLDING 포지션 종목 상시 KIS 구독
+  - 서버 시작 시 `load_all()` → HOLDING 전부 인메모리 등록 + KIS H0STCNT0 구독
+  - 매 가격 틱: bid_price 기준 손절가/목표가 즉시 체크 → 조건 충족 시 `asyncio.create_task`로 즉시 청산
+  - 10분 폴링은 만료/time-based stop 처리 + WebSocket 끊김 구간 fallback으로 유지
+  - 중복 청산 방지: `_closing` set + DB `status != HOLDING` 체크
+  - `core/loop.py`: APScheduler 스레드 → async 루프 브리지 (`run_coroutine_threadsafe`)
 - **가격 스트림**: H0STCNT0 → /ws/prices 엔드포인트 → 프론트 포지션 페이지 LIVE 표시
   - H0STCNT0 필드: [0]코드, [2]현재가, [3]전일대비부호, [4]전일대비, [5]등락률, [11]매수호가1(bid), [13]누적거래량
   - 프론트 미실현 손익: bid_price 기준 계산 (시장가 매도 실체결 기준), 퍼센트+원화 금액 표시
