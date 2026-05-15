@@ -256,6 +256,10 @@ def run_news_check_and_act() -> None:
 
         db.commit()
 
+        # 듀얼 시그널 조치: AI severity + 실시간 KOSPI 등락률 교차 검증
+        if result["severity"] in ("WARNING", "CRITICAL"):
+            _apply_dual_signal_action(db, result)
+
     if result["severity"] == "WARNING":
         try:
             from app.services.telegram.notifier import notify_admins_error
@@ -265,6 +269,54 @@ def run_news_check_and_act() -> None:
             )
         except Exception as e:
             logger.error("Telegram alert failed: %s", e)
+
+
+def _apply_dual_signal_action(db, news_result: dict) -> None:
+    """
+    AI severity + 실시간 KOSPI 등락률 교차 검증 후 조치.
+    - CRITICAL + KOSPI -2% 이하 → 전 포지션 긴급 청산
+    - WARNING/CRITICAL + KOSPI -1% 이하 → 수익 포지션 손절선 강화
+    모델 오탐 방지: AI 단독 신호로는 청산/손절 강화 미발동.
+    """
+    from app.services.kis.client import get_kis_client
+    from app.services.trading.executor import TradeExecutor
+    from app.services.telegram.notifier import notify_admins_error
+
+    try:
+        client = get_kis_client(db)
+        market = client.get_index_change_pct()
+        kospi_chg = float(market.get("KOSPI", 0))
+    except Exception as e:
+        logger.warning("Dual signal: KOSPI change fetch failed: %s", e)
+        return
+
+    severity = news_result["severity"]
+    reason   = news_result["event_description"]
+    executor = TradeExecutor(db)
+
+    if severity == "CRITICAL" and kospi_chg <= -2.0:
+        logger.warning("Dual signal CRITICAL+KOSPI%.1f%% → emergency close all", kospi_chg)
+        closed = executor.emergency_close_all_positions(reason=f"[CRITICAL] {reason}")
+        try:
+            notify_admins_error(
+                "🚨 뉴스 긴급 청산",
+                f"{reason}\n\nKOSPI {kospi_chg:+.1f}% — {closed}개 포지션 전량 청산됐습니다.",
+            )
+        except Exception:
+            pass
+
+    elif kospi_chg <= -1.0:
+        logger.warning("Dual signal %s+KOSPI%.1f%% → tighten stop losses", severity, kospi_chg)
+        tightened = executor.tighten_stop_losses(reason=f"[{severity}] {reason}")
+        try:
+            notify_admins_error(
+                "⚠️ 손절선 강화",
+                f"{reason}\n\nKOSPI {kospi_chg:+.1f}% — 수익 포지션 {tightened}개 손절선을 현재가 기준으로 강화했습니다.",
+            )
+        except Exception:
+            pass
+    else:
+        logger.info("Dual signal: AI=%s but KOSPI%.1f%% — no action taken", severity, kospi_chg)
 
 
 def verify_news_events() -> None:

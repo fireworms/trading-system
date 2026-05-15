@@ -59,6 +59,16 @@ class RealtimePositionMonitor:
             self._by_code.pop(stock_code, None)
         self._closing.discard(position_id)
 
+    def force_trailing(self, position_id: str, peak_price: Decimal) -> None:
+        """WARNING 발동 시 수익 포지션의 트레일링을 인메모리에서 즉시 강제 활성화."""
+        for bucket in self._by_code.values():
+            if position_id in bucket:
+                w = bucket[position_id]
+                w.peak_price = peak_price
+                w.target_hit_at = datetime.now(timezone.utc)
+                w.use_trailing = True
+                return
+
     def is_watched(self, stock_code: str) -> bool:
         return bool(self._by_code.get(stock_code))
 

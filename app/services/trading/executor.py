@@ -519,3 +519,67 @@ class TradeExecutor:
                     pnl_pct=pos.pnl_pct,
                     strategy_name=pos.strategy.name if pos.strategy else "",
                 )
+
+    # ------------------------------------------------------------------ #
+    # 뉴스 긴급 조치
+    # ------------------------------------------------------------------ #
+
+    def emergency_close_all_positions(self, reason: str) -> int:
+        """CRITICAL + KOSPI -2% 동시 감지 시 모든 HOLDING 포지션 즉시 청산."""
+        positions = self.db.scalars(
+            select(Position).where(Position.status == PositionStatus.HOLDING)
+        ).all()
+
+        closed = 0
+        for pos in positions:
+            try:
+                client = get_kis_client_from_account(pos.account)
+                current_price = client.get_current_price(pos.stock_code)
+                self._close_position(pos, current_price, PositionStatus.MANUAL_EXIT, client)
+                closed += 1
+            except Exception as e:
+                logger.error("Emergency close failed for %s: %s", pos.stock_code, e)
+
+        self.db.commit()
+        logger.warning("Emergency closed %d positions: %s", closed, reason)
+        return closed
+
+    def tighten_stop_losses(self, reason: str) -> int:
+        """WARNING + KOSPI -1% 동시 감지 시 수익 포지션을 현재가 기준 트레일링으로 전환.
+        손실 중인 포지션은 기존 고정 손절선 유지.
+        """
+        from app.services.trading.realtime_monitor import get_monitor
+
+        positions = self.db.scalars(
+            select(Position).where(Position.status == PositionStatus.HOLDING)
+        ).all()
+
+        monitor = get_monitor()
+        tightened = 0
+        now = datetime.now(timezone.utc)
+
+        for pos in positions:
+            try:
+                client = get_kis_client_from_account(pos.account)
+                current_price = client.get_current_price(pos.stock_code)
+
+                if current_price <= pos.entry_price:
+                    continue  # 손실 포지션: 기존 고정 손절선이 더 보수적
+
+                pos.peak_price = current_price
+                if pos.target_hit_at is None:
+                    pos.target_hit_at = now
+                    pos.target_hit_peak = current_price
+                pos.trailing_stop_override = True
+
+                monitor.force_trailing(str(pos.position_id), current_price)
+
+                stop = current_price * (1 - pos.strategy.stop_loss_pct / 100)
+                logger.info("Tightened stop %s: current=%s new_stop=%.0f", pos.stock_code, current_price, float(stop))
+                tightened += 1
+            except Exception as e:
+                logger.error("Tighten failed for %s: %s", pos.stock_code, e)
+
+        self.db.commit()
+        logger.warning("Tightened stops for %d positions: %s", tightened, reason)
+        return tightened
