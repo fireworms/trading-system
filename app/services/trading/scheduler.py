@@ -144,6 +144,15 @@ def job_news_watch_tick() -> None:
         logger.error("News watch tick failed: %s", e)
 
 
+def job_morning_gate() -> None:
+    """08:00 개장 전 리스크 체크 — 미국 야간/선물 급락 or 지정학 이슈 감지 시 당일 매수 차단."""
+    try:
+        from app.services.news.watcher import morning_gate_check
+        morning_gate_check()
+    except Exception as e:
+        logger.error("Morning gate check failed: %s", e)
+
+
 def job_verify_news_events() -> None:
     """1일/3일 경과 뉴스 이벤트 + recommendation_runs 실제 시장 영향 검증."""
     try:
@@ -289,6 +298,14 @@ def start_scheduler() -> None:
         return
 
     _scheduler = BackgroundScheduler(timezone="Asia/Seoul")
+
+    # 모닝 게이트: 평일 08:00 — 개장 전 야간 리스크 체크, 이상 시 당일 매수 차단
+    _scheduler.add_job(
+        job_morning_gate,
+        trigger=CronTrigger(day_of_week="mon-fri", hour=8, minute=0),
+        id="morning_gate",
+        replace_existing=True,
+    )
 
     # 분석 잡: 3일마다 (평일 08:30) — AI 분석 + recommendations 저장만
     _scheduler.add_job(

@@ -115,6 +115,92 @@ def check_news(db=None) -> dict:
                 "keywords": [], "ai_confidence": 0.0}
 
 
+_MORNING_GATE_PROMPT = """
+당신은 한국 주식시장 개장 전 리스크 감시 전문가입니다.
+지금은 한국 주식시장 개장(09:00 KST) 전 아침입니다.
+
+어젯밤 미국 시장 마감부터 지금까지 한국 주식시장 전반에 중대한 영향을 줄 수 있는 이슈가 있는지 판단하세요.
+
+주요 체크 항목:
+- 미국 증시: S&P500/나스닥 야간 등락률 (±2% 이상이면 주목)
+- 미국/글로벌 선물: 현재 S&P500·나스닥·VIX 선물 상태
+- 지정학: 전쟁 확전, 대형 테러, 핵 위협 등 야간 급변 사항
+- 글로벌 금융: 주요국 긴급 금리 결정, 대형 금융기관 위기 징후
+- 한국 관련: 야간 원/달러 환율 급변 (+2% 이상), 한국 관련 국제 이슈
+
+판단 기준:
+- NORMAL: 이상 없음 → 정상 매수 진행
+- WARNING: 미국 선물 -1.5% 이상 또는 중대 지정학 이슈 → 당일 매수 자제
+- CRITICAL: 미국 선물 -3% 이상 또는 시스템 충격 수준 이슈 → 당일 매수 중단
+
+다음 JSON만 반환하세요:
+{{
+  "severity": "NORMAL" or "WARNING" or "CRITICAL",
+  "reason": "판단 근거 1~2문장 (NORMAL이면 빈 문자열)",
+  "us_futures_pct": -1.5,
+  "ai_confidence": 0.0~1.0
+}}
+"""
+
+
+def morning_gate_check() -> None:
+    """
+    08:00 개장 전 리스크 체크.
+    WARNING/CRITICAL 감지 시 morning_gate_paused=true 설정 → 09:20 매수 잡이 스킵.
+    매일 아침 자동 리셋 후 새로 체크한다.
+    """
+    from google import genai
+    from google.genai import types
+    from app.core.config import get_settings
+    from app.core.config_store import get_config, set_config
+    from app.core.database import SessionLocal
+
+    api_key = get_settings().gemini_api_key
+    if not api_key:
+        logger.warning("GEMINI_API_KEY not set, skipping morning gate check")
+        return
+
+    with SessionLocal() as db:
+        # 매일 아침 리셋 — 전날 플래그 초기화
+        set_config(db, "morning_gate_paused", "false")
+        set_config(db, "morning_gate_reason", "")
+
+        client_g = genai.Client(api_key=api_key)
+        config = types.GenerateContentConfig(
+            tools=[types.Tool(google_search=types.GoogleSearch())]
+        )
+
+        try:
+            response = client_g.models.generate_content(
+                model=NEWS_MODEL, contents=_MORNING_GATE_PROMPT, config=config,
+            )
+            text = response.text.strip()
+            if "```" in text:
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+            result = json.loads(text)
+            severity = result.get("severity", "NORMAL")
+            reason   = result.get("reason", "")
+            logger.info("Morning gate check: severity=%s reason=%s", severity, reason)
+        except Exception as e:
+            logger.error("Morning gate check failed: %s", e)
+            return
+
+        if severity in ("WARNING", "CRITICAL"):
+            set_config(db, "morning_gate_paused", "true")
+            set_config(db, "morning_gate_reason", f"[{severity}] {reason}")
+            logger.warning("Morning gate PAUSED: %s — %s", severity, reason)
+
+            from app.services.telegram.notifier import notify_admins_error
+            notify_admins_error(
+                f"🌅 모닝 게이트 {severity}",
+                f"{reason}\n오늘 09:20 자동매수가 차단됩니다.",
+            )
+        else:
+            logger.info("Morning gate: NORMAL, auto trade proceeds")
+
+
 def _get_index_levels(db) -> tuple[Decimal | None, Decimal | None]:
     """현재 KOSPI/KOSDAQ 지수 레벨 조회."""
     try:

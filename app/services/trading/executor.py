@@ -85,10 +85,14 @@ class TradeExecutor:
 
         from app.core.config_store import get_config
 
-        # 뉴스 감시에 의한 자동매매 정지 체크
+        # 뉴스 감시 / 모닝 게이트에 의한 자동매매 정지 체크
         if get_config(self.db, "news_auto_trade_paused", "false") == "true":
             reason = get_config(self.db, "news_pause_reason", "")
             logger.warning("Auto trade paused by news watch: %s", reason)
+            return
+        if get_config(self.db, "morning_gate_paused", "false") == "true":
+            reason = get_config(self.db, "morning_gate_reason", "")
+            logger.warning("Auto trade paused by morning gate: %s", reason)
             return
 
         # Circuit breaker 체크 (유저별)
@@ -212,6 +216,10 @@ class TradeExecutor:
         if get_config(self.db, "news_auto_trade_paused", "false") == "true":
             reason = get_config(self.db, "news_pause_reason", "")
             logger.warning("Auto trade paused by news watch: %s", reason)
+            return
+        if get_config(self.db, "morning_gate_paused", "false") == "true":
+            reason = get_config(self.db, "morning_gate_reason", "")
+            logger.warning("Auto trade paused by morning gate: %s", reason)
             return
 
         from app.services.kis.client import get_kis_client

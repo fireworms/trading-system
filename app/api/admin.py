@@ -144,6 +144,47 @@ def resume_auto_trade(
 
 
 # ------------------------------------------------------------------ #
+# Morning Gate
+# ------------------------------------------------------------------ #
+
+@router.get("/morning-gate/status")
+def get_morning_gate_status(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """모닝 게이트 상태 조회."""
+    from app.core.config_store import get_config
+    paused = get_config(db, "morning_gate_paused", "false") == "true"
+    reason = get_config(db, "morning_gate_reason", "")
+    return {"paused": paused, "reason": reason}
+
+
+@router.post("/morning-gate/resume")
+def resume_morning_gate(
+    db: Session = Depends(get_db),
+    _: User = Depends(require_admin),
+):
+    """모닝 게이트 수동 해제 (당일 매수 재개)."""
+    from app.core.config_store import set_config
+    set_config(db, "morning_gate_paused", "false")
+    set_config(db, "morning_gate_reason", "")
+    return {"message": "모닝 게이트 해제됨 — 자동매수 재개"}
+
+
+@router.post("/morning-gate/trigger")
+def trigger_morning_gate(
+    background_tasks: BackgroundTasks,
+    _: User = Depends(require_admin),
+):
+    """모닝 게이트 수동 트리거 (테스트용)."""
+    def _run():
+        from app.services.news.watcher import morning_gate_check
+        morning_gate_check()
+    background_tasks.add_task(_run)
+    return {"message": "모닝 게이트 체크 시작됨"}
+
+
+# ------------------------------------------------------------------ #
 # Circuit Breaker
 # ------------------------------------------------------------------ #
 
