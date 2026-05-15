@@ -20,6 +20,63 @@ logger = logging.getLogger(__name__)
 MAX_PER_SECTOR = 2      # 섹터당 최대 매수 종목 수
 RSI_OVERBOUGHT  = 70    # 이 이상이면 과매수로 스킵
 
+# 크로스 시그널 보너스 상한 (어떤 경우도 이 이상 올리지 않음)
+_CROSS_SIGNAL_MAX_BONUS = Decimal("10")
+
+
+def _build_cross_signal(db) -> dict[str, float]:
+    """
+    오늘 실행된 모든 전략의 추천을 종목별로 집계해 다양성 점수를 반환한다.
+    같은 (candidate_filter, candidate_market) 조합의 전략은 0.5점,
+    다른 조합은 1.0점으로 가중 — 전략이 독립적일수록 높은 점수.
+    단일 전략 종목은 0.0점.
+    """
+    from collections import defaultdict
+    from datetime import date
+
+    today_runs = db.scalars(
+        select(RecommendationRun).where(
+            RecommendationRun.run_date == date.today(),
+            RecommendationRun.stage4_skipped == False,
+        )
+    ).all()
+
+    # stock_code → {(filter, market): count}
+    combo_map: dict[str, dict[tuple, int]] = defaultdict(lambda: defaultdict(int))
+    for run in today_runs:
+        strategy = run.strategy
+        combo = (
+            getattr(strategy, "candidate_filter", "mixed"),
+            getattr(strategy, "candidate_market", "ALL"),
+        )
+        for rec in run.recommendations:
+            combo_map[rec.stock_code][combo] += 1
+
+    result: dict[str, float] = {}
+    for code, combos in combo_map.items():
+        if sum(combos.values()) <= 1:
+            result[code] = 0.0
+            continue
+        # 고유 콤보 수로 점수 계산 (다양한 필터 조합일수록 높음)
+        unique_combos = len(combos)
+        total_count = sum(combos.values())
+        score = (unique_combos * 1.0) + (total_count - unique_combos) * 0.5
+        result[code] = round(score, 2)
+
+    return result
+
+
+def _cross_signal_bonus(stock_code: str, cross_signal: dict[str, float] | None) -> float:
+    """다양성 점수를 확률 보너스(%)로 변환. 상한 10%."""
+    if not cross_signal:
+        return 0.0
+    score = cross_signal.get(stock_code, 0.0)
+    if score <= 0:
+        return 0.0
+    # score 1.0 → +7%, 0.5 → +3%, 2.0 이상 → +10% (상한)
+    bonus = min(score * 7.0, float(_CROSS_SIGNAL_MAX_BONUS))
+    return round(bonus, 1)
+
 # 시장별 왕복 거래비용 (수수료 + 세금)
 # KOSPI : 매수 0.015% + 매도(0.015% + 거래세 0.20% + 농특세 0.04%) = 0.27%
 # KOSDAQ: 매수 0.015% + 매도(0.015% + 거래세 0.20%) = 0.23%  (농특세 없음)
@@ -77,7 +134,12 @@ class TradeExecutor:
 
         return False
 
-    def execute_buys_for_run(self, sub: UserStrategy, run: RecommendationRun) -> None:
+    def execute_buys_for_run(
+        self,
+        sub: UserStrategy,
+        run: RecommendationRun,
+        cross_signal: dict[str, float] | None = None,
+    ) -> None:
         """추천 run의 종목들을 구독자 계좌로 시장가 매수."""
         if not sub.is_auto_trade:
             logger.warning("Auto trade is OFF for sub=%s, skipping", sub.id)
@@ -102,7 +164,14 @@ class TradeExecutor:
         client = get_kis_client_from_account(sub.account)
         strategy = sub.strategy
 
-        sorted_recs = sorted(run.recommendations, key=lambda r: r.rank if r.rank is not None else 999)
+        # 크로스 시그널 보너스 적용 후 정렬
+        # 보너스 우선, 동점이면 rank 순
+        def _sort_key(r):
+            bonus = _cross_signal_bonus(r.stock_code, cross_signal)
+            eff_prob = float(r.ai_probability or 0) + bonus
+            return (-eff_prob, r.rank if r.rank is not None else 999)
+
+        sorted_recs = sorted(run.recommendations, key=_sort_key)
 
         try:
             buyable_cash = client.get_buyable_cash()
@@ -113,10 +182,17 @@ class TradeExecutor:
         sector_counts: dict[str, int] = {}
 
         for rec in sorted_recs:
-            # 확률 필터
-            if rec.ai_probability is None or rec.ai_probability < strategy.min_probability:
-                logger.info("Skip %s: probability %.1f < min %.1f",
-                            rec.stock_code, rec.ai_probability or 0, strategy.min_probability)
+            # 크로스 시그널 보너스 포함 유효 확률
+            bonus = _cross_signal_bonus(rec.stock_code, cross_signal)
+            effective_prob = (rec.ai_probability or Decimal("0")) + Decimal(str(bonus))
+            if bonus > 0:
+                logger.info("Cross signal bonus +%.1f%% for %s → effective_prob=%.1f",
+                            bonus, rec.stock_code, float(effective_prob))
+
+            # 확률 필터 (보너스 포함 유효 확률 기준)
+            if effective_prob < strategy.min_probability:
+                logger.info("Skip %s: effective_prob %.1f < min %.1f",
+                            rec.stock_code, float(effective_prob), strategy.min_probability)
                 continue
 
             # 이미 포지션이 있으면 스킵
@@ -245,6 +321,12 @@ class TradeExecutor:
             )
         ).all()
 
+        # 크로스 시그널 맵 사전 계산
+        # 오늘 실행된 모든 전략의 추천을 모아 종목별 다양성 점수 집계
+        cross_signal = _build_cross_signal(self.db)
+        if cross_signal:
+            logger.info("Cross signal map: %s", {k: v for k, v in cross_signal.items() if v > 0})
+
         bearish_keywords = ["하락", "위험", "침체", "약세", "bear", "bearish"]
 
         for sub in subs:
@@ -289,10 +371,10 @@ class TradeExecutor:
                     original = sub.invest_amount_per_pick
                     sub.invest_amount_per_pick = (original / 2).quantize(Decimal("1"))
                     logger.info("Bearish market — invest halved for sub=%s", sub.id)
-                    self.execute_buys_for_run(sub, run)
+                    self.execute_buys_for_run(sub, run, cross_signal=cross_signal)
                     sub.invest_amount_per_pick = original
                 else:
-                    self.execute_buys_for_run(sub, run)
+                    self.execute_buys_for_run(sub, run, cross_signal=cross_signal)
             except Exception as e:
                 logger.error("execute_pending_buys failed for sub=%s: %s", sub.id, e)
 
