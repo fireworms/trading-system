@@ -112,6 +112,10 @@ trading_system/
 ### recommendation_runs
 - run_id (PK, UUID), strategy_id (FK), run_date
 - ai_model_used, raw_response (JSONB — macro/historical/industry/picks/random_baseline)
+- **kospi_at_run, kosdaq_at_run**: 분석 실행 시점 지수 레벨 (Stage1 정확도 검증용)
+- **kospi_change_1d, kosdaq_change_1d**: 다음날 실제 등락률 (16:00 잡이 채움)
+- **verified_1d_at**: 검증 완료 시각
+- **stage4_skipped**: A-gate 발동으로 Stage4 스킵됐는지 여부
 
 ### recommendations
 - rec_id (PK, UUID), run_id (FK)
@@ -194,7 +198,7 @@ trading_system/
 | execute_pending_buys | 09:20 평일 | AI 장중 확인 + 매수 |
 | monitor_positions | 09:05~15:55 매 10분 평일 | 포지션 손절/익절 모니터링 |
 | verify_recommendations | 00:10 매일 | 추천 결과 사후 검증 |
-| verify_news_events | 16:00 평일 | 뉴스 이벤트 시장 영향 검증 |
+| verify_news_events | 16:00 평일 | 뉴스 이벤트 + recommendation_runs 실제 시장 영향 검증 |
 | news_watch_tick | 09:00~15:30 10분마다 평일 | 뉴스 감시 tick (40분마다 실행) |
 | update_stock_master | 03:00 일요일 | stock_master + 지수캐시 갱신 |
 
@@ -209,6 +213,14 @@ trading_system/
 | BUY_CONFIRM (09:20 확인) | gemini-3.1-flash-lite | gemini-2.5-flash-lite |
 | 뉴스 감시 | gemini-2.5-flash | - |
 | JSON 정제 | gemma-4-31b-it | - |
+
+## Stage4 억지 픽 방어 구조 (Gemini 성향 대응)
+- **B-gate** (항상 동작): Stage4A/B 프롬프트에 "0개 반환 허용" 명시 — pick_count 충족 위한 억지 선정 금지
+- **A-gate** (verified 데이터 20건 이상 시 자동 활성화):
+  - 매 run마다 `kospi_at_run` 저장, 16:00 잡이 `kospi_change_1d` 채움
+  - verified 20건 이상이면 `_BEAR_KEYWORDS` 감지 시 Stage4 완전 스킵 (`stage4_skipped=True`)
+  - `_BEAR_KEYWORDS`: 하락장/폭락/급락/약세/하락세/조정장/침체/위기/crash/bear/매도세
+  - 데이터 축적 후 키워드 보정 또는 수치 기반 판단으로 교체 가능
 
 ## Stage4 환각 방어 구조
 Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
