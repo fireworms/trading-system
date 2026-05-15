@@ -169,11 +169,11 @@ trading_system/
 5. 텔레그램 구독자 알림
 
 ### 매수 잡 (09:20 평일)
-1. auto_trade=ON 구독자 중 "오늘 분석 완료됐는데 포지션 없는 것" 탐색
-2. KOSPI/KOSDAQ 지수 현황 조회
-3. 추천 종목별 장중 스냅샷 수집 (시가/고가/체결강도/거래량비율)
-4. Gemini Flash Lite → buy/skip 판정 (BUY_CONFIRM 프롬프트)
-5. buy 판정 종목만 시장가 매수
+1. morning_gate_paused / news_auto_trade_paused 체크 → 차단 시 전체 스킵
+2. auto_trade=ON 구독자 중 "오늘 분석 완료됐는데 포지션 없는 것" 탐색
+3. 크로스 시그널 맵 사전 계산 — 오늘 모든 전략 추천 집계, 종목별 다양성 점수
+4. KOSPI/KOSDAQ 지수 현황 조회 (-2% 이상 급락 시 전체 보류)
+5. 종목별 유효 확률 = ai_probability + cross_signal_bonus (상한 +10%) 로 정렬 후 매수
 6. TTTC8001R로 실 체결가 즉시 조회 → Position(entry_price=fill_price, peak_price=fill_price)
 
 ### 포지션 모니터링 (09:05, 12:00, 14:50)
@@ -185,21 +185,42 @@ trading_system/
 - 만료(hold_days 경과) → 시장가 청산
 
 ### 매수 스킵 조건
-- AI 09:20 확인에서 skip 판정
+- morning_gate_paused=true (08:00 게이트 발동)
+- news_auto_trade_paused=true (장중 뉴스 감시 발동)
 - remaining_upside ≤ stop_loss_pct (리스크/리워드 불균형)
 - RSI > 70 (과매수)
 - 동일 섹터 2종목 초과 (MAX_PER_SECTOR=2)
 - 잔고 부족
 
+### 뉴스 감시 듀얼 시그널 조치
+장중 뉴스 감시(2시간마다)에서 WARNING/CRITICAL 감지 시 실시간 KOSPI 등락률로 교차 검증:
+- `CRITICAL + KOSPI ≤ -2%` → 전 포지션 즉시 청산 (MANUAL_EXIT) + 텔레그램
+- `WARNING/CRITICAL + KOSPI ≤ -1%` → 수익 포지션 현재가 기준 trailing 전환 + 텔레그램
+- AI 단독 신호 (KOSPI 멀쩡) → 알림만 (오탐 방지)
+
+### Thesis 재검증 (10:00, 14:00)
+- 대상: 2일+ 보유 HOLDING 포지션
+- 8개씩 그룹 분할 → gemini-2.5-flash + google_search (환각 방지)
+- `invalid + confidence≥0.7 + 손실` → 조기 청산 (MANUAL_EXIT)
+- `invalid + confidence≥0.7 + 수익` → 현재가 기준 trailing 손절 전환
+- `partial` 또는 낮은 confidence → 텔레그램 알림만
+
+### 크로스 시그널 보너스
+- 오늘 복수 전략이 같은 종목 추천 시 ai_probability에 보너스 가산
+- 다른 (candidate_filter, candidate_market) 조합 전략 = 1.0점 → +7%
+- 같은 조합 전략 = 0.5점 → +3.5%, 상한 +10%
+
 ## 스케줄러 잡 목록
 | 잡 ID | 시각 | 역할 |
 |-------|------|------|
-| run_strategies | 08:30 Mon/Wed/Fri | AI 분석 (매수 없음) |
-| execute_pending_buys | 09:20 평일 | AI 장중 확인 + 매수 |
+| morning_gate | 08:00 평일 | 개장 전 야간 리스크 체크 (미국 선물/지정학), 이상 시 09:20 매수 차단 |
+| run_strategies | 08:30 Mon/Wed/Fri | AI 분석 (매수 없음, morning_gate와 무관하게 실행) |
+| execute_pending_buys | 09:20 평일 | 크로스 시그널 보너스 적용 후 매수 (morning_gate/news 차단 시 스킵) |
 | monitor_positions | 09:05~15:55 매 10분 평일 | 포지션 손절/익절 모니터링 |
+| thesis_check | 10:00, 14:00 평일 | 보유 포지션 thesis 재검증 (8개씩 그룹 grounding) |
 | verify_recommendations | 00:10 매일 | 추천 결과 사후 검증 |
 | verify_news_events | 16:00 평일 | 뉴스 이벤트 + recommendation_runs 실제 시장 영향 검증 |
-| news_watch_tick | 09:00~15:30 10분마다 평일 | 뉴스 감시 tick (40분마다 실행) |
+| news_watch_tick | 09:00~15:30 10분마다 평일 | 뉴스 감시 tick (120분마다 실행) |
 | update_stock_master | 03:00 일요일 | stock_master + 지수캐시 갱신 |
 
 ## Gemini 모델 체인
@@ -211,7 +232,9 @@ trading_system/
 | Stage4-A (자유형식 분석) | gemini-3-flash-preview | gemini-3.1-flash-lite → gemini-2.5-flash-lite |
 | Stage4-B (코드 추출) | gemini-3.1-flash-lite | gemini-2.5-flash-lite |
 | BUY_CONFIRM (09:20 확인) | gemini-3.1-flash-lite | gemini-2.5-flash-lite |
-| 뉴스 감시 | gemini-2.5-flash | - |
+| 뉴스 감시 (장중 2시간마다) | gemini-2.5-flash | - |
+| 모닝 게이트 (08:00) | gemini-2.5-flash | - |
+| Thesis 재검증 (10:00, 14:00) | gemini-2.5-flash | - |
 | JSON 정제 | gemma-4-31b-it | - |
 
 ## Stage4 억지 픽 방어 구조 (Gemini 성향 대응)
