@@ -13,6 +13,10 @@ import app.models.news_event    # noqa: F401
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import asyncio
+    from app.core.loop import set_loop
+    set_loop(asyncio.get_event_loop())
+
     from app.services.trading.scheduler import start_scheduler, stop_scheduler, run_startup_catchup
     start_scheduler()
     run_startup_catchup()
@@ -77,6 +81,16 @@ def _init_realtime_client() -> None:
         if not hts_ids:
             logger.info("KIS execution notification disabled (no hts_id registered)")
         rt.start()
+
+        # 실시간 포지션 모니터 초기화 — HOLDING 포지션 로드 + KIS 구독
+        from app.services.trading.realtime_monitor import get_monitor
+        monitor = get_monitor()
+
+        async def _on_price_monitor(code: str, price: dict) -> None:
+            await monitor.on_price(code, price)
+
+        rt.add_callback(_on_price_monitor)
+        monitor.load_all()
     except Exception as e:
         logger.error("Realtime client init failed: %s", e)
 

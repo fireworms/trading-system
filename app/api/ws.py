@@ -60,9 +60,10 @@ class PriceStreamManager:
                         pass
 
     async def _maybe_unsubscribe_kis(self, code: str) -> None:
-        """해당 코드 구독자가 0명이면 KIS 구독 해제."""
+        """프론트 구독자도 없고 서버 포지션 모니터도 안 보면 KIS 구독 해제."""
         from app.services.kis.realtime import get_realtime_client
-        if not self._code_clients.get(code):
+        from app.services.trading.realtime_monitor import get_monitor
+        if not self._code_clients.get(code) and not get_monitor().is_watched(code):
             rt = get_realtime_client()
             if rt:
                 await rt.unsubscribe(code)

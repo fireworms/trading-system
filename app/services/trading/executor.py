@@ -194,6 +194,10 @@ class TradeExecutor:
 
         self.db.commit()
 
+        # 새로 매수된 포지션을 실시간 모니터에 반영
+        from app.services.trading.realtime_monitor import get_monitor
+        get_monitor().load_all()
+
     # ------------------------------------------------------------------ #
     # 미체결 매수 일괄 실행 (매수 전용 스케줄러 잡에서 호출)
     # ------------------------------------------------------------------ #
@@ -486,6 +490,10 @@ class TradeExecutor:
             pos.stock_code, new_status.value,
             pos.entry_price, exit_price, float(pnl),
         )
+
+        # 실시간 모니터에서 제거 (이미 없으면 무시)
+        from app.services.trading.realtime_monitor import get_monitor
+        get_monitor().remove(str(pos.position_id), pos.stock_code)
 
         from app.services.telegram.notifier import get_notifier
         from app.models.user import User

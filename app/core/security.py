@@ -18,12 +18,21 @@ _fernet_key = base64.urlsafe_b64encode(
 _fernet = Fernet(_fernet_key)
 
 
+def _truncate_password(password: str) -> str:
+    """bcrypt는 72바이트를 초과하는 패스워드를 처리하지 못함. 바이트 기준으로 자름."""
+    encoded = password.encode("utf-8")
+    return encoded[:72].decode("utf-8", errors="ignore") if len(encoded) > 72 else password
+
+
 def hash_password(password: str) -> str:
-    return pwd_context.hash(password)
+    return pwd_context.hash(_truncate_password(password))
 
 
 def verify_password(plain: str, hashed: str) -> bool:
-    return pwd_context.verify(plain, hashed)
+    try:
+        return pwd_context.verify(_truncate_password(plain), hashed)
+    except Exception:
+        return False
 
 
 def create_access_token(data: dict[str, Any]) -> str:
