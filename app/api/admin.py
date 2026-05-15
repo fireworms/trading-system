@@ -171,6 +171,19 @@ def resume_morning_gate(
     return {"message": "모닝 게이트 해제됨 — 자동매수 재개"}
 
 
+@router.post("/thesis-check/trigger")
+def trigger_thesis_check(
+    background_tasks: BackgroundTasks,
+    _: User = Depends(require_admin),
+):
+    """보유 포지션 thesis 재검증 수동 실행 (테스트용)."""
+    def _run():
+        from app.services.news.watcher import check_position_theses
+        check_position_theses()
+    background_tasks.add_task(_run)
+    return {"message": "Thesis 재검증 시작됨"}
+
+
 @router.post("/morning-gate/trigger")
 def trigger_morning_gate(
     background_tasks: BackgroundTasks,

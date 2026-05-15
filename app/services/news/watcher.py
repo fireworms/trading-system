@@ -425,3 +425,181 @@ def verify_run_market_outcomes() -> None:
 
         db.commit()
         logger.info("Run market outcome verification done: %d runs updated", len(runs))
+
+
+# ------------------------------------------------------------------ #
+# 보유 포지션 thesis 재검증
+# ------------------------------------------------------------------ #
+
+_THESIS_CHECK_PROMPT = """
+당신은 한국 주식 포지션 리스크 감시 전문가입니다.
+아래 보유 종목들에 대해 최근 2~3일 내 주가에 부정적 영향을 줄 수 있는 이슈를 검색하세요.
+
+=== 보유 종목 및 매수 근거 ===
+{positions_text}
+
+각 종목별로 판단하세요:
+- valid: 매수 근거 유효, 중요 부정적 이슈 없음
+- partial: 일부 우려 있으나 thesis 근본은 유지됨
+- invalid: 매수 근거가 뒤집혔거나 중대한 악재 발생 (공시, 규제, 핵심 사업 훼손 등)
+
+【주의】 일반적인 시장 등락이나 섹터 전반의 분위기는 판단에서 제외.
+해당 종목에 직접적으로 영향을 주는 뉴스/이슈만 감지하세요.
+
+다음 JSON만 반환하세요:
+{{
+  "checks": [
+    {{
+      "stock_code": "종목코드",
+      "thesis_valid": "valid" | "partial" | "invalid",
+      "issues": "발견된 이슈 요약 (없으면 빈 문자열)",
+      "confidence": 0.0~1.0
+    }}
+  ]
+}}
+"""
+
+_THESIS_GROUP_SIZE = 8       # 그룹당 종목 수 (환각 방지)
+_THESIS_CONFIDENCE_MIN = 0.7  # 이 이상일 때만 자동 조치
+
+
+def check_position_theses() -> None:
+    """
+    보유 포지션의 매수 thesis를 현재 뉴스로 재검증.
+    - 대상: 2일 이상 보유 OR 손실 중인 HOLDING 포지션
+    - 8개씩 그룹 분할하여 그라운딩 검색 (환각 방지)
+    - invalid + confidence>=0.7 + 손실 → 조기 청산
+    - invalid + confidence>=0.7 + 수익 → 손절선 강화
+    - partial → 텔레그램 알림만
+    스케줄러에서 하루 2회(10:00, 14:00) 호출.
+    """
+    from datetime import date, timedelta
+    from google import genai
+    from google.genai import types
+    from sqlalchemy import select
+    from app.core.config import get_settings
+    from app.core.database import SessionLocal
+    from app.models.position import Position, PositionStatus
+    from app.services.kis.client import get_kis_client_from_account
+
+    api_key = get_settings().gemini_api_key
+    if not api_key:
+        return
+
+    with SessionLocal() as db:
+        today = date.today()
+        two_days_ago = today - timedelta(days=2)
+
+        positions = db.scalars(
+            select(Position).where(Position.status == PositionStatus.HOLDING)
+        ).all()
+
+        # 대상 필터: 2일+ 보유 (신규 매수 제외)
+        targets = [p for p in positions if p.entry_date <= two_days_ago]
+        if not targets:
+            logger.info("Thesis check: no positions to check")
+            return
+
+        logger.info("Thesis check: %d positions to check", len(targets))
+
+        client_g = genai.Client(api_key=api_key)
+        config = types.GenerateContentConfig(
+            tools=[types.Tool(google_search=types.GoogleSearch())]
+        )
+
+        # 8개씩 그룹 분할
+        groups = [targets[i:i+_THESIS_GROUP_SIZE] for i in range(0, len(targets), _THESIS_GROUP_SIZE)]
+        results: dict[str, dict] = {}
+
+        for group in groups:
+            lines = []
+            for pos in group:
+                days_held = (today - pos.entry_date).days
+                ai_reason = ""
+                if pos.recommendation:
+                    ai_reason = pos.recommendation.ai_reason or ""
+                lines.append(
+                    f"[{pos.stock_code}] {days_held}일 보유\n"
+                    f"매수근거: {ai_reason[:150] or '(수동매수)'}"
+                )
+            positions_text = "\n\n".join(lines)
+
+            try:
+                response = client_g.models.generate_content(
+                    model=NEWS_MODEL,
+                    contents=_THESIS_CHECK_PROMPT.format(positions_text=positions_text),
+                    config=config,
+                )
+                text = response.text.strip()
+                if "```" in text:
+                    text = text.split("```")[1]
+                    if text.startswith("json"):
+                        text = text[4:]
+                data = json.loads(text)
+                for check in data.get("checks", []):
+                    results[check["stock_code"]] = check
+            except Exception as e:
+                logger.error("Thesis check group failed: %s", e)
+
+        if not results:
+            return
+
+        # 결과 처리
+        from app.services.trading.executor import TradeExecutor
+        from app.services.telegram.notifier import notify_admins_error
+
+        executor = TradeExecutor(db)
+        alerts = []
+
+        for pos in targets:
+            check = results.get(pos.stock_code)
+            if not check:
+                continue
+
+            verdict    = check.get("thesis_valid", "valid")
+            issues     = check.get("issues", "")
+            confidence = float(check.get("confidence", 0.0))
+
+            if verdict == "valid":
+                continue
+
+            try:
+                client_k = get_kis_client_from_account(pos.account)
+                current_price = client_k.get_current_price(pos.stock_code)
+            except Exception as e:
+                logger.error("Thesis check: price fetch failed for %s: %s", pos.stock_code, e)
+                alerts.append(f"[{pos.stock_code}] {verdict} (가격조회 실패) — {issues}")
+                continue
+
+            in_loss = current_price < pos.entry_price
+            stock_name = pos.recommendation.stock_name if pos.recommendation else pos.stock_code
+
+            if verdict == "invalid" and confidence >= _THESIS_CONFIDENCE_MIN:
+                if in_loss:
+                    logger.warning("Thesis invalid → early close: %s", pos.stock_code)
+                    executor._close_position(pos, current_price, PositionStatus.MANUAL_EXIT, client_k)
+                    db.commit()
+                    alerts.append(f"[{stock_name}] thesis 무효화 → 조기 청산 (손실 {float((current_price-pos.entry_price)/pos.entry_price*100):+.1f}%)\n사유: {issues}")
+                else:
+                    logger.warning("Thesis invalid → tighten stop: %s", pos.stock_code)
+                    from app.services.trading.realtime_monitor import get_monitor
+                    pos.peak_price     = current_price
+                    pos.target_hit_at  = pos.target_hit_at or datetime.now(timezone.utc)
+                    pos.target_hit_peak = current_price
+                    pos.trailing_stop_override = True
+                    get_monitor().force_trailing(str(pos.position_id), current_price)
+                    db.commit()
+                    stop = float(current_price * (1 - pos.strategy.stop_loss_pct / 100))
+                    alerts.append(f"[{stock_name}] thesis 무효화 → 손절선 강화 (현재가 기준 {stop:,.0f}원)\n사유: {issues}")
+            else:
+                # partial or invalid with low confidence → alert only
+                alerts.append(f"[{stock_name}] thesis {verdict} (확신도 {confidence:.0%}) — {issues}")
+
+        if alerts:
+            try:
+                notify_admins_error(
+                    "🔍 Thesis 재검증 결과",
+                    "\n\n".join(alerts),
+                )
+            except Exception as e:
+                logger.error("Thesis check telegram failed: %s", e)

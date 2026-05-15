@@ -124,7 +124,7 @@ def job_news_watch_tick() -> None:
     from app.core.config_store import get_config
 
     with SessionLocal() as db:
-        interval_min = int(get_config(db, "news_check_interval_min", "40"))
+        interval_min = int(get_config(db, "news_check_interval_min", "120"))
         last_check = get_config(db, "news_last_check_at", "")
 
     if last_check:
@@ -151,6 +151,15 @@ def job_morning_gate() -> None:
         morning_gate_check()
     except Exception as e:
         logger.error("Morning gate check failed: %s", e)
+
+
+def job_thesis_check() -> None:
+    """보유 포지션 thesis 재검증 (하루 2회: 10:00, 14:00)."""
+    try:
+        from app.services.news.watcher import check_position_theses
+        check_position_theses()
+    except Exception as e:
+        logger.error("Thesis check failed: %s", e)
 
 
 def job_verify_news_events() -> None:
@@ -344,6 +353,14 @@ def start_scheduler() -> None:
         job_news_watch_tick,
         trigger=CronTrigger(day_of_week="mon-fri", hour="9-15", minute="*/10"),
         id="news_watch_tick",
+        replace_existing=True,
+    )
+
+    # thesis 재검증: 평일 10:00, 14:00 (8개씩 그룹 분할 그라운딩)
+    _scheduler.add_job(
+        job_thesis_check,
+        trigger=CronTrigger(day_of_week="mon-fri", hour="10,14", minute=0),
+        id="thesis_check",
         replace_existing=True,
     )
 
