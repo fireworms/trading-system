@@ -39,6 +39,15 @@ class RecommendationRun(Base):
     raw_response: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     is_backtest: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
 
+    # 실행 시점 지수 레벨 + 1일 후 실제 변화율 (Stage1 정확도 검증용)
+    kospi_at_run:     Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    kosdaq_at_run:    Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    kospi_change_1d:  Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)
+    kosdaq_change_1d: Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)
+    verified_1d_at:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Stage4 스킵 여부 (A-gate 발동 시 True)
+    stage4_skipped: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
+
     strategy: Mapped["Strategy"] = relationship(back_populates="recommendation_runs")
     macro_analysis: Mapped["MacroAnalysis | None"] = relationship(back_populates="run", uselist=False, cascade="all, delete-orphan")
     recommendations: Mapped[list["Recommendation"]] = relationship(back_populates="run", cascade="all, delete-orphan")

@@ -242,3 +242,48 @@ def verify_news_events() -> None:
 
         db.commit()
         logger.info("News verification done: 1d=%d, 3d=%d", len(events_1d), len(events_3d))
+
+
+def verify_run_market_outcomes() -> None:
+    """
+    전날 recommendation_runs의 실제 1일 KOSPI/KOSDAQ 변화율을 채운다.
+    Stage1 market_theme 정확도 검증 데이터 축적용.
+    스케줄러 16:00 잡에서 verify_news_events와 함께 호출.
+    """
+    from datetime import timedelta
+    from sqlalchemy import select
+    from app.core.database import SessionLocal
+    from app.models.recommendation import RecommendationRun
+    from app.services.kis.client import get_kis_client
+
+    with SessionLocal() as db:
+        now = datetime.now(timezone.utc)
+        try:
+            client = get_kis_client(db)
+            kospi_now  = client._get_index_level("0001")
+            kosdaq_now = client._get_index_level("1001")
+        except Exception as e:
+            logger.warning("Index fetch failed for run verification: %s", e)
+            return
+
+        if not kospi_now or not kosdaq_now:
+            return
+
+        # 1일 이상 경과했고 아직 검증 안 된 runs
+        runs = db.scalars(
+            select(RecommendationRun).where(
+                RecommendationRun.verified_1d_at == None,
+                RecommendationRun.kospi_at_run.isnot(None),
+                RecommendationRun.run_date <= (now - timedelta(days=1)).date(),
+            )
+        ).all()
+
+        for run in runs:
+            if run.kospi_at_run and run.kospi_at_run > 0:
+                run.kospi_change_1d  = ((kospi_now  - run.kospi_at_run)  / run.kospi_at_run  * 100).quantize(Decimal("0.0001"))
+            if run.kosdaq_at_run and run.kosdaq_at_run > 0:
+                run.kosdaq_change_1d = ((kosdaq_now - run.kosdaq_at_run) / run.kosdaq_at_run * 100).quantize(Decimal("0.0001"))
+            run.verified_1d_at = now
+
+        db.commit()
+        logger.info("Run market outcome verification done: %d runs updated", len(runs))

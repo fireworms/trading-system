@@ -145,10 +145,11 @@ def job_news_watch_tick() -> None:
 
 
 def job_verify_news_events() -> None:
-    """1일/3일 경과 뉴스 이벤트 실제 시장 영향 검증."""
+    """1일/3일 경과 뉴스 이벤트 + recommendation_runs 실제 시장 영향 검증."""
     try:
-        from app.services.news.watcher import verify_news_events
+        from app.services.news.watcher import verify_news_events, verify_run_market_outcomes
         verify_news_events()
+        verify_run_market_outcomes()
     except Exception as e:
         logger.error("News event verification failed: %s", e)
 

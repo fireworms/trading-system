@@ -19,6 +19,17 @@ from app.services.kis.client import get_kis_client, get_kis_client_from_account
 
 logger = logging.getLogger(__name__)
 
+# Stage4 A-gate: 이 키워드가 market_theme에 있으면 하락장 신호
+_BEAR_KEYWORDS = ["하락장", "폭락", "급락", "약세", "하락세", "조정장", "침체", "위기", "crash", "bear", "매도세"]
+# 데이터가 이 건수 이상 쌓여야 A-gate 활성화 (충분한 calibration 전 오작동 방지)
+_GATE_MIN_DATA = 20
+
+
+def _is_market_unfavorable(market_theme: str) -> bool:
+    t = market_theme.lower()
+    return any(kw in t for kw in _BEAR_KEYWORDS)
+
+
 class StrategyRunner:
     """전략별 AI 분석 실행 및 DB 저장."""
 
@@ -262,8 +273,39 @@ class StrategyRunner:
         industry = self.analyzer.stage3_industry(macro, historical)
         logger.info("Stage3 done: beneficiary=%s [%s]", industry.expected_beneficiary[:40], industry.model_used)
 
-        # Stage4: 사전필터 + 10개씩 그룹 분할 실행
-        picks_result = self._run_stage4_grouped(macro, industry, stock_data, strategy)
+        # Stage4: A-gate 체크 후 실행
+        # - 데이터 >= _GATE_MIN_DATA 이고 market_theme이 하락 키워드 포함 시 Stage4 스킵
+        from sqlalchemy import func as _func
+        verified_count = self.db.scalar(
+            select(RecommendationRun.run_id).where(
+                RecommendationRun.kospi_change_1d.isnot(None)
+            ).with_only_columns(_func.count())
+        ) or 0
+
+        stage4_skipped = False
+        if verified_count >= _GATE_MIN_DATA and _is_market_unfavorable(macro.market_theme):
+            logger.info(
+                "Stage4 SKIPPED by A-gate: theme=%s, verified_data=%d",
+                macro.market_theme, verified_count,
+            )
+            stage4_skipped = True
+            picks_result = PickResult(
+                picks=[],
+                excluded_reason=f"A-gate: market unfavorable ({macro.market_theme})",
+                model_used="none",
+                raw={"skipped": True, "theme": macro.market_theme},
+            )
+        else:
+            picks_result = self._run_stage4_grouped(macro, industry, stock_data, strategy)
+
+        # 실행 시점 지수 레벨 수집 (Stage1 정확도 검증용)
+        kospi_at_run = kosdaq_at_run = None
+        try:
+            _kis = get_kis_client(self.db)
+            kospi_at_run  = _kis._get_index_level("0001")
+            kosdaq_at_run = _kis._get_index_level("1001")
+        except Exception as _e:
+            logger.warning("Index level fetch failed at run time: %s", _e)
 
         # 3. 랜덤 대조군 진입가 기록 (같은 종목 풀에서 pick_count개 무작위)
         import random as _random
@@ -282,6 +324,9 @@ class StrategyRunner:
             stage3_model=industry.model_used or None,
             stage4_model=picks_result.model_used or None,
             prompt_version="v1.0",
+            kospi_at_run=kospi_at_run,
+            kosdaq_at_run=kosdaq_at_run,
+            stage4_skipped=stage4_skipped,
             raw_response={
                 "macro": macro.raw,
                 "historical": historical.raw,
