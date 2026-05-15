@@ -44,8 +44,6 @@ export default function PositionsPage() {
 
   // 뉴스 감시 설정
   const [newsConfig, setNewsConfig]     = useState<NewsWatchConfig | null>(null);
-  const [newsInterval, setNewsInterval] = useState("40");
-  const [newsLoading, setNewsLoading]   = useState(false);
   const [showNewsPanel, setShowNewsPanel] = useState(false);
 
   // 계좌 설정 (HTS ID)
@@ -118,7 +116,6 @@ export default function PositionsPage() {
     try {
       const cfg = await api.admin.getNewsWatchConfig();
       setNewsConfig(cfg);
-      setNewsInterval(String(cfg.interval_min));
     } catch { /* 권한 없음 */ }
   }
 
@@ -167,19 +164,6 @@ export default function PositionsPage() {
     }
   }
 
-  async function handleUpdateNewsInterval() {
-    const val = parseInt(newsInterval, 10);
-    if (val < 30) { alert("최소 30분입니다"); return; }
-    setNewsLoading(true);
-    try {
-      await api.admin.updateNewsWatchInterval(val);
-      await loadNewsConfig();
-    } catch (e: unknown) {
-      alert(e instanceof Error ? e.message : "설정 실패");
-    } finally {
-      setNewsLoading(false); }
-  }
-
   async function handleSaveHtsId() {
     if (!me || accounts.length === 0) return;
     setHtsLoading(true); setHtsMsg("");
@@ -218,10 +202,6 @@ export default function PositionsPage() {
   const avgPnl    = closed.length > 0
     ? (closed.reduce((s, p) => s + parseFloat(p.pnl_pct ?? "0"), 0) / closed.length).toFixed(2)
     : null;
-
-  // 뉴스 설정 패널에서 주기 변경 시 예상 사용량 계산
-  const previewInterval = parseInt(newsInterval, 10) || 40;
-  const previewDaily    = Math.max(1, Math.floor(390 / previewInterval)); // 390분 = 6.5시간
 
   if (loading) return (
     <div className="flex items-center justify-center h-64 text-gray-400">로딩 중...</div>
@@ -310,12 +290,12 @@ export default function PositionsPage() {
         </div>
       )}
 
-      {/* 뉴스 감시 설정 패널 */}
+      {/* 뉴스 감시 현황 패널 */}
       {showNewsPanel && isAdmin && (
         <div className="bg-gray-800 rounded-2xl p-5 mb-6">
-          <h3 className="font-semibold mb-4 text-sm">뉴스 감시 설정</h3>
+          <h3 className="font-semibold mb-4 text-sm">뉴스 감시 현황</h3>
           {newsConfig ? (
-            <div className="flex flex-col gap-4">
+            <div className="flex flex-col gap-3">
               {newsConfig.paused && (
                 <div className="flex items-center gap-3 bg-red-900/30 border border-red-700 rounded-xl px-4 py-3">
                   <span className="text-red-400 font-semibold text-sm">자동매매 중단 중</span>
@@ -326,46 +306,11 @@ export default function PositionsPage() {
                   >재개</button>
                 </div>
               )}
-              <div className="flex flex-wrap gap-6 items-end">
-                <div>
-                  <label className="text-xs text-gray-400 mb-1 block">감시 주기 (분)</label>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      value={newsInterval}
-                      onChange={(e) => setNewsInterval(e.target.value)}
-                      min={30}
-                      step={10}
-                      className="bg-gray-700 rounded-lg px-3 py-2 text-sm w-24 outline-none focus:ring-2 focus:ring-blue-500"
-                    />
-                    <button
-                      onClick={handleUpdateNewsInterval}
-                      disabled={newsLoading}
-                      className="text-xs bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-3 py-2 rounded-lg"
-                    >적용</button>
-                  </div>
-                </div>
-                <div className="text-sm">
-                  <div className="text-gray-400 text-xs mb-1">예상 일일 사용량</div>
-                  <div className={`font-bold ${previewDaily + 2 > newsConfig.rpd_limit ? "text-red-400" : "text-green-400"}`}>
-                    {previewDaily}회
-                    <span className="text-gray-400 font-normal text-xs ml-1">
-                      (전략 run ~2회 포함 총 {previewDaily + 2}회 / RPD {newsConfig.rpd_limit})
-                    </span>
-                  </div>
-                  <div className="w-48 h-2 bg-gray-700 rounded-full mt-1 overflow-hidden">
-                    <div
-                      className={`h-full rounded-full transition-all ${previewDaily + 2 > newsConfig.rpd_limit ? "bg-red-500" : "bg-blue-500"}`}
-                      style={{ width: `${Math.min(100, ((previewDaily + 2) / newsConfig.rpd_limit) * 100)}%` }}
-                    />
-                  </div>
-                </div>
-                <div className="text-xs text-gray-500">
-                  <div>오늘 사용: {newsConfig.today_usage}회</div>
-                  <div>마지막 체크: {newsConfig.last_check_at ? new Date(newsConfig.last_check_at).toLocaleTimeString("ko-KR") : "-"}</div>
-                </div>
+              <div className="flex gap-6 text-xs text-gray-400">
+                <div>오늘 사용: <span className="text-white">{newsConfig.today_usage}회</span></div>
+                <div>마지막 체크: <span className="text-white">{newsConfig.last_check_at ? new Date(newsConfig.last_check_at).toLocaleTimeString("ko-KR") : "-"}</span></div>
+                <div>감시 주기: <span className="text-white">2시간</span></div>
               </div>
-              <p className="text-xs text-gray-500">※ 최소 30분 (이하 설정 시 RPD 20 초과 위험) · 장중 09:00~15:30에만 실행</p>
             </div>
           ) : (
             <p className="text-gray-500 text-sm">로딩 중...</p>
