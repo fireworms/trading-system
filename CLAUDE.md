@@ -261,6 +261,7 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 - app_config: `cb_paused_{user_id}`, `cb_reason_{user_id}`
 - 트리거 시 어드민 텔레그램 알림, 수동 해제만 가능
 - GET /admin/circuit-breaker/status, POST /admin/circuit-breaker/resume/{user_id}
+- GET /admin/realtime/status — KIS WS 연결 여부 + realtime_monitor 감시 종목 수
 
 ## KIS API 주요 엔드포인트
 - `FHKST01010100` inquire-price: 현재가 + 시가/고가/체결강도(cttr)/거래량
@@ -289,9 +290,16 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
   - 10분 폴링은 만료/time-based stop 처리 + WebSocket 끊김 구간 fallback으로 유지
   - 중복 청산 방지: `_closing` set + DB `status != HOLDING` 체크
   - `core/loop.py`: APScheduler 스레드 → async 루프 브리지 (`run_coroutine_threadsafe`)
+- **KIS WS 안정성**: `ping_interval=None` + 30초 자체 하트비트 (`ws.ping()`) — 서버 idle 끊김 방지
+  - KIS 자체 PINGPONG 텍스트 프로토콜 별도 처리 (`_handle`에서 PONG 응답)
+  - 끊기면 5초~60초 백오프 후 재연결, 재연결 시 `_subscribed` 전체 자동 재구독
+  - 상태 조회: GET /admin/realtime/status (kis_ws_connected, subscribed_codes, monitor_holding_count)
 - **가격 스트림**: H0STCNT0 → /ws/prices 엔드포인트 → 프론트 포지션 페이지 LIVE 표시
   - H0STCNT0 필드: [0]코드, [2]현재가, [3]전일대비부호, [4]전일대비, [5]등락률, [11]매수호가1(bid), [13]누적거래량
   - 프론트 미실현 손익: bid_price 기준 계산 (시장가 매도 실체결 기준), 퍼센트+원화 금액 표시
+  - 삼성전자(005930) 항상 구독 → 포지션 없어도 프론트 WS 헬스체크 가능
+  - LIVE 배지 2개: 구독(프론트 WS), 서버(KIS WS + realtime_monitor 감시 종목 수, 30초 폴링)
+  - NEXT_PUBLIC_WS_URL=ws://192.168.0.10:8000 (.env.local 필수)
 - **체결통보**: H0STCNI0 — 멀티유저 구조
   - `_exec_canos: set[str]` — 등록된 모든 계좌 hts_id 동시 구독
   - 체결 데이터 f[0](hts_id) → account_id → 해당 유저 포지션만 entry_price/peak_price 업데이트
