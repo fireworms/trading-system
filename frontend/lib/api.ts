@@ -529,6 +529,10 @@ export const api = {
         method: "PATCH", body: JSON.stringify({ interval_min }),
       }),
     resumeAutoTrade: () => authFetch("/admin/news-watch/resume", { method: "POST" }),
+    getRealtimeStatus: () =>
+      authFetch<{ kis_ws_connected: boolean; subscribed_codes: string[]; monitor_holding_count: number }>(
+        "/admin/realtime/status"
+      ),
   },
 
   newsEvents: {

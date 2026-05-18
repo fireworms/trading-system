@@ -9,7 +9,6 @@ import { StockItem } from "@/lib/korean-stocks";
 import { usePriceStream } from "@/hooks/usePriceStream";
 
 const STATUS_TABS: { value: PositionStatus | "ALL"; label: string }[] = [
-  { value: "ALL",         label: "전체" },
   { value: "HOLDING",     label: "보유중" },
   { value: "TARGET_HIT",  label: "목표달성" },
   { value: "STOP_LOSS",   label: "손절" },
@@ -26,7 +25,7 @@ export default function PositionsPage() {
   const router = useRouter();
   const [me, setMe]               = useState<User | null>(null);
   const [positions, setPositions] = useState<Position[]>([]);
-  const [tab, setTab]             = useState<PositionStatus | "ALL">("ALL");
+  const [tab, setTab]             = useState<PositionStatus | "ALL">("HOLDING");
   const [loading, setLoading]     = useState(true);
 
   // 수동 매수 모달
@@ -54,17 +53,50 @@ export default function PositionsPage() {
 
   const isAdmin = me?.role === "ADMIN" || me?.role === "SUPER_ADMIN";
 
-  // 보유 종목 실시간 가격
+  // 보유 종목 + 수동매수 선택 종목 + 삼성전자(WS 헬스체크) 실시간 구독
+  const HEALTH_CODE = "005930";
   const holdingCodes = positions
     .filter((p) => p.status === "HOLDING")
     .map((p) => p.stock_code);
-  const { prices: livePrices, connected: liveConnected } = usePriceStream(holdingCodes);
+  const streamCodes = [...new Set([
+    ...holdingCodes,
+    ...(buyStockCode ? [buyStockCode] : []),
+    HEALTH_CODE,
+  ])];
+  const { prices: livePrices, connected: liveConnected } = usePriceStream(streamCodes);
 
   // 장 마감 fallback: REST로 가져온 가격 (WebSocket 없을 때 사용)
   const [restPrices, setRestPrices] = useState<Record<string, { current_price: number; bid_price: number; change: number; change_pct: number; volume: number }>>({});
-
   // livePrices 우선, 없으면 restPrices fallback
   const displayPrices = { ...restPrices, ...livePrices };
+
+  // 비보유 탭 전환 시 REST 한 번 조회
+  const [tabRestPrices, setTabRestPrices] = useState<Record<string, number>>({});
+  useEffect(() => {
+    if (tab === "HOLDING") { setTabRestPrices({}); return; }
+    const targets = positions.filter((p) => p.status === tab);
+    if (targets.length === 0) return;
+    Promise.allSettled(targets.map((p) => api.market.price(p.stock_code))).then((results) => {
+      const map: Record<string, number> = {};
+      results.forEach((r, i) => {
+        if (r.status === "fulfilled") map[targets[i].stock_code] = r.value.current_price;
+      });
+      setTabRestPrices(map);
+    });
+  }, [tab, positions.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 서버사이드 realtime_monitor 상태 (30초 폴링)
+  const [serverRtStatus, setServerRtStatus] = useState<{ connected: boolean; holding_count: number } | null>(null);
+  useEffect(() => {
+    if (!isAdmin) return;
+    const fetch = () =>
+      api.admin.getRealtimeStatus()
+        .then((s) => setServerRtStatus({ connected: s.kis_ws_connected, holding_count: s.monitor_holding_count }))
+        .catch(() => {});
+    fetch();
+    const id = setInterval(fetch, 30000);
+    return () => clearInterval(id);
+  }, [isAdmin]);
 
   useEffect(() => {
     if (!getToken()) { router.push("/login"); return; }
@@ -194,7 +226,7 @@ export default function PositionsPage() {
     await loadNewsConfig();
   }
 
-  const filtered  = tab === "ALL" ? positions : positions.filter((p) => p.status === tab);
+  const filtered  = positions.filter((p) => p.status === tab);
   const holding   = positions.filter((p) => p.status === "HOLDING");
   const closed    = positions.filter((p) => p.status !== "HOLDING");
   const winCount  = closed.filter((p) => p.status === "TARGET_HIT").length;
@@ -212,12 +244,20 @@ export default function PositionsPage() {
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
           <h1 className="text-2xl font-bold">포지션 현황</h1>
-          {holdingCodes.length > 0 && (
+          {/* 프론트 WS 구독 상태 — 삼성전자 항상 구독으로 항상 표시 */}
+          <span className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${
+            liveConnected ? "bg-green-900/50 text-green-400" : "bg-gray-700 text-gray-400"
+          }`} title="프론트 WebSocket 구독 상태">
+            <span className={`w-1.5 h-1.5 rounded-full ${liveConnected ? "bg-green-400 animate-pulse" : "bg-gray-500"}`} />
+            구독
+          </span>
+          {/* 서버사이드 KIS WS / realtime_monitor 상태 */}
+          {isAdmin && serverRtStatus !== null && (
             <span className={`flex items-center gap-1 text-xs px-2 py-0.5 rounded-full ${
-              liveConnected ? "bg-green-900/50 text-green-400" : "bg-gray-700 text-gray-400"
-            }`}>
-              <span className={`w-1.5 h-1.5 rounded-full ${liveConnected ? "bg-green-400 animate-pulse" : "bg-gray-500"}`} />
-              {liveConnected ? "LIVE" : "연결 중..."}
+              serverRtStatus.connected ? "bg-blue-900/50 text-blue-400" : "bg-gray-700 text-gray-400"
+            }`} title={`서버 KIS WS 상태 · 감시 중 ${serverRtStatus.holding_count}종목`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${serverRtStatus.connected ? "bg-blue-400 animate-pulse" : "bg-gray-500"}`} />
+              서버
             </span>
           )}
         </div>
@@ -351,11 +391,9 @@ export default function PositionsPage() {
               tab === t.value ? "bg-blue-600 text-white" : "text-gray-400 hover:bg-gray-700"
             }`}>
             {t.label}
-            {t.value !== "ALL" && (
-              <span className="ml-1 text-xs opacity-70">
-                {positions.filter((p) => p.status === t.value).length}
-              </span>
-            )}
+            <span className="ml-1 text-xs opacity-70">
+              {positions.filter((p) => p.status === t.value).length}
+            </span>
           </button>
         ))}
       </div>
@@ -436,6 +474,11 @@ export default function PositionsPage() {
                     ) : pos.exit_price ? (
                       <span className="ml-1 text-gray-400">→ {Number(pos.exit_price).toLocaleString()}</span>
                     ) : null}
+                    {pos.status !== "HOLDING" && tabRestPrices[pos.stock_code] && (
+                      <span className="ml-1 text-gray-500">
+                        현재 {tabRestPrices[pos.stock_code].toLocaleString()}
+                      </span>
+                    )}
                   </span>
                   {pos.target_price && (
                     <span>익절 <span className="text-red-400">{Number(pos.target_price).toLocaleString()}</span></span>
@@ -475,16 +518,29 @@ export default function PositionsPage() {
                 {buyStockCode && (
                   <div className="mt-1 flex items-center gap-3 text-xs">
                     <span className="text-blue-400">선택: {buyStockCode}</span>
-                    {buyPriceLoading && <span className="text-gray-500">조회 중...</span>}
-                    {buyPriceInfo && (
-                      <>
-                        <span className="text-gray-400">시가 <span className="text-white">{buyPriceInfo.open_price.toLocaleString()}</span></span>
-                        <span className="text-gray-400">현재가 <span className="text-yellow-300 font-medium">{buyPriceInfo.current_price.toLocaleString()}</span></span>
-                        <span className={buyPriceInfo.change_pct >= 0 ? "text-red-400" : "text-blue-400"}>
-                          {buyPriceInfo.change_pct >= 0 ? "+" : ""}{buyPriceInfo.change_pct.toFixed(2)}%
-                        </span>
-                      </>
-                    )}
+                    {buyPriceLoading && !livePrices[buyStockCode] && <span className="text-gray-500">조회 중...</span>}
+                    {(() => {
+                      const live = livePrices[buyStockCode];
+                      const price = live?.current_price ?? buyPriceInfo?.current_price;
+                      const pct   = live ? live.change_pct : buyPriceInfo?.change_pct;
+                      const open  = buyPriceInfo?.open_price;
+                      if (!price) return null;
+                      return (
+                        <>
+                          {open && <span className="text-gray-400">시가 <span className="text-white">{open.toLocaleString()}</span></span>}
+                          <span className="text-gray-400">
+                            현재가{" "}
+                            <span className="text-yellow-300 font-medium">{price.toLocaleString()}</span>
+                            {live && <span className="ml-1 text-green-500 animate-pulse">●</span>}
+                          </span>
+                          {pct != null && (
+                            <span className={pct >= 0 ? "text-red-400" : "text-blue-400"}>
+                              {pct >= 0 ? "+" : ""}{pct.toFixed(2)}%
+                            </span>
+                          )}
+                        </>
+                      );
+                    })()}
                   </div>
                 )}
               </div>

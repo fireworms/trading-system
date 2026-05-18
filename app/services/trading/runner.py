@@ -361,8 +361,6 @@ class StrategyRunner:
         }
 
         # stock_master에서 종목명 맵 구성 (AI 이름 환각 차단)
-        from app.models.stock_master import StockMaster
-        from sqlalchemy import select as _select
         name_map: dict[str, str] = {}
         if price_map:
             masters = self.db.scalars(

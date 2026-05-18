@@ -79,6 +79,16 @@ class KISRealtimeClient:
         if self._ws and not self._is_closed():
             await self._send_sub(code, subscribe=False)
 
+    @property
+    def is_connected(self) -> bool:
+        if self._ws is None:
+            return False
+        try:
+            import websockets.connection
+            return self._ws.state == websockets.connection.State.OPEN
+        except Exception:
+            return False
+
     def start(self) -> None:
         if self._task and not self._task.done():
             return
@@ -140,8 +150,21 @@ class KISRealtimeClient:
                 await self._send_raw_sub("H0STCNI0", hts_id, subscribe=True)
                 logger.info("KIS execution notification subscribed: hts_id=%s", hts_id)
 
-            async for raw in ws:
-                await self._handle(raw)
+            # 30초마다 WebSocket ping — 서버가 idle 연결을 끊지 않도록 keepalive
+            async def _heartbeat():
+                while True:
+                    await asyncio.sleep(30)
+                    try:
+                        await ws.ping()
+                    except Exception:
+                        break
+
+            hb = asyncio.create_task(_heartbeat())
+            try:
+                async for raw in ws:
+                    await self._handle(raw)
+            finally:
+                hb.cancel()
 
     async def _send_sub(self, code: str, subscribe: bool) -> None:
         await self._send_raw_sub("H0STCNT0", code, subscribe)

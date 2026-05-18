@@ -198,6 +198,24 @@ def trigger_morning_gate(
 
 
 # ------------------------------------------------------------------ #
+# Realtime Monitor 상태
+# ------------------------------------------------------------------ #
+
+@router.get("/realtime/status")
+def get_realtime_status(_: User = Depends(require_admin)):
+    """KIS WebSocket 및 realtime_monitor 상태 조회."""
+    from app.services.kis.realtime import get_realtime_client
+    from app.services.trading.realtime_monitor import get_monitor
+    rt      = get_realtime_client()
+    monitor = get_monitor()
+    return {
+        "kis_ws_connected":    rt.is_connected if rt else False,
+        "subscribed_codes":    list(rt._subscribed) if rt else [],
+        "monitor_holding_count": len(monitor._by_code) if monitor else 0,
+    }
+
+
+# ------------------------------------------------------------------ #
 # Circuit Breaker
 # ------------------------------------------------------------------ #
 
