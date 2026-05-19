@@ -124,23 +124,39 @@ def _verify_recommendation(
     # 검증 기간: run_date ~ run_date + hold_days (이후 데이터 제외)
     period_start = str(run.run_date)
     period_end   = str(run.run_date + timedelta(days=strategy.hold_days))
-    relevant = [b for b in bars if period_start <= b.date <= period_end]
+    relevant = sorted(
+        [b for b in bars if period_start <= b.date <= period_end],
+        key=lambda b: b.date,
+    )
 
     max_high = max((b.high for b in relevant), default=current_price)
     max_low  = min((b.low  for b in relevant), default=current_price)
 
-    # 목표가 도달 여부: 보유기간 내 고점이 target_price 이상이면 SUCCESS
-    verdict = VerificationResult.FAIL
-    if rec.target_price and max_high >= rec.target_price:
-        verdict = VerificationResult.SUCCESS
+    # 날짜순 순회 — 손절가와 목표가 중 먼저 터치되는 쪽으로 판정
+    # 같은 날 둘 다 터치: 손절 우선 (보수적 convention)
+    verdict    = VerificationResult.FAIL
+    exit_price = relevant[-1].close if relevant else current_price
 
-    # pnl_pct: 추천 당시 현재가 대비 hold_days 후 가격 변화
-    # current_price_at_rec이 없으면 현재가로 fallback (부정확하지만 최선)
+    for bar in relevant:
+        stop_hit   = rec.stop_loss_price and bar.low  <= rec.stop_loss_price
+        target_hit = rec.target_price    and bar.high >= rec.target_price
+
+        if stop_hit:
+            exit_price = rec.stop_loss_price
+            break
+        if target_hit:
+            verdict    = VerificationResult.SUCCESS
+            exit_price = rec.target_price
+            break
+    else:
+        # 기간 내 어느 쪽도 안 터치 → 마지막 봉 종가로 pnl 계산
+        exit_price = relevant[-1].close if relevant else current_price
+
     entry = rec.current_price_at_rec or current_price
     pnl = (
-        (current_price - entry) / entry * 100
-        if entry and entry > 0
-        else Decimal("0")
+        (float(exit_price) - float(entry)) / float(entry) * 100
+        if entry and float(entry) > 0
+        else 0.0
     )
 
     return Verification(
@@ -150,7 +166,7 @@ def _verify_recommendation(
         max_high=max_high,
         max_low=max_low,
         result=verdict,
-        pnl_pct=Decimal(str(round(float(pnl), 4))),
+        pnl_pct=Decimal(str(round(pnl, 4))),
     )
 
 

@@ -138,6 +138,9 @@ trading_system/
 ### verifications
 - verify_id, rec_id (FK), verified_at, price_at_verify
 - max_high, max_low, result: SUCCESS/FAIL, pnl_pct
+- 검증 로직: 일봉 날짜순 순회 → 손절가 터치 먼저면 FAIL, 목표가 터치 먼저면 SUCCESS
+  - 같은 날 둘 다 터치: 손절 우선 (보수적 convention)
+  - pnl_pct: 실제 exit_price(목표가/손절가/기간말 종가) 기준, 현재가 아님
 
 ### stock_master
 - stock_code, stock_name, market (KOSPI/KOSDAQ/NAS), country, sector
