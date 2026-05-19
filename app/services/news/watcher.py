@@ -192,8 +192,8 @@ def morning_gate_check() -> None:
             set_config(db, "morning_gate_reason", f"[{severity}] {reason}")
             logger.warning("Morning gate PAUSED: %s — %s", severity, reason)
 
-            from app.services.telegram.notifier import notify_admins_error
-            notify_admins_error(
+            from app.services.telegram.notifier import notify_admins_warning
+            notify_admins_warning(
                 f"🌅 모닝 게이트 {severity}",
                 f"{reason}\n오늘 09:20 자동매수가 차단됩니다.",
             )
@@ -262,9 +262,9 @@ def run_news_check_and_act() -> None:
 
     if result["severity"] == "WARNING":
         try:
-            from app.services.telegram.notifier import notify_admins_error
-            notify_admins_error(
-                "⚠️ 뉴스 감시 — 자동매매 일시 중단",
+            from app.services.telegram.notifier import notify_admins_warning
+            notify_admins_warning(
+                "뉴스 감시 — 자동매매 일시 중단",
                 f"{result['event_description']}\n\n신규 매수가 중단됐습니다. 상황 확인 후 수동으로 재개해주세요.",
             )
         except Exception as e:
@@ -309,8 +309,9 @@ def _apply_dual_signal_action(db, news_result: dict) -> None:
         logger.warning("Dual signal %s+KOSPI%.1f%% → tighten stop losses", severity, kospi_chg)
         tightened = executor.tighten_stop_losses(reason=f"[{severity}] {reason}")
         try:
-            notify_admins_error(
-                "⚠️ 손절선 강화",
+            from app.services.telegram.notifier import notify_admins_warning
+            notify_admins_warning(
+                "손절선 강화",
                 f"{reason}\n\nKOSPI {kospi_chg:+.1f}% — 수익 포지션 {tightened}개 손절선을 현재가 기준으로 강화했습니다.",
             )
         except Exception:
@@ -546,7 +547,6 @@ def check_position_theses() -> None:
 
         # 결과 처리
         from app.services.trading.executor import TradeExecutor
-        from app.services.telegram.notifier import notify_admins_error
 
         executor = TradeExecutor(db)
         alerts = []
@@ -597,7 +597,8 @@ def check_position_theses() -> None:
 
         if alerts:
             try:
-                notify_admins_error(
+                from app.services.telegram.notifier import notify_admins_warning
+                notify_admins_warning(
                     "🔍 Thesis 재검증 결과",
                     "\n\n".join(alerts),
                 )

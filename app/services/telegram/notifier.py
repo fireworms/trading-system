@@ -100,8 +100,11 @@ class TelegramNotifier:
         self._send(chat_id, text)
 
     # ------------------------------------------------------------------ #
-    # 에러
+    # 경고 / 에러
     # ------------------------------------------------------------------ #
+
+    def notify_warning(self, chat_id: str, title: str, detail: str) -> None:
+        self._send(chat_id, f"⚠️ <b>[WARNING] {title}</b>\n{detail[:800]}")
 
     def notify_error(self, chat_id: str, title: str, detail: str) -> None:
         self._send(chat_id, f"🚨 <b>[ERROR] {title}</b>\n<code>{detail[:800]}</code>")
@@ -151,8 +154,22 @@ def get_admin_chat_ids(db) -> list[str]:
     return [r for r in rows if r]
 
 
+def notify_admins_warning(title: str, detail: str) -> None:
+    """정책 경고(모닝 게이트·뉴스 감시 등)를 모든 어드민에게 전송."""
+    notifier = get_notifier()
+    if not notifier:
+        return
+    try:
+        from app.core.database import SessionLocal
+        with SessionLocal() as db:
+            for chat_id in get_admin_chat_ids(db):
+                notifier.notify_warning(chat_id, title, detail)
+    except Exception as e:
+        logger.warning("notify_admins_warning failed: %s", e)
+
+
 def notify_admins_error(title: str, detail: str) -> None:
-    """에러를 모든 어드민에게 전송 (내부에서 DB 세션 생성)."""
+    """코드 오류·긴급 조치를 모든 어드민에게 전송 (내부에서 DB 세션 생성)."""
     notifier = get_notifier()
     if not notifier:
         return

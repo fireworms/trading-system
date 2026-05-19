@@ -65,6 +65,8 @@ trading_system/
 │   │   │   └── index_constituents.py  # KOSPI200/KOSDAQ150 구성종목
 │   │   ├── telegram/
 │   │   │   └── notifier.py      # TelegramNotifier (멀티유저, chat_id별 전송)
+│   │   │                        # notify_admins_warning: 정책 경고 (⚠️ [WARNING])
+│   │   │                        # notify_admins_error: 코드 오류·긴급 조치 (🚨 [ERROR])
 │   │   └── trading/
 │   │       ├── realtime_monitor.py  # 실시간 포지션 모니터 (서버사이드 상시 구독, 즉시 손절/익절)
 │   │       ├── scheduler.py     # APScheduler 잡 정의
