@@ -13,7 +13,6 @@ from decimal import Decimal
 from dataclasses import dataclass
 
 import json
-import tempfile
 from pathlib import Path
 
 import httpx
@@ -44,7 +43,13 @@ _rate_limiter = _RateLimiter()
 from app.core.config import get_settings
 from app.core.security import decrypt_secret
 
-_TOKEN_CACHE_PATH = Path(tempfile.gettempdir()) / "kis_token_cache.json"
+# /tmp는 재부팅 시 초기화되므로 홈 디렉터리에 저장
+_TOKEN_CACHE_PATH = Path.home() / ".kis_token_cache.json"
+# 토큰 신규 발급 시 동시 발급 방지 (전역 락)
+_token_issue_lock = threading.Lock()
+# 계좌별 KISClient 싱글턴 레지스트리 (인메모리 토큰 캐시 공유 목적)
+_client_registry: dict[str, "KISClient"] = {}
+_registry_lock = threading.Lock()
 
 logger = logging.getLogger(__name__)
 
@@ -99,36 +104,44 @@ class KISClient:
     # ------------------------------------------------------------------ #
 
     def _ensure_token(self) -> None:
-        # 1) 인메모리 캐시 확인
+        # 1) 인메모리 캐시 확인 (싱글턴 인스턴스면 대부분 여기서 리턴)
         if self._token and self._token_exp and datetime.now() < self._token_exp:
             return
 
-        # 2) 파일 캐시 확인 (프로세스 간 토큰 공유)
+        # 2) 파일 캐시 확인 (프로세스 재시작 후 첫 호출 대응)
         cached = self._load_token_cache()
         if cached:
             self._token     = cached["token"]
             self._token_exp = datetime.fromisoformat(cached["exp"])
             return
 
-        # 3) 신규 발급
-        resp = httpx.post(
-            f"{self._base}/oauth2/tokenP",
-            json={
-                "grant_type": "client_credentials",
-                "appkey": self._key,
-                "appsecret": self._secret,
-            },
-            timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if "access_token" not in data:
-            raise RuntimeError(f"KIS 토큰 발급 실패: {data}")
-        expires_in      = int(data.get("expires_in", 86400))
-        self._token     = f"Bearer {data['access_token']}"
-        self._token_exp = datetime.now() + timedelta(seconds=expires_in - 300)
-        self._save_token_cache()
-        logger.info("KIS 토큰 발급 완료 (유효 %ds)", expires_in)
+        # 3) 신규 발급 — 전역 락으로 동시 발급 방지 (서버 기동 시 여러 잡 동시 시작 대응)
+        with _token_issue_lock:
+            # 락 획득 후 다시 확인 (대기 중 다른 스레드가 발급 완료했을 수 있음)
+            cached = self._load_token_cache()
+            if cached:
+                self._token     = cached["token"]
+                self._token_exp = datetime.fromisoformat(cached["exp"])
+                return
+
+            resp = httpx.post(
+                f"{self._base}/oauth2/tokenP",
+                json={
+                    "grant_type": "client_credentials",
+                    "appkey": self._key,
+                    "appsecret": self._secret,
+                },
+                timeout=10,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            if "access_token" not in data:
+                raise RuntimeError(f"KIS 토큰 발급 실패: {data}")
+            expires_in      = int(data.get("expires_in", 86400))
+            self._token     = f"Bearer {data['access_token']}"
+            self._token_exp = datetime.now() + timedelta(seconds=expires_in - 300)
+            self._save_token_cache()
+            logger.info("KIS 토큰 발급 완료 (유효 %ds)", expires_in)
 
     def _load_token_cache(self) -> dict | None:
         try:
@@ -813,7 +826,15 @@ def _client_from_db(db) -> "KISClient":
 
 
 def get_kis_client_from_account(account) -> "KISClient":
-    """BrokerAccount 모델 → 복호화 → KISClient."""
-    key    = decrypt_secret(account.api_key_enc)
-    secret = decrypt_secret(account.api_secret_enc)
-    return KISClient(key, secret, account.account_no, account.account_type.value == "REAL")
+    """BrokerAccount 모델 → 복호화 → KISClient 싱글턴 반환.
+    같은 account_id에 대해 항상 동일 인스턴스를 반환해 인메모리 토큰 캐시를 공유한다."""
+    account_id = str(account.account_id)
+    with _registry_lock:
+        if account_id not in _client_registry:
+            key    = decrypt_secret(account.api_key_enc)
+            secret = decrypt_secret(account.api_secret_enc)
+            _client_registry[account_id] = KISClient(
+                key, secret, account.account_no,
+                account.account_type.value == "REAL",
+            )
+        return _client_registry[account_id]

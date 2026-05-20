@@ -330,6 +330,7 @@ TELEGRAM_BOT_TOKEN=      # 선택
 - 매수 스킵 fallback: AI 확인 실패 시 전종목 skip (안전 방향)
 - HTTP 클라이언트: 전체 코드 httpx 통일 (requests 사용 금지)
 - KIS API rate limit: client.py `_RateLimiter(18/초)` 전역 싱글턴 — _get/_post 모든 호출 자동 적용
+- KIS 토큰 캐시: `~/.kis_token_cache.json` (재부팅 후에도 유지). `get_kis_client_from_account()`는 account_id 기준 싱글턴 반환 — 인메모리 토큰 공유로 중복 발급 방지
 - 매도 후 exit_price: 반드시 `get_today_fill_price(side="01")`로 실 체결가 조회 (현재가 사용 금지)
 - 수동 매수 + 전략 선택 시 실제 자동 청산 편입 (monitor_positions가 HOLDING 전체 순회)
 - _check_position(): rec 없으면 strategy.target_pct × entry_price로 목표가 계산 (수동매수 포함)
