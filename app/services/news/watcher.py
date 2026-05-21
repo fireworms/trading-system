@@ -39,7 +39,8 @@ _BASE_PROMPT = """
 
 
 def _build_history_context(db) -> str:
-    """최근 뉴스 이벤트 + 실제 시장 영향을 컨텍스트 문자열로 반환."""
+    """최근 뉴스 이벤트 + 실제 시장 영향 + 이미 감지된 이슈 억제 목록을 컨텍스트 문자열로 반환."""
+    from datetime import timedelta
     from sqlalchemy import select
     from app.models.news_event import NewsEvent
 
@@ -65,6 +66,34 @@ def _build_history_context(db) -> str:
         lines.append(f"[{date_str}] {ev.severity}: \"{ev.event_description[:60]}\"{impact}")
 
     lines.append("")
+
+    # 최근 5일 이내 이미 감지된 이슈 → 재감지 억제 지시
+    cutoff = datetime.now(timezone.utc) - timedelta(days=5)
+    recent_keywords: list[str] = []
+    recent_descs: list[str] = []
+    seen_descs: set[str] = set()
+    for ev in events:
+        if ev.detected_at >= cutoff:
+            if ev.keywords:
+                recent_keywords.extend(ev.keywords)
+            if ev.event_description:
+                short = ev.event_description[:60]
+                if short not in seen_descs:
+                    seen_descs.add(short)
+                    recent_descs.append(short)
+
+    unique_kws = list(dict.fromkeys(recent_keywords))  # 순서 유지, 중복 제거
+
+    if unique_kws or recent_descs:
+        lines.append("=== 이미 감지된 이슈 (최근 5일) ===")
+        lines.append("아래 이슈/키워드는 이미 감지·기록됐습니다.")
+        lines.append("실제 입법 통과, 급격한 상황 escalation 등 중대한 신규 전개가 없는 한 다시 WARNING/CRITICAL로 판단하지 마세요.")
+        for desc in recent_descs:
+            lines.append(f"- {desc}")
+        if unique_kws:
+            lines.append(f"관련 키워드: {', '.join(unique_kws[:20])}")
+        lines.append("")
+
     return "\n".join(lines)
 
 
