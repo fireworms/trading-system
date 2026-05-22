@@ -56,8 +56,8 @@ trading_system/
 │   │   │   ├── client.py        # KISClient (httpx 네이티브)
 │   │   │   └── realtime.py      # KIS WebSocket 클라이언트 (H0STCNT0 + H0STCNI0)
 │   │   ├── gemini/
-│   │   │   ├── analyzer.py      # GeminiAnalyzer (4단계 + confirm_buys)
-│   │   │   └── prompts.py       # 프롬프트 템플릿 (STAGE1~4, BUY_CONFIRM)
+│   │   │   ├── analyzer.py      # GeminiAnalyzer (4단계)
+│   │   │   └── prompts.py       # 프롬프트 템플릿 (STAGE1~4, BUY_CONFIRM 미사용)
 │   │   ├── news/
 │   │   │   └── watcher.py       # 뉴스 감시, news_events 저장, 사후 검증
 │   │   ├── stock_master/
@@ -236,7 +236,7 @@ trading_system/
 | Stage3 (산업 분석) | gemini-3.1-flash-lite | gemini-2.5-flash-lite |
 | Stage4-A (자유형식 분석) | gemini-3-flash-preview | gemini-3.1-flash-lite → gemini-2.5-flash-lite |
 | Stage4-B (코드 추출) | gemini-3.1-flash-lite | gemini-2.5-flash-lite |
-| BUY_CONFIRM (09:20 확인) | gemini-3.1-flash-lite | gemini-2.5-flash-lite |
+| BUY_CONFIRM (미사용, prompts.py에만 존재) | — | — |
 | 뉴스 감시 (장중 2시간마다) | gemini-2.5-flash | - |
 | 모닝 게이트 (08:00) | gemini-2.5-flash | - |
 | Thesis 재검증 (10:00, 14:00) | gemini-2.5-flash | - |
