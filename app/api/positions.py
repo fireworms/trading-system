@@ -407,4 +407,8 @@ def manual_buy(
     db.add(pos)
     db.commit()
     db.refresh(pos)
+
+    from app.services.trading.realtime_monitor import get_monitor
+    get_monitor().load_all()
+
     return _enrich(pos)
