@@ -368,3 +368,112 @@ TELEGRAM_BOT_TOKEN=      # 선택
 - 전역 상태(싱글턴, 캐시, 설정값)가 특정 유저에 종속되지 않도록 설계
 - API 엔드포인트는 `current_user` 기준으로 데이터 격리
 - "첫 번째 계좌", "대표 계좌" 같은 단수 가정은 시장데이터 조회 등 명백히 공용인 경우에만 허용
+
+## 파일별 핵심 함수 요약
+
+### app/main.py
+- `lifespan()`: 앱 시작 시 루프 저장 → KIS WS 초기화 → 모니터 콜백 등록 → 포지션 로드 → 스케줄러 시작. 종료 시 역순 정리
+- `_init_realtime_client()`: broker_accounts에서 REAL 계좌 조회 → KISRealtimeClient 초기화 + H0STCNI0 구독
+- `_update_fill_price()`: H0STCNI0 체결통보 콜백 → hts_id로 계좌 조회 → 해당 유저 오늘 포지션 entry_price/peak_price 업데이트
+
+### app/core/
+- `config_store.py`: `get_config(db, key)` / `set_config(db, key, value)` — app_config 테이블 key-value 읽기/쓰기
+- `loop.py`: `set_loop()` / `get_loop()` — APScheduler 스레드에서 async 함수 호출 시 `run_coroutine_threadsafe`에 넘길 루프 저장
+- `security.py`: `hash_password` / `verify_password` (bcrypt, 72바이트 truncate), `create_access_token` / `decode_access_token` (JWT), `encrypt_secret` / `decrypt_secret` (Fernet)
+
+### app/services/kis/client.py
+- `KISClient`: httpx 기반 KIS API 래퍼. `_RateLimiter(18/초)` 전역 싱글턴으로 모든 호출 자동 적용
+- `_ensure_token()`: `~/.kis_token_cache.json` 파일 캐시 우선, 만료 시 신규 발급. `_token_issue_lock`으로 동시 발급 차단
+- `get_current_price(code)`: FHKST01010100, 현재가만 반환
+- `get_price_with_change(code)`: 현재가 + 시가 + 등락률 + bid_price (프론트/모니터용)
+- `get_intraday_status(code)`: 시가/고가/체결강도/거래량 (09:20 장중 체크용)
+- `get_index_change_pct()`: KOSPI(0001)/KOSDAQ(1001) 등락률 — 매수 전 -2% 체크
+- `_get_domestic_stock_info(code)`: 현재가+RSI+이평선+외국인/기관 순매수 통합 (runner 종목 데이터 수집용)
+- `get_stock_basic_info(code)`: CTPF1002R 섹터 조회 (매수 직전 MAX_PER_SECTOR 체크용)
+- `get_today_fill_price(code, side)`: TTTC8001R 당일 체결 조회. side="02"=매수, "01"=매도. 매수/매도 직후 실 체결가 반영에 사용
+- `buy_market_order(code, qty)` / `sell_market_order(code, qty)`: TTTC0802U / TTTC0801U 시장가 주문
+- `get_kis_client_from_account(account)`: account_id 기준 싱글턴 반환 (`_client_registry`). 동일 계좌는 항상 같은 인스턴스 → 토큰 공유
+
+### app/services/kis/realtime.py
+- `KISRealtimeClient`: KIS WebSocket(H0STCNT0 가격 + H0STCNI0 체결통보) 클라이언트
+- H0STCNT0 필드: [0]코드 [2]현재가 [3]부호 [4]전일대비 [5]등락률 [11]bid_price [13]누적거래량
+- H0STCNI0 필드: [0]hts_id [4]매수/매도구분(02=매수) [7]종목코드 [8]수량 [9]체결단가 [12]체결여부(1=체결)
+- 재연결: 5초~60초 백오프, 재연결 시 `_subscribed` 전체 자동 재구독
+- 하트비트: 30초마다 `ws.ping()` (KIS 서버 idle 끊김 방지)
+- `init_realtime_client()` / `get_realtime_client()`: 앱 전역 싱글턴
+
+### app/services/gemini/analyzer.py
+- `GeminiAnalyzer`: 4단계 Gemini 파이프라인 + fallback 체인 관리
+- `stage1_macro()`: gemini-2.5-flash + google_search → MacroResult (macro_summary, key_factors, market_theme, sector_outlook)
+- `stage2_historical()`: gemini-3-flash-preview → HistoricalResult (유사 과거 시기 3개)
+- `stage3_industry()`: gemini-3.1-flash-lite → IndustryResult (섹터별 outlook)
+- `stage4_picks(stock_data, ...)`: 2단계 — A(flash-preview 자유형식 분석) → B(flash-lite 코드 추출). 그룹 분할은 runner가 담당
+- `_call_with_fallback(prompt, chain)`: 모델 체인 순서대로 시도, 성공 시 (text, model_used) 반환
+- `_parse_json(text)`: JSON 파싱 실패 시 gemma-4-31b-it로 재시도
+
+### app/services/trading/runner.py
+- `StrategyRunner.run_strategy(strategy)`: 전체 파이프라인 조율 — 종목 샘플링 → KIS 수집 → Gemini 4단계 → DB 저장 → 텔레그램
+- `_sample_from_master(strategy)`: candidate_filter/market 기준 stock_master에서 50~200개 샘플링
+  - largecap: KOSPI200/KOSDAQ150 시총 내림차순 상위 90% + stride 10%
+  - volume: KIS 시총순위 API 실시간
+  - mixed: largecap 우선 + stride
+- `_collect_stock_data(candidates)`: KIS API로 종목별 현재가/RSI/이평선/수급 수집 + stock_name DB 주입
+- `_prefilter_stocks(stock_data, n=20)`: RSI·수급·거래량 점수로 75개→20개 압축 (Stage4 컨텍스트 축소)
+- `_run_stage4_grouped(...)`: 20개를 10개씩 2그룹 분할 → 각 그룹 Stage4 독립 실행 → 확률순 집계
+- `_is_market_unfavorable(market_theme)`: `_BEAR_KEYWORDS` 감지 → Stage4 스킵 여부 (A-gate, 검증 20건+ 시 활성화)
+
+### app/services/trading/executor.py
+- `TradeExecutor.execute_pending_buys()`: 09:20 잡 진입점. 플래그 체크(morning_gate/news/cb) → 지수 -2% 체크 → 크로스 시그널 계산 → 전략별 매수
+- `execute_buys_for_run(run, user_strategy)`: 추천 목록 정렬(유효확률+크로스보너스) → 섹터/RSI/R:R 필터 → 시장가 매수 → 실 체결가 반영 → Position 저장 → 모니터 등록
+- `monitor_positions()`: HOLDING 포지션 순회 → 만료/time-based stop 처리 (손절/익절은 realtime_monitor가 우선)
+- `_check_position(pos)`: 목표가/손절가 계산 + trailing 모드 체크 + 타임아웃(+1거래일 신고점 없으면 TARGET_HIT) 처리
+- `_close_position(pos, status, price)`: 시장가 매도 → 1초 대기 → `get_today_fill_price(side="01")`로 실 체결가 → exit_price 저장 → 모니터 제거
+- `_check_circuit_breaker(user_id)`: 직전 4건 청산 전부 손실 시 cb_paused 플래그 설정
+- `emergency_close_all_positions(reason)`: 전 포지션 즉시 청산 (뉴스 CRITICAL+KOSPI -2% 시)
+- `tighten_stop_losses(reason)`: 수익 포지션 현재가 기준 trailing 전환 (뉴스 WARNING+KOSPI -1% 시)
+- `_build_cross_signal(db)`: 오늘 전략 추천 집계 → 종목별 다양성 점수 계산
+- `_cross_signal_bonus(code, signal)`: 점수 1.0→+7%, 0.5→+3.5%, 상한 +10%
+
+### app/services/trading/realtime_monitor.py
+- `RealtimePositionMonitor`: 싱글턴. HOLDING 포지션 인메모리 관리 + KIS 가격 틱 실시간 손절/익절
+- `load_all()`: DB에서 HOLDING 전부 → `PositionWatch` 생성 → KIS H0STCNT0 구독
+- `on_price(code, price_data)`: 매 틱 bid_price 기준 `_should_close()` → 조건 충족 시 `asyncio.create_task`로 즉시 청산
+- `_should_close(watch, price)`: 손절가 이탈 → "stop_loss", 목표가 도달(trailing OFF) → "target_hit", trailing ON → peak 갱신 또는 trailing 손절
+- `force_trailing(position_id, peak_price)`: DB + 인메모리 동시 trailing 전환 (뉴스 조치 시 사용)
+- `add(watch)` / `remove(position_id, code)`: 매수/청산 시 executor가 호출해 동기화
+
+### app/services/news/watcher.py
+- `check_news(db)`: gemini-2.5-flash + google_search → severity 판정 → news_events 저장 → `_apply_dual_signal_action()`
+- `morning_gate_check()`: 08:00 실행. 미국 선물/지정학 체크 → WARNING/CRITICAL 시 `morning_gate_paused=true`
+- `run_news_check_and_act()`: 스케줄러에서 호출. 장중 120분 간격 체크 (10분 tick 기반)
+- `_apply_dual_signal_action(db, result)`: AI 판정 × KOSPI 등락률 교차 검증 → emergency_close / tighten_stop / 알림만
+- `check_position_theses(db)`: 10:00/14:00. 2일+ HOLDING 포지션 8개씩 그룹 → gemini-2.5-flash + google_search thesis 재검증 → invalid+손실 시 조기 청산
+- `verify_news_events(db)`: 1일/3일 경과 이벤트에 실제 KOSPI/KOSDAQ 변화율 기록
+- `verify_run_market_outcomes(db)`: 전날 recommendation_runs의 kospi_change_1d 채움 (A-gate 데이터 축적)
+- `_build_history_context(db)`: 최근 15건 이벤트 + 최근 5일 이슈 키워드 → 프롬프트 주입 (중복 감지 억제)
+
+### app/services/trading/scheduler.py
+- `start_scheduler()`: APScheduler 설정 + 전체 잡 등록 (KST 기준)
+- `run_startup_catchup()`: 서버 재시작 시 누락 분석/검증/stock_master 자동 보완
+- `_should_run(db, strategy)`: run_interval_days 경과 여부 체크
+
+### app/services/trading/verifier.py
+- `run_verifications(db)`: 검증 대상(verification 없음 + run_date+hold_days ≤ today) 순회 → `_verify_recommendation()`
+- `_verify_recommendation(rec, run, strategy, client, today)`: 일봉 날짜순 순회 → 손절/목표가 중 먼저 터치되는 쪽 판정 (같은 날이면 손절 우선). pnl_pct는 실제 exit_price 기준
+- `_update_performance_score(db, version_no)`: 검증 완료 후 prompt_version.performance_score 갱신
+
+### app/services/telegram/notifier.py
+- `TelegramNotifier`: 멀티유저 텔레그램 알림. chat_id별 개별 전송
+- `notify_admins_warning(title, detail)`: `⚠️ [WARNING]` — 정책 경고 (모닝게이트/뉴스차단/손절선 강화 등)
+- `notify_admins_error(title, detail)`: `🚨 [ERROR]` — 코드 오류·긴급 조치 (전체 청산/Circuit Breaker/잡 실패)
+
+### app/api/positions.py
+- `_enrich(pos)`: Position → PositionOut 변환. target_price(rec 또는 strategy×entry_price), trailing_stop_price(peak×(1-stop_loss_pct/100)) 계산
+- `get_stats()`: 확정 포지션 기반 KPI — 승률/손익비/Sharpe/MDD/월별/전략별/종목별/거래목록
+- `manual_buy()`: 수동 매수 → 시장가 → 실 체결가 → Position 저장 → `load_all()` (모니터 등록)
+- `close_position()` / `close_all_positions()`: 수동 청산 → 실 체결가 반영
+
+### app/api/admin.py
+- 수동 트리거: `manual_run_strategy`, `manual_monitor`, `manual_verify`, `trigger_thesis_check`, `trigger_morning_gate`
+- 상태 조회: `scheduler_status`, `get_realtime_status` (KIS WS 연결 + 구독 코드 수 + 모니터 종목 수)
+- 제어: `resume_auto_trade` (뉴스 차단 해제), `resume_morning_gate`, `resume_circuit_breaker`
