@@ -141,6 +141,7 @@ trading_system/
 - 검증 로직: 일봉 날짜순 순회 → 손절가 터치 먼저면 FAIL, 목표가 터치 먼저면 SUCCESS
   - 같은 날 둘 다 터치: 손절 우선 (보수적 convention)
   - pnl_pct: 실제 exit_price(목표가/손절가/기간말 종가) 기준, 현재가 아님
+  - 기간 필터: bar.date는 "YYYYMMDD" 포맷 — period_start/end도 strftime("%Y%m%d") 사용 필수 (ISO 포맷과 혼용 시 전체 필터 실패)
 
 ### stock_master
 - stock_code, stock_name, market (KOSPI/KOSDAQ/NAS), country, sector
@@ -459,7 +460,7 @@ TELEGRAM_BOT_TOKEN=      # 선택
 
 ### app/services/trading/verifier.py
 - `run_verifications(db)`: 검증 대상(verification 없음 + run_date+hold_days ≤ today) 순회 → `_verify_recommendation()`
-- `_verify_recommendation(rec, run, strategy, client, today)`: 일봉 날짜순 순회 → 손절/목표가 중 먼저 터치되는 쪽 판정 (같은 날이면 손절 우선). pnl_pct는 실제 exit_price 기준
+- `_verify_recommendation(rec, run, strategy, client, today)`: 일봉 날짜순 순회 → 손절/목표가 중 먼저 터치되는 쪽 판정 (같은 날이면 손절 우선). pnl_pct는 실제 exit_price 기준. period_start/end는 반드시 strftime("%Y%m%d") — get_ohlcv() bar.date가 YYYYMMDD 포맷이므로 ISO 포맷과 혼용 금지
 - `_update_performance_score(db, version_no)`: 검증 완료 후 prompt_version.performance_score 갱신
 
 ### app/services/telegram/notifier.py

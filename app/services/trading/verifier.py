@@ -122,8 +122,9 @@ def _verify_recommendation(
     bars = client.get_ohlcv(rec.stock_code)
 
     # 검증 기간: run_date ~ run_date + hold_days (이후 데이터 제외)
-    period_start = str(run.run_date)
-    period_end   = str(run.run_date + timedelta(days=strategy.hold_days))
+    # get_ohlcv() bar.date는 "YYYYMMDD" 포맷 — ISO 포맷과 문자열 비교 시 항상 불일치하므로 맞춰야 함
+    period_start = run.run_date.strftime("%Y%m%d")
+    period_end   = (run.run_date + timedelta(days=strategy.hold_days)).strftime("%Y%m%d")
     relevant = sorted(
         [b for b in bars if period_start <= b.date <= period_end],
         key=lambda b: b.date,
