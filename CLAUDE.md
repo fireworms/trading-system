@@ -244,6 +244,7 @@ trading_system/
 | JSON 정제 | gemma-4-31b-it | - |
 
 ## Stage4 억지 픽 방어 구조 (Gemini 성향 대응)
+- **ai_probability 재정의** (STAGE4A): "보유기간 내 손절라인을 단 한 번도 터치하지 않고 목표수익률에 먼저 도달할 확률"로 명시. 고변동성 함정 종목 넛지 필터 효과. 평가 우선순위: MA60 지지선이 손절선 위에 있는가 → 기관·외국인 수급 방어 여부 → RSI 30~55 구간 (추가 낙폭 여지 적음)
 - **B-gate** (항상 동작): Stage4A/B 프롬프트에 "0개 반환 허용" 명시 — pick_count 충족 위한 억지 선정 금지
 - **A-gate** (verified 데이터 20건 이상 시 자동 활성화):
   - 매 run마다 `kospi_at_run` 저장, 16:00 잡이 `kospi_change_1d` 채움
