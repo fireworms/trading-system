@@ -164,12 +164,10 @@ class TradeExecutor:
         client = get_kis_client_from_account(sub.account)
         strategy = sub.strategy
 
-        # 크로스 시그널 보너스 적용 후 정렬
-        # 보너스 우선, 동점이면 rank 순
+        # 크로스 시그널 보너스 우선, 동점이면 AI 추천 순위(rank) 순
         def _sort_key(r):
             bonus = _cross_signal_bonus(r.stock_code, cross_signal)
-            eff_prob = float(r.ai_probability or 0) + bonus
-            return (-eff_prob, r.rank if r.rank is not None else 999)
+            return (-bonus, r.rank if r.rank is not None else 999)
 
         sorted_recs = sorted(run.recommendations, key=_sort_key)
 
@@ -182,18 +180,10 @@ class TradeExecutor:
         sector_counts: dict[str, int] = {}
 
         for rec in sorted_recs:
-            # 크로스 시그널 보너스 포함 유효 확률
             bonus = _cross_signal_bonus(rec.stock_code, cross_signal)
-            effective_prob = (rec.ai_probability or Decimal("0")) + Decimal(str(bonus))
             if bonus > 0:
-                logger.info("Cross signal bonus +%.1f%% for %s → effective_prob=%.1f",
-                            bonus, rec.stock_code, float(effective_prob))
-
-            # 확률 필터 (보너스 포함 유효 확률 기준)
-            if effective_prob < strategy.min_probability:
-                logger.info("Skip %s: effective_prob %.1f < min %.1f",
-                            rec.stock_code, float(effective_prob), strategy.min_probability)
-                continue
+                logger.info("Cross signal bonus +%.1f%% for %s (rank=%s)",
+                            bonus, rec.stock_code, rec.rank)
 
             # 이미 포지션이 있으면 스킵
             existing = self.db.scalar(

@@ -217,7 +217,7 @@ class StrategyRunner:
         # 중복 제거 + 확률 내림차순 → pick_count개 + rank 재부여
         seen: set[str] = set()
         unique: list[dict] = []
-        for p in sorted(all_picks, key=lambda x: x.get("ai_probability") or 0, reverse=True):
+        for p in sorted(all_picks, key=lambda x: x.get("rank") or 999):
             code = p.get("stock_code", "")
             if code and code not in seen:
                 seen.add(code)

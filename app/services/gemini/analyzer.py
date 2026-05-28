@@ -235,7 +235,6 @@ class GeminiAnalyzer:
             hold_days=hold_days,
             target_pct=float(target_pct),
             stop_loss_pct=float(stop_loss_pct),
-            min_probability=float(min_probability),
             pick_count=pick_count,
             filter_guidance=guidance,
         )
@@ -286,7 +285,6 @@ class GeminiAnalyzer:
             hold_days=hold_days,
             target_pct=float(target_pct),
             stop_loss_pct=float(stop_loss_pct),
-            min_probability=float(min_probability),
             pick_count=pick_count,
             filter_guidance=guidance,
         )

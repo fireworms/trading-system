@@ -179,7 +179,7 @@ trading_system/
 2. auto_trade=ON 구독자 중 "오늘 분석 완료됐는데 포지션 없는 것" 탐색
 3. 크로스 시그널 맵 사전 계산 — 오늘 모든 전략 추천 집계, 종목별 다양성 점수
 4. KOSPI/KOSDAQ 지수 현황 조회 (-2% 이상 급락 시 전체 보류)
-5. 종목별 유효 확률 = ai_probability + cross_signal_bonus (상한 +10%) 로 정렬 후 매수
+5. cross_signal_bonus 우선 정렬, 동점이면 AI 추천 rank 순으로 매수 (ai_probability 미사용)
 6. TTTC8001R로 실 체결가 즉시 조회 → Position(entry_price=fill_price, peak_price=fill_price)
 
 ### 포지션 모니터링 (09:05, 12:00, 14:50)
@@ -244,7 +244,11 @@ trading_system/
 | JSON 정제 | gemma-4-31b-it | - |
 
 ## Stage4 억지 픽 방어 구조 (Gemini 성향 대응)
-- **ai_probability 재정의** (STAGE4A): "보유기간 내 손절라인을 단 한 번도 터치하지 않고 목표수익률에 먼저 도달할 확률"로 명시. 고변동성 함정 종목 넛지 필터 효과. 평가 우선순위: MA60 지지선이 손절선 위에 있는가 → 기관·외국인 수급 방어 여부 → RSI 30~55 구간 (추가 낙폭 여지 적음)
+- **확률 폐기, 순위 기반 구조로 전환** (2026-05-28): verifier 데이터 515건에서 ai_probability와 실제 승률 간 상관관계 없음 확인 (60~70%→22.9%, 80~90%→18.3%). LLM은 종목 선별(큐레이션)만 담당, 수치 확률 산출 완전 제거
+  - STAGE4A: ai_probability 제거, 서술 순서가 곧 추천 순위
+  - STAGE4B: ai_probability 필드 제거, rank(언급 순서)만 추출
+  - executor 정렬: `ai_probability + cross_signal_bonus` → `cross_signal_bonus 우선, 동점이면 rank`
+  - min_probability 필터 제거 (DB 컬럼은 유지, executor에서 미사용)
 - **B-gate** (항상 동작): Stage4A/B 프롬프트에 "0개 반환 허용" 명시 — pick_count 충족 위한 억지 선정 금지
 - **A-gate** (verified 데이터 20건 이상 시 자동 활성화):
   - 매 run마다 `kospi_at_run` 저장, 16:00 잡이 `kospi_change_1d` 채움
