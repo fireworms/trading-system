@@ -57,9 +57,10 @@ def generate_backtest_dates(base_date: date, hold_days: int) -> tuple[list[date]
 class BacktestRunner:
     """전략 백테스트 실행기."""
 
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, version_tag: str = "backtest-v2-momentum"):
         self.db = db
         self.analyzer = GeminiAnalyzer()
+        self.version_tag = version_tag
 
     def run_backtest(self, strategy: Strategy, base_date: date) -> dict:
         """
@@ -107,6 +108,13 @@ class BacktestRunner:
             logger.warning("No historical stock data for %s", target_date)
             return None
 
+        # 1.5 라이브 경로와 동일하게 모멘텀 prefilter 적용 (추세·RSI·거래량 기준 20개 압축)
+        #     백테스트는 과거 수급(net_buy) 복원 불가 → buy_score 중립, 추세/RSI가 선별 주도
+        from app.services.trading.runner import StrategyRunner
+        stock_data = StrategyRunner._prefilter_stocks(
+            stock_data, getattr(strategy, "candidate_filter", "mixed"), target=20
+        )
+
         # 2. AI Stage4 (Lite 모델)
         picks_result = self.analyzer.stage4_picks_backtest(
             stocks_data=stock_data,
@@ -128,7 +136,7 @@ class BacktestRunner:
             run_date=target_date,
             ai_model_used=picks_result.model_used,
             stage4_model=picks_result.model_used,
-            prompt_version="backtest-v1",
+            prompt_version=self.version_tag,
             is_backtest=True,
             raw_response={"picks": picks_result.raw},
         )
@@ -136,17 +144,21 @@ class BacktestRunner:
         self.db.flush()
 
         price_map = {s["stock_code"]: Decimal(str(s["current_price"])) for s in stock_data if s.get("current_price")}
+        tgt_mult  = Decimal("1") + strategy.target_pct / Decimal("100")
+        stop_mult = Decimal("1") - strategy.stop_loss_pct / Decimal("100")
         recs = []
         for pick in picks_result.picks:
             code = pick.get("stock_code", "")
             raw_price = pick.get("current_price") or price_map.get(code)
+            entry = Decimal(str(raw_price)) if raw_price else None
+            # picks엔 target/stop이 없으므로(확률·목표가 폐기) 진입가×전략 파라미터로 산출
             rec = Recommendation(
                 run_id=run.run_id,
                 stock_code=code,
                 stock_name=pick.get("stock_name", ""),
-                current_price_at_rec=Decimal(str(raw_price)) if raw_price else None,
-                target_price=Decimal(str(pick.get("target_price", 0))) if pick.get("target_price") else None,
-                stop_loss_price=Decimal(str(pick.get("stop_loss_price", 0))) if pick.get("stop_loss_price") else None,
+                current_price_at_rec=entry,
+                target_price=(entry * tgt_mult) if entry else None,
+                stop_loss_price=(entry * stop_mult) if entry else None,
                 ai_probability=Decimal(str(pick.get("ai_probability", 0))) if pick.get("ai_probability") else None,
                 ai_reason=pick.get("ai_reason"),
                 historical_basis=pick.get("historical_basis"),
@@ -173,7 +185,7 @@ class BacktestRunner:
 
         # 5. 랜덤 대조군 (AI와 동일한 종목 풀에서 pick_count개 무작위 선택)
         random_avg_pnl = self._compute_random_baseline(
-            stock_data, target_date, strategy.hold_days, strategy.pick_count, client
+            stock_data, target_date, strategy, client
         )
 
         # raw_response에 랜덤 결과 포함 저장
@@ -228,10 +240,15 @@ class BacktestRunner:
         return result
 
     def _compute_random_baseline(
-        self, stock_data: list[dict], target_date: date, hold_days: int, pick_count: int, client
+        self, stock_data: list[dict], target_date: date, strategy: Strategy, client
     ) -> float | None:
-        """AI와 동일한 종목 풀에서 랜덤 pick_count개 선택 후 평균 pnl 계산."""
+        """AI와 동일한 종목 풀에서 랜덤 pick_count개 선택 후 평균 pnl 계산.
+        AI와 동일한 목표/손절 청산 규칙·클램프를 적용해 공정 비교."""
         import random as _random
+        pick_count = strategy.pick_count
+        hold_days = strategy.hold_days
+        tgt_mult  = 1.0 + float(strategy.target_pct) / 100.0
+        stop_mult = 1.0 - float(strategy.stop_loss_pct) / 100.0
         period_start = target_date.strftime("%Y%m%d")
         period_end = (target_date + timedelta(days=hold_days)).strftime("%Y%m%d")
 
@@ -248,16 +265,27 @@ class BacktestRunner:
                 if not future:
                     continue
                 entry = float(s["current_price"])
-                end_price = float(future[-1].close)
-                if entry > 0:
-                    pnls.append((end_price - entry) / entry * 100)
+                if entry <= 0:
+                    continue
+                target, stop = entry * tgt_mult, entry * stop_mult
+                exit_price = float(future[-1].close)
+                for b in future:                       # 손절-우선 청산
+                    if b.low <= stop:
+                        exit_price = stop
+                        break
+                    if b.high >= target:
+                        exit_price = target
+                        break
+                pnl = (exit_price - entry) / entry * 100
+                pnls.append(max(-100.0, min(200.0, pnl)))
             except Exception:
                 continue
 
         return round(sum(pnls) / len(pnls), 4) if pnls else None
 
     def _verify_pick(self, rec: Recommendation, run_date: date, hold_days: int, client) -> Verification | None:
-        """단일 픽 즉시 검증. hold_days 기간 OHLCV로 성공/실패 판정."""
+        """단일 픽 즉시 검증. 일봉 날짜순 순회 → 손절/목표가 중 먼저 터치되는 쪽 판정.
+        verifier.py와 동일 convention: 같은 날 둘 다 터치 시 손절 우선, pnl은 실제 청산가 기준."""
         try:
             bars = client.get_ohlcv(rec.stock_code, days=100)
             period_start = run_date.strftime("%Y%m%d")
@@ -270,22 +298,34 @@ class BacktestRunner:
 
             max_high = max((b.high for b in relevant), default=entry)
             max_low = min((b.low for b in relevant), default=entry)
-            end_price = Decimal(str(relevant[-1].close)) if relevant else entry
+            target = rec.target_price
+            stop = rec.stop_loss_price
 
-            verdict = VerificationResult.FAIL
-            if rec.target_price and max_high >= rec.target_price:
-                verdict = VerificationResult.SUCCESS
+            # 날짜순 순회: 손절 먼저 터치 → FAIL(손절가 청산), 목표 먼저 → SUCCESS(목표가 청산)
+            verdict, exit_price = VerificationResult.FAIL, Decimal(str(relevant[-1].close))
+            for b in relevant:
+                low, high = Decimal(str(b.low)), Decimal(str(b.high))
+                if stop and low <= stop:          # 같은 날 동시 터치 시 손절 우선
+                    verdict, exit_price = VerificationResult.FAIL, stop
+                    break
+                if target and high >= target:
+                    verdict, exit_price = VerificationResult.SUCCESS, target
+                    break
 
-            pnl = (end_price - entry) / entry * 100
+            pnl = float((exit_price - entry) / entry * 100)
+            # 분할/상폐 등 데이터 오류로 인한 비현실적 수익률 클램프 (KR 일일 등락 ±30%)
+            if pnl > 200 or pnl < -100:
+                logger.warning("Clamp implausible pnl %.1f%% for %s (split/bad data?)", pnl, rec.stock_code)
+                pnl = max(-100.0, min(200.0, pnl))
 
             return Verification(
                 rec_id=rec.rec_id,
                 verified_at=datetime.now(timezone.utc),
-                price_at_verify=end_price,
+                price_at_verify=exit_price,
                 max_high=Decimal(str(max_high)),
                 max_low=Decimal(str(max_low)),
                 result=verdict,
-                pnl_pct=Decimal(str(round(float(pnl), 4))),
+                pnl_pct=Decimal(str(round(pnl, 4))),
             )
         except Exception as e:
             logger.warning("Verify failed for %s: %s", rec.stock_code, e)

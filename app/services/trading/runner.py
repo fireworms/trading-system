@@ -157,8 +157,9 @@ class StrategyRunner:
                 )
         return result
 
+    @staticmethod
     def _prefilter_stocks(
-        self, stocks_data: list[dict], candidate_filter: str, target: int = 20
+        stocks_data: list[dict], candidate_filter: str, target: int = 20
     ) -> list[dict]:
         """추세·수급·거래량 기준으로 target개로 압축. 모멘텀 리더 보존 + 환각 억제용."""
         def _score(s: dict) -> float:

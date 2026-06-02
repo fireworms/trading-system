@@ -476,6 +476,14 @@ TELEGRAM_BOT_TOKEN=      # 선택
 - `_verify_recommendation(rec, run, strategy, client, today)`: 일봉 날짜순 순회 → 손절/목표가 중 먼저 터치되는 쪽 판정 (같은 날이면 손절 우선). pnl_pct는 실제 exit_price 기준. period_start/end는 반드시 strftime("%Y%m%d") — get_ohlcv() bar.date가 YYYYMMDD 포맷이므로 ISO 포맷과 혼용 금지
 - `_update_performance_score(db, version_no)`: 검증 완료 후 prompt_version.performance_score 갱신
 
+### app/services/trading/backtester.py
+- `BacktestRunner(db, version_tag)`: 과거 날짜 Stage4 재현 + 즉시 검증. version_tag로 run 라벨링(A/B 비교용)
+- `run_backtest(strategy, base_date)`: base_date ±12일/3일간격 최대 9개 날짜 실행 → 집계
+- `_run_single_date()`: 과거데이터 수집 → **`StrategyRunner._prefilter_stocks` 적용(라이브 경로 일치)** → `stage4_picks_backtest` → 저장 → 검증. target_price/stop_loss_price는 picks에 없으므로 진입가×전략 파라미터로 산출(확률·목표가 폐기 이후 필수)
+- `_verify_pick()`: 일봉 날짜순 손절-우선 청산 모델(verifier.py와 동일 convention). pnl 비현실값(분할/상폐) ±클램프(-100~+200%)
+- `_compute_random_baseline(stock_data, target_date, strategy, client)`: 동일 풀 랜덤 픽 + **AI와 동일 목표/손절 청산·클램프** 적용(공정 비교)
+- **구조적 한계**: 매크로를 스텁(`market_theme="백테스트"`)함 — Stage1 그라운딩은 현재시점이라 과거날짜 lookahead 방지. 따라서 **매크로 정합 효과는 백테스트로 측정 불가, 기술기준만 평가**됨
+
 ### app/services/telegram/notifier.py
 - `TelegramNotifier`: 멀티유저 텔레그램 알림. chat_id별 개별 전송
 - `notify_admins_warning(title, detail)`: `⚠️ [WARNING]` — 정책 경고 (모닝게이트/뉴스차단/손절선 강화 등)
