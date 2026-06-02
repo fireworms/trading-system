@@ -159,6 +159,10 @@ def _verify_recommendation(
         if entry and float(entry) > 0
         else 0.0
     )
+    # 분할/상폐 등 데이터 오류로 인한 비현실적 수익률 클램프 (KR 일일 등락 ±30%)
+    if pnl > 200 or pnl < -100:
+        logger.warning("Clamp implausible pnl %.1f%% for rec %s (split/bad data?)", pnl, rec.rec_id)
+        pnl = max(-100.0, min(200.0, pnl))
 
     return Verification(
         rec_id=rec.rec_id,
