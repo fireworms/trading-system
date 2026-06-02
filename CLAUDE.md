@@ -243,6 +243,14 @@ trading_system/
 | Thesis 재검증 (10:00, 14:00) | gemini-2.5-flash | - |
 | JSON 정제 | gemma-4-31b-it | - |
 
+## Stage4 선정 의도 — 탑다운 매크로 모멘텀 (2026-06-02 복원)
+- **선정 철학**: Stage1~3가 짚은 "수혜 예상 섹터"를 Stage4가 그대로 이어받아 **그 섹터의 추세 강한 종목을 탄다** (탑다운 매크로 모멘텀). 역발상/눌림목 매수 아님
+- **드리프트 교정 배경**: 5/14~5/28 사이 STAGE4A 본문에 【하방안정성 우선】(RSI 30~55 눌린 종목) 역발상 기준이 들어가 Stage1~3 모멘텀 의도와 충돌 → 매크로 무시하고 소외 소형주 픽 → 강세장 승률 22.5%. 검증 528건 분석 후 (A) 모멘텀으로 복원
+  - STAGE4A 본문: 【매크로 수혜 + 추세 모멘텀】 — 수혜섹터 정합 / 현재가>MA20≥MA60 정배열 / 수급유입 / RSI 50~70 (RSI<45 추세미형성 제외, >75 과열 자제)
+  - `_prefilter_stocks`: RSI~60 + 추세정배열 가점 + 거래량, RSI 밴드 45~78 (fallback 40~82)
+  - `_FILTER_GUIDANCE` mixed: 눌림목 유도("MA20 −10%~+5%") 제거 → "MA20 위·근접, 추세 살아있는"
+- **하방방어는 선정이 아닌 다른 레이어**: A-gate(하락장 키워드 시 Stage4 스킵), morning_gate, 뉴스 듀얼시그널, 손절/trailing/Circuit Breaker가 담당. Stage4 선정 기준에 역발상을 다시 넣지 말 것
+
 ## Stage4 억지 픽 방어 구조 (Gemini 성향 대응)
 - **확률 폐기, 순위 기반 구조로 전환** (2026-05-28): verifier 데이터 515건에서 ai_probability와 실제 승률 간 상관관계 없음 확인 (60~70%→22.9%, 80~90%→18.3%). LLM은 종목 선별(큐레이션)만 담당, 수치 확률 산출 완전 제거
   - STAGE4A: ai_probability 제거, 서술 순서가 곧 추천 순위
@@ -258,7 +266,7 @@ trading_system/
 
 ## Stage4 환각 방어 구조
 Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
-1. **사전필터**: KIS 75개 → RSI·수급·거래량 기준 20개 압축 (runner._prefilter_stocks)
+1. **사전필터**: KIS 75개 → 추세(MA정배열)·RSI·수급·거래량 기준 20개 압축 (runner._prefilter_stocks)
 2. **그룹 분할**: 10개씩 2그룹, 각 그룹 독립 실행 (runner._run_stage4_grouped)
 3. **2단계 생성**:
    - Stage4-A: Flash-preview가 자유형식 텍스트로 분석 ("330860(네패스아크) 기관 순매수...")
@@ -424,7 +432,7 @@ TELEGRAM_BOT_TOKEN=      # 선택
   - volume: KIS 시총순위 API 실시간
   - mixed: largecap 우선 + stride
 - `_collect_stock_data(candidates)`: KIS API로 종목별 현재가/RSI/이평선/수급 수집 + stock_name DB 주입
-- `_prefilter_stocks(stock_data, n=20)`: RSI·수급·거래량 점수로 75개→20개 압축 (Stage4 컨텍스트 축소)
+- `_prefilter_stocks(stock_data, n=20)`: 추세정배열·RSI(~60)·수급·거래량 점수로 75개→20개 압축 (모멘텀 리더 보존 + Stage4 컨텍스트 축소)
 - `_run_stage4_grouped(...)`: 20개를 10개씩 2그룹 분할 → 각 그룹 Stage4 독립 실행 → 확률순 집계
 - `_is_market_unfavorable(market_theme)`: `_BEAR_KEYWORDS` 감지 → Stage4 스킵 여부 (A-gate, 검증 20건+ 시 활성화)
 

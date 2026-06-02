@@ -160,24 +160,34 @@ class StrategyRunner:
     def _prefilter_stocks(
         self, stocks_data: list[dict], candidate_filter: str, target: int = 20
     ) -> list[dict]:
-        """RSI·수급·거래량 기준으로 target개로 압축. 환각 억제용."""
+        """추세·수급·거래량 기준으로 target개로 압축. 모멘텀 리더 보존 + 환각 억제용."""
         def _score(s: dict) -> float:
             rsi = s.get("rsi_14") or 50.0
             net_buy_5d = (s.get("frgn_net_buy_5d") or 0) + (s.get("orgn_net_buy_5d") or 0)
             avg_vol = s.get("avg_volume_20d") or 1
             recent = s.get("recent_ohlcv", [])
             vol_ratio = (recent[0]["volume"] / avg_vol) if recent else 0.0
+            price = s.get("current_price")
+            ma20, ma60 = s.get("ma20"), s.get("ma60")
 
-            rsi_score = max(0.0, 1.0 - abs(rsi - 55) / 30)   # 55 근처 최고
+            # RSI: 상승 모멘텀 진입 구간 60 근처 최고 (과매도 눌림목 아님)
+            rsi_score = max(0.0, 1.0 - abs(rsi - 60) / 30)
+            # 추세 정배열: 현재가 > MA20 ≥ MA60 우상향이면 가점
+            trend_score = 0.0
+            if price and ma20 and ma60:
+                if price > ma20 and ma20 >= ma60:
+                    trend_score = 1.0
+                elif price > ma20 or price > ma60:
+                    trend_score = 0.5
             buy_score = 1.0 if net_buy_5d > 0 else 0.0
-            vol_score = min(vol_ratio / 2.0, 1.0) if candidate_filter == "volume" else 0.5
+            vol_score = min(vol_ratio / 2.0, 1.0)
 
-            return rsi_score * 0.4 + buy_score * 0.3 + vol_score * 0.3
+            return rsi_score * 0.3 + trend_score * 0.3 + buy_score * 0.2 + vol_score * 0.2
 
-        # 1차: RSI 극단값 제거 (30 미만 / 72 초과)
-        strict = [s for s in stocks_data if s.get("rsi_14") is not None and 30 <= s["rsi_14"] <= 72]
+        # 1차: 과매도(추세 미형성)·과열(블로우오프) 제거 → 모멘텀 진입 구간만
+        strict = [s for s in stocks_data if s.get("rsi_14") is not None and 45 <= s["rsi_14"] <= 78]
         pool = strict if len(strict) >= target else (
-            [s for s in stocks_data if s.get("rsi_14") is not None and 25 <= s["rsi_14"] <= 78]
+            [s for s in stocks_data if s.get("rsi_14") is not None and 40 <= s["rsi_14"] <= 82]
         )
         if len(pool) < target:
             pool = stocks_data  # 그래도 부족하면 전체
