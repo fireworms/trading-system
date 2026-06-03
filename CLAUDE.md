@@ -157,7 +157,7 @@ trading_system/
 - verified_1d_at, verified_3d_at
 
 ### app_config (key-value)
-- key: news_auto_trade_paused, news_pause_reason, news_last_check_at 등
+- key: news_auto_trade_paused, news_pause_reason, news_pause_at, news_last_check_at 등
 
 ### prompt_versions
 - stage(1~4), version_no, prompt_text, performance_score
@@ -300,7 +300,9 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 - **히스토리 컨텍스트**: 최근 15건 이벤트 + 실제 시장 영향이 프롬프트에 포함 → 판단 자동 보정
 - **저장**: NORMAL 포함 모든 이벤트 news_events에 저장 (감지 시점 KOSPI/KOSDAQ 레벨 포함)
 - **사후 검증**: 16:00 잡이 1일/3일 경과분의 실제 KOSPI/KOSDAQ 변화율 자동 계산
-- **WARNING 감지 시**: news_auto_trade_paused=true + 텔레그램 어드민 알림 → 수동 재개
+- **WARNING 감지 시**: news_auto_trade_paused=true + news_pause_at(KST 날짜) 기록 + 텔레그램 어드민 알림
+  - **익일 자동 해제**: 다음 거래일 08:00 morning_gate가 news_pause_at ≠ 오늘이면 news_auto_trade_paused=false로 자동 해제 (WARNING은 시점 이벤트인데 수동 재개만 가능해 상시 지정학 노이즈로 무한 정지되던 문제 교정). 오늘 진짜 야간 리스크면 같은 게이트가 morning_gate_paused로 재차단 → 안전망 유지
+  - 사용자 수동 정지(user_strategies.is_auto_trade=false)는 별개 레이어 — executor가 먼저 검사, 글로벌 해제와 무관하게 유지됨
 
 ## 실시간 WebSocket
 - **서버사이드 포지션 모니터** (`realtime_monitor.py`): 프론트 연결 무관하게 HOLDING 포지션 종목 상시 KIS 구독
@@ -458,7 +460,7 @@ TELEGRAM_BOT_TOKEN=      # 선택
 
 ### app/services/news/watcher.py
 - `check_news(db)`: gemini-2.5-flash + google_search → severity 판정 → news_events 저장 → `_apply_dual_signal_action()`
-- `morning_gate_check()`: 08:00 실행. 미국 선물/지정학 체크 → WARNING/CRITICAL 시 `morning_gate_paused=true`
+- `morning_gate_check()`: 08:00 실행. 시작부에서 전날 켜진 news_auto_trade_paused stale 자동 해제(news_pause_at ≠ 오늘 KST) → 미국 선물/지정학 체크 → WARNING/CRITICAL 시 `morning_gate_paused=true`
 - `run_news_check_and_act()`: 스케줄러에서 호출. 장중 120분 간격 체크 (10분 tick 기반)
 - `_apply_dual_signal_action(db, result)`: AI 판정 × KOSPI 등락률 교차 검증 → emergency_close / tighten_stop / 알림만
 - `check_position_theses(db)`: 10:00/14:00. 2일+ HOLDING 포지션 8개씩 그룹 → gemini-2.5-flash + google_search thesis 재검증 → invalid+손실 시 조기 청산

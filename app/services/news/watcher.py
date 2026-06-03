@@ -194,6 +194,28 @@ def morning_gate_check() -> None:
         set_config(db, "morning_gate_paused", "false")
         set_config(db, "morning_gate_reason", "")
 
+        # 전날 켜진 뉴스 일시중단(news_auto_trade_paused) 자동 해제.
+        # WARNING은 시점 이벤트인데 수동 재개만 가능해 무한 정지되던 문제 교정 —
+        # 오늘 실제 야간 리스크는 아래 게이트 체크가 morning_gate_paused로 재차단한다.
+        if get_config(db, "news_auto_trade_paused", "false") == "true":
+            from zoneinfo import ZoneInfo
+            pause_at  = get_config(db, "news_pause_at", "")
+            today_kst = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
+            if pause_at != today_kst:
+                set_config(db, "news_auto_trade_paused", "false")
+                set_config(db, "news_pause_reason", "")
+                logger.info("Stale news pause auto-cleared (set=%s, today=%s)",
+                            pause_at or "unknown", today_kst)
+                try:
+                    from app.services.telegram.notifier import notify_admins_warning
+                    notify_admins_warning(
+                        "뉴스 일시중단 자동 해제",
+                        f"전날({pause_at or '미상'}) WARNING 기반 매수 중단이 자동 해제됐습니다. "
+                        f"오늘 야간 리스크는 모닝 게이트가 별도 평가합니다.",
+                    )
+                except Exception as e:
+                    logger.error("Telegram alert failed: %s", e)
+
         client_g = genai.Client(api_key=api_key)
         config = types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())]
@@ -280,8 +302,12 @@ def run_news_check_and_act() -> None:
         db.add(event)
 
         if result["severity"] == "WARNING":
+            from zoneinfo import ZoneInfo
             set_config(db, "news_auto_trade_paused", "true")
             set_config(db, "news_pause_reason", result["event_description"])
+            # 익일 자동 해제용 — pause 발생 KST 날짜 기록 (morning_gate가 stale 판정)
+            set_config(db, "news_pause_at",
+                       datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d"))
 
         db.commit()
 
