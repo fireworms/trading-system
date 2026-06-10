@@ -287,7 +287,10 @@ class KISClient:
             return None
 
     def get_index_change_pct(self) -> dict:
-        """KOSPI/KOSDAQ 현재 등락률 조회."""
+        """KOSPI/KOSDAQ 현재 등락률 조회.
+        조회 실패 시 해당 지수 값은 None — 0.0(평온한 시장)으로 위장하지 않는다.
+        호출자는 None을 '확인 불가'로 취급해 안전 방향으로 처리할 것 (fail-safe).
+        """
         result = {}
         for name, code in [("KOSPI", "0001"), ("KOSDAQ", "1001")]:
             try:
@@ -297,9 +300,11 @@ class KISClient:
                     {"FID_COND_MRKT_DIV_CODE": "U", "FID_INPUT_ISCD": code},
                 )
                 o = data.get("output", {})
-                result[name] = float(o.get("bstp_nmix_prdy_ctrt") or 0)
-            except Exception:
-                result[name] = 0.0
+                val = o.get("bstp_nmix_prdy_ctrt")
+                result[name] = float(val) if val not in (None, "") else None
+            except Exception as e:
+                logger.warning("Index change fetch failed (%s): %s", name, e)
+                result[name] = None
         return result
 
     def get_index_overview(self, code: str) -> dict:

@@ -347,6 +347,8 @@ TELEGRAM_BOT_TOKEN=      # 선택
 - 자동매매 실행 전 is_auto_trade + news_auto_trade_paused + cb_paused_{user_id} 플래그 확인
 - raw_response['macro']['market_theme'] 에서 하락장 판단 (MacroAnalysis 모델에는 없음)
 - 매수 스킵 fallback: AI 확인 실패 시 전종목 skip (안전 방향)
+- `get_index_change_pct()`는 실패 시 해당 지수 None 반환 (0.0으로 위장 금지) — 호출부는 None을 "확인 불가"로 보고 안전 방향 처리 (09:20 매수: 전체 스킵+알림 / 듀얼시그널: 어드민 수동확인 알림). 2026-06-10 fail-open 교정
+- 하락장 매수금 절반은 `execute_buys_for_run(invest_override=...)` 일회성 파라미터 사용 — `sub.invest_amount_per_pick` 모델 직접 수정 금지 (중간 커밋/예외 시 구독 설정 영구 오염)
 - HTTP 클라이언트: 전체 코드 httpx 통일 (requests 사용 금지)
 - KIS API rate limit: client.py `_RateLimiter(18/초)` 전역 싱글턴 — _get/_post 모든 호출 자동 적용
 - KIS 토큰 캐시: `~/.kis_token_cache.json` (재부팅 후에도 유지). `get_kis_client_from_account()`는 account_id 기준 싱글턴 반환 — 인메모리 토큰 공유로 중복 발급 방지

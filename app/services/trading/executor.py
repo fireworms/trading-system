@@ -139,8 +139,10 @@ class TradeExecutor:
         sub: UserStrategy,
         run: RecommendationRun,
         cross_signal: dict[str, float] | None = None,
+        invest_override: Decimal | None = None,
     ) -> None:
-        """추천 run의 종목들을 구독자 계좌로 시장가 매수."""
+        """추천 run의 종목들을 구독자 계좌로 시장가 매수.
+        invest_override: 종목당 투자금 일회성 변경 (하락장 절반 등). None이면 구독 설정값."""
         if not sub.is_auto_trade:
             logger.warning("Auto trade is OFF for sub=%s, skipping", sub.id)
             return
@@ -200,7 +202,8 @@ class TradeExecutor:
                 current_price = Decimal(str(stock_info["current_price"]))
 
                 # 수량
-                quantity = int(sub.invest_amount_per_pick // current_price)
+                invest_amount = invest_override if invest_override is not None else sub.invest_amount_per_pick
+                quantity = int(invest_amount // current_price)
                 if quantity <= 0:
                     logger.warning("invest_amount too small for %s price=%s", rec.stock_code, current_price)
                     continue
@@ -291,18 +294,34 @@ class TradeExecutor:
         from app.services.kis.client import get_kis_client
 
         # 지수 급락 시 매수 전체 보류
+        # 지수 체크 — 확인 불가 시 매수 진행이 아니라 전체 스킵 (fail-safe)
         try:
             market_client = get_kis_client(self.db)
             market_status = market_client.get_index_change_pct()
-            kospi_chg  = market_status.get("KOSPI", 0)
-            kosdaq_chg = market_status.get("KOSDAQ", 0)
-            logger.info("Market status: KOSPI %+.2f%% KOSDAQ %+.2f%%", kospi_chg, kosdaq_chg)
-            if kospi_chg <= -2.0 or kosdaq_chg <= -2.0:
-                logger.warning("Market down — skipping all buys (KOSPI=%+.2f%% KOSDAQ=%+.2f%%)",
-                               kospi_chg, kosdaq_chg)
-                return
+            kospi_chg  = market_status.get("KOSPI")
+            kosdaq_chg = market_status.get("KOSDAQ")
         except Exception as e:
-            logger.warning("Failed to get index status: %s", e)
+            logger.error("Index status fetch failed: %s", e)
+            kospi_chg = kosdaq_chg = None
+
+        if kospi_chg is None or kosdaq_chg is None:
+            logger.warning("Index status unavailable — skipping ALL buys (fail-safe)")
+            try:
+                from app.services.telegram.notifier import notify_admins_warning
+                notify_admins_warning(
+                    "자동매수 보류 — 지수 확인 불가",
+                    "KOSPI/KOSDAQ 등락률 조회에 실패해 오늘 09:20 매수를 전체 보류했습니다. "
+                    "KIS API 상태를 확인해주세요.",
+                )
+            except Exception as _e:
+                logger.error("Telegram alert failed: %s", _e)
+            return
+
+        logger.info("Market status: KOSPI %+.2f%% KOSDAQ %+.2f%%", kospi_chg, kosdaq_chg)
+        if kospi_chg <= -2.0 or kosdaq_chg <= -2.0:
+            logger.warning("Market down — skipping all buys (KOSPI=%+.2f%% KOSDAQ=%+.2f%%)",
+                           kospi_chg, kosdaq_chg)
+            return
 
         subs = self.db.scalars(
             select(UserStrategy).where(
@@ -357,14 +376,14 @@ class TradeExecutor:
             is_bearish = any(kw in market_theme for kw in bearish_keywords)
 
             try:
+                invest_override = None
                 if is_bearish:
-                    original = sub.invest_amount_per_pick
-                    sub.invest_amount_per_pick = (original / 2).quantize(Decimal("1"))
+                    # DB 모델을 직접 수정하지 않고 일회성 파라미터로 전달
+                    # (모델 수정 방식은 도중 예외/중간 커밋 시 구독 설정이 영구 반토막되는 버그)
+                    invest_override = (sub.invest_amount_per_pick / 2).quantize(Decimal("1"))
                     logger.info("Bearish market — invest halved for sub=%s", sub.id)
-                    self.execute_buys_for_run(sub, run, cross_signal=cross_signal)
-                    sub.invest_amount_per_pick = original
-                else:
-                    self.execute_buys_for_run(sub, run, cross_signal=cross_signal)
+                self.execute_buys_for_run(sub, run, cross_signal=cross_signal,
+                                          invest_override=invest_override)
             except Exception as e:
                 logger.error("execute_pending_buys failed for sub=%s: %s", sub.id, e)
 
@@ -603,17 +622,34 @@ class TradeExecutor:
         ).all()
 
         closed = 0
+        failed: list[str] = []
         for pos in positions:
             try:
                 client = get_kis_client_from_account(pos.account)
                 current_price = client.get_current_price(pos.stock_code)
                 self._close_position(pos, current_price, PositionStatus.MANUAL_EXIT, client)
-                closed += 1
+                if pos.status == PositionStatus.HOLDING:
+                    # _close_position이 매도 실패로 조기 return한 경우 (status 미변경)
+                    failed.append(pos.stock_code)
+                else:
+                    closed += 1
             except Exception as e:
                 logger.error("Emergency close failed for %s: %s", pos.stock_code, e)
+                failed.append(pos.stock_code)
 
         self.db.commit()
-        logger.warning("Emergency closed %d positions: %s", closed, reason)
+        logger.warning("Emergency closed %d positions (%d failed): %s", closed, len(failed), reason)
+
+        if failed:
+            # 부분 실패 은폐 방지 — 성공 건수만 알리면 실패 포지션이 방치됨
+            try:
+                from app.services.telegram.notifier import notify_admins_error
+                notify_admins_error(
+                    "긴급 청산 일부 실패",
+                    f"{len(failed)}건 매도 실패 — 수동 청산이 필요합니다: {', '.join(failed)}",
+                )
+            except Exception as e:
+                logger.error("Telegram alert failed: %s", e)
         return closed
 
     def tighten_stop_losses(self, reason: str) -> int:

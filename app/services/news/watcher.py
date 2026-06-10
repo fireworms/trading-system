@@ -375,13 +375,29 @@ def _apply_dual_signal_action(db, news_result: dict) -> None:
     from app.services.trading.executor import TradeExecutor
     from app.services.telegram.notifier import notify_admins_error
 
+    severity_pre = news_result["severity"]
     try:
         client = get_kis_client(db)
         market = client.get_index_change_pct()
-        kospi_chg = float(market.get("KOSPI", 0))
+        kospi_chg = market.get("KOSPI")
     except Exception as e:
         logger.warning("Dual signal: KOSPI change fetch failed: %s", e)
+        kospi_chg = None
+
+    if kospi_chg is None:
+        # 교차검증 불가 — 조용히 무조치가 아니라 어드민에게 수동 확인 요청
+        logger.error("Dual signal: index unavailable while severity=%s — manual check needed", severity_pre)
+        try:
+            notify_admins_error(
+                f"뉴스 {severity_pre} — 지수 교차검증 불가",
+                f"{news_result['event_description']}\n\n"
+                f"KOSPI 등락률 조회에 실패해 자동 조치(청산/손절강화) 판단이 불가합니다. "
+                f"시장 상황을 수동으로 확인해주세요.",
+            )
+        except Exception as e:
+            logger.error("Telegram alert failed: %s", e)
         return
+    kospi_chg = float(kospi_chg)
 
     severity = news_result["severity"]
     reason   = news_result["event_description"]
@@ -667,26 +683,35 @@ def check_position_theses() -> None:
             in_loss = current_price < pos.entry_price
             stock_name = pos.recommendation.stock_name if pos.recommendation else pos.stock_code
 
-            if verdict == "invalid" and confidence >= _THESIS_CONFIDENCE_MIN:
-                if in_loss:
-                    logger.warning("Thesis invalid → early close: %s", pos.stock_code)
-                    executor._close_position(pos, current_price, PositionStatus.MANUAL_EXIT, client_k)
-                    db.commit()
-                    alerts.append(f"[{stock_name}] thesis 무효화 → 조기 청산 (손실 {float((current_price-pos.entry_price)/pos.entry_price*100):+.1f}%)\n사유: {issues}")
+            # 포지션별 격리 — 한 포지션의 예외가 나머지 검증/알림을 막지 않도록
+            try:
+                if verdict == "invalid" and confidence >= _THESIS_CONFIDENCE_MIN:
+                    if pos.strategy is None:
+                        # 전략 없는 수동매수: stop_loss_pct 없음 → 자동 조치 불가, 알림만
+                        alerts.append(f"[{stock_name}] thesis 무효화 — 전략 미연결 수동매수라 자동 조치 불가, 수동 확인 필요\n사유: {issues}")
+                        continue
+                    if in_loss:
+                        logger.warning("Thesis invalid → early close: %s", pos.stock_code)
+                        executor._close_position(pos, current_price, PositionStatus.MANUAL_EXIT, client_k)
+                        db.commit()
+                        alerts.append(f"[{stock_name}] thesis 무효화 → 조기 청산 (손실 {float((current_price-pos.entry_price)/pos.entry_price*100):+.1f}%)\n사유: {issues}")
+                    else:
+                        logger.warning("Thesis invalid → tighten stop: %s", pos.stock_code)
+                        from app.services.trading.realtime_monitor import get_monitor
+                        pos.peak_price     = current_price
+                        pos.target_hit_at  = pos.target_hit_at or datetime.now(timezone.utc)
+                        pos.target_hit_peak = current_price
+                        pos.trailing_stop_override = True
+                        get_monitor().force_trailing(str(pos.position_id), current_price)
+                        db.commit()
+                        stop = float(current_price * (1 - pos.strategy.stop_loss_pct / 100))
+                        alerts.append(f"[{stock_name}] thesis 무효화 → 손절선 강화 (현재가 기준 {stop:,.0f}원)\n사유: {issues}")
                 else:
-                    logger.warning("Thesis invalid → tighten stop: %s", pos.stock_code)
-                    from app.services.trading.realtime_monitor import get_monitor
-                    pos.peak_price     = current_price
-                    pos.target_hit_at  = pos.target_hit_at or datetime.now(timezone.utc)
-                    pos.target_hit_peak = current_price
-                    pos.trailing_stop_override = True
-                    get_monitor().force_trailing(str(pos.position_id), current_price)
-                    db.commit()
-                    stop = float(current_price * (1 - pos.strategy.stop_loss_pct / 100))
-                    alerts.append(f"[{stock_name}] thesis 무효화 → 손절선 강화 (현재가 기준 {stop:,.0f}원)\n사유: {issues}")
-            else:
-                # partial or invalid with low confidence → alert only
-                alerts.append(f"[{stock_name}] thesis {verdict} (확신도 {confidence:.0%}) — {issues}")
+                    # partial or invalid with low confidence → alert only
+                    alerts.append(f"[{stock_name}] thesis {verdict} (확신도 {confidence:.0%}) — {issues}")
+            except Exception as e:
+                logger.error("Thesis action failed for %s: %s", pos.stock_code, e)
+                alerts.append(f"[{stock_name}] thesis {verdict} — 자동 조치 중 오류({e}), 수동 확인 필요")
 
         if alerts:
             try:

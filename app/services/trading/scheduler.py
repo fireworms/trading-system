@@ -142,6 +142,7 @@ def job_news_watch_tick() -> None:
         run_news_check_and_act()
     except Exception as e:
         logger.error("News watch tick failed: %s", e)
+        _notify_error("뉴스 감시 tick 실패", str(e))
 
 
 def job_morning_gate() -> None:
@@ -151,6 +152,7 @@ def job_morning_gate() -> None:
         morning_gate_check()
     except Exception as e:
         logger.error("Morning gate check failed: %s", e)
+        _notify_error("모닝 게이트 잡 실패", str(e))
 
 
 def job_thesis_check() -> None:
@@ -160,6 +162,7 @@ def job_thesis_check() -> None:
         check_position_theses()
     except Exception as e:
         logger.error("Thesis check failed: %s", e)
+        _notify_error("Thesis 재검증 잡 실패", str(e))
 
 
 def job_verify_news_events() -> None:
@@ -170,6 +173,7 @@ def job_verify_news_events() -> None:
         verify_run_market_outcomes()
     except Exception as e:
         logger.error("News event verification failed: %s", e)
+        _notify_error("뉴스 이벤트 검증 잡 실패", str(e))
 
 
 def job_backup_db() -> None:
