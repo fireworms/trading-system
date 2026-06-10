@@ -223,11 +223,31 @@ def morning_gate_check() -> None:
                 except Exception as e:
                     logger.error("Telegram alert failed: %s", e)
 
+        # 미증시 수치 백업 (LLM 비의존) — QQQ 전일 등락률 (나스닥 프록시,
+        # 한국 IT 대형주와 상관 가장 높음. 08:00 KST엔 미국 당일 종가가 곧 야간 결과)
+        us_chg = None
+        try:
+            from app.services.kis.client import get_kis_client
+            us = get_kis_client(db).get_us_price_with_change("QQQ", "NAS")
+            if us.get("price", 0) > 0:
+                us_chg = float(us["change_pct"])
+                logger.info("Morning gate: QQQ overnight %+.2f%%", us_chg)
+        except Exception as e:
+            logger.warning("Morning gate: US market fetch failed: %s", e)
+
+        numeric_severity = None
+        if us_chg is not None:
+            if us_chg <= -3.0:
+                numeric_severity = "CRITICAL"
+            elif us_chg <= -1.5:
+                numeric_severity = "WARNING"
+
         client_g = genai.Client(api_key=api_key)
         config = types.GenerateContentConfig(
             tools=[types.Tool(google_search=types.GoogleSearch())]
         )
 
+        llm_futures_pct = None
         try:
             response = client_g.models.generate_content(
                 model=NEWS_MODEL, contents=_MORNING_GATE_PROMPT, config=config,
@@ -240,6 +260,7 @@ def morning_gate_check() -> None:
             result = json.loads(text)
             severity = result.get("severity", "NORMAL")
             reason   = result.get("reason", "")
+            llm_futures_pct = result.get("us_futures_pct")
             logger.info("Morning gate check: severity=%s reason=%s", severity, reason)
         except Exception as e:
             logger.error("Morning gate check failed: %s", e)
@@ -247,12 +268,30 @@ def morning_gate_check() -> None:
                 from app.services.telegram.notifier import notify_admins_error
                 notify_admins_error(
                     "모닝 게이트 체크 실패",
-                    f"08:00 야간 리스크 체크가 실패했습니다: {e}\n"
-                    f"오늘 09:20 매수는 게이트 평가 없이 진행됩니다 — 필요 시 수동 확인해주세요.",
+                    f"08:00 야간 리스크 체크(Gemini)가 실패했습니다: {e}\n"
+                    + (f"수치 게이트(QQQ {us_chg:+.2f}%)는 별도 평가됩니다."
+                       if us_chg is not None else
+                       "미증시 수치 조회도 실패 — 오늘 09:20 매수는 게이트 평가 없이 진행됩니다. 수동 확인해주세요."),
                 )
             except Exception as e2:
                 logger.error("Telegram alert failed: %s", e2)
-            return
+            # Gemini 실패해도 수치 게이트만으로 차단 가능 (fail-safe)
+            severity, reason = "NORMAL", ""
+
+        # LLM 판정과 수치 판정 중 더 나쁜 쪽 채택
+        _rank = {"NORMAL": 1, "WARNING": 2, "CRITICAL": 3}
+        if numeric_severity and _rank[numeric_severity] > _rank.get(severity, 1):
+            severity = numeric_severity
+            suffix = f"수치 게이트: QQQ 전일 {us_chg:+.2f}%"
+            reason = f"{reason} / {suffix}" if reason else suffix
+
+        # 게이트 정확도 사후검증용 기록 (LLM이 읽은 수치 vs 실제 수치)
+        set_config(db, "morning_gate_last_check", json.dumps({
+            "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "severity": severity,
+            "qqq_pct": us_chg,
+            "llm_futures_pct": llm_futures_pct,
+        }))
 
         if severity in ("WARNING", "CRITICAL"):
             set_config(db, "morning_gate_paused", "true")
