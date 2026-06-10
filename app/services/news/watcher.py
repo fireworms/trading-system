@@ -6,6 +6,7 @@ Gemini 그라운딩으로 주가 급변 이슈 감지.
 """
 import json
 import logging
+import time
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -121,27 +122,33 @@ def check_news(db=None) -> dict:
         tools=[types.Tool(google_search=types.GoogleSearch())]
     )
 
-    try:
-        response = client.models.generate_content(
-            model=NEWS_MODEL, contents=prompt, config=config,
-        )
-        text = response.text.strip()
-        if "```" in text:
-            text = text.split("```")[1]
-            if text.startswith("json"):
-                text = text[4:]
-        result = json.loads(text)
-        return {
-            "has_major_event": bool(result.get("has_major_event", False)),
-            "severity":         result.get("severity", "NORMAL"),
-            "event_description": result.get("event_description", ""),
-            "keywords":         result.get("keywords", []),
-            "ai_confidence":    float(result.get("ai_confidence", 0.5)),
-        }
-    except Exception as e:
-        logger.error("News check failed: %s", e)
-        return {"has_major_event": False, "severity": "NORMAL", "event_description": "",
-                "keywords": [], "ai_confidence": 0.0}
+    # 503 등 일시 오류 대비 1회 재시도 (모델 변경 없음 — 검색 그라운딩 유지)
+    for attempt in range(2):
+        try:
+            response = client.models.generate_content(
+                model=NEWS_MODEL, contents=prompt, config=config,
+            )
+            text = response.text.strip()
+            if "```" in text:
+                text = text.split("```")[1]
+                if text.startswith("json"):
+                    text = text[4:]
+            result = json.loads(text)
+            return {
+                "has_major_event": bool(result.get("has_major_event", False)),
+                "severity":         result.get("severity", "NORMAL"),
+                "event_description": result.get("event_description", ""),
+                "keywords":         result.get("keywords", []),
+                "ai_confidence":    float(result.get("ai_confidence", 0.5)),
+            }
+        except Exception as e:
+            logger.error("News check failed (attempt %d/2): %s", attempt + 1, e)
+            if attempt == 0:
+                time.sleep(20)
+
+    # 최종 실패 — NORMAL로 위장하지 않고 실패 마커 반환 (이벤트 저장/판단에서 제외)
+    return {"check_failed": True, "has_major_event": False, "severity": "NORMAL",
+            "event_description": "", "keywords": [], "ai_confidence": 0.0}
 
 
 _MORNING_GATE_PROMPT = """
@@ -236,6 +243,15 @@ def morning_gate_check() -> None:
             logger.info("Morning gate check: severity=%s reason=%s", severity, reason)
         except Exception as e:
             logger.error("Morning gate check failed: %s", e)
+            try:
+                from app.services.telegram.notifier import notify_admins_error
+                notify_admins_error(
+                    "모닝 게이트 체크 실패",
+                    f"08:00 야간 리스크 체크가 실패했습니다: {e}\n"
+                    f"오늘 09:20 매수는 게이트 평가 없이 진행됩니다 — 필요 시 수동 확인해주세요.",
+                )
+            except Exception as e2:
+                logger.error("Telegram alert failed: %s", e2)
             return
 
         if severity in ("WARNING", "CRITICAL"):
@@ -286,6 +302,28 @@ def run_news_check_and_act() -> None:
 
         result = check_news(db)
         logger.info("News check result: %s", result)
+
+        if result.get("check_failed"):
+            # 실패를 NORMAL 이벤트로 저장하면 히스토리 오염 + 감시 공백 은폐 → 저장 스킵
+            fails = int(get_config(db, "news_consec_failures", "0")) + 1
+            set_config(db, "news_consec_failures", str(fails))
+            db.commit()
+            logger.warning("News check failed %d time(s) in a row — event not saved", fails)
+            if fails == 3:
+                try:
+                    from app.services.telegram.notifier import notify_admins_error
+                    notify_admins_error(
+                        "뉴스 감시 연속 실패",
+                        f"뉴스 체크가 {fails}회 연속 실패했습니다 (Gemini 오류 추정). "
+                        f"현재 감시 공백 상태입니다 — API 상태를 확인해주세요. "
+                        f"복구되면 자동으로 재개됩니다.",
+                    )
+                except Exception as e:
+                    logger.error("Telegram alert failed: %s", e)
+            return
+
+        if get_config(db, "news_consec_failures", "0") != "0":
+            set_config(db, "news_consec_failures", "0")
 
         # 현재 지수 레벨 저장
         kospi_level, kosdaq_level = _get_index_levels(db)

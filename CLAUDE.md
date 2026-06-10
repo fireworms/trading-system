@@ -298,7 +298,9 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 ## 뉴스 감시 시스템
 - **주기**: 장중(09:00~15:30) 40분마다 Gemini+검색그라운딩으로 체크
 - **히스토리 컨텍스트**: 최근 15건 이벤트 + 실제 시장 영향이 프롬프트에 포함 → 판단 자동 보정
-- **저장**: NORMAL 포함 모든 이벤트 news_events에 저장 (감지 시점 KOSPI/KOSDAQ 레벨 포함)
+- **저장**: NORMAL 포함 모든 이벤트 news_events에 저장 (감지 시점 KOSPI/KOSDAQ 레벨 포함). 단 **체크 실패는 저장 안 함** (아래)
+- **실패 처리** (2026-06-10 fail-open 교정): Gemini 호출/파싱 실패가 NORMAL(conf 0)로 저장돼 히스토리 오염 + 감시 공백을 은폐하던 버그 수정 — 20초 후 1회 재시도(같은 모델, 검색 그라운딩 유지, fallback 모델 없음), 최종 실패 시 `check_failed` 마커 반환 → 이벤트 미저장 + `news_consec_failures` 카운트, 3연속 실패 시 어드민 🚨 알림. 성공 시 카운터 리셋. 모닝게이트 체크 실패도 어드민 알림 (그날 매수가 게이트 평가 없이 진행됨을 가시화)
+- **severity 정확도 (2026-06-10, 검증 145건)**: WARNING 양호(7/11 익일 -1% 적중), CRITICAL 과잉(13/33 적중, 16/33 익일 상승) — 듀얼시그널이 실조치를 막아 실해는 알림 노이즈. ai_confidence는 전부 0.9+로 변별력 없음(ai_probability와 동일 패턴) — calibration 로직 만들지 말 것
 - **사후 검증**: 16:00 잡이 1일/3일 경과분의 실제 KOSPI/KOSDAQ 변화율 자동 계산
 - **WARNING 감지 시**: news_auto_trade_paused=true + news_pause_at(KST 날짜) 기록 + 텔레그램 어드민 알림
   - **익일 자동 해제**: 다음 거래일 08:00 morning_gate가 news_pause_at ≠ 오늘이면 news_auto_trade_paused=false로 자동 해제 (WARNING은 시점 이벤트인데 수동 재개만 가능해 상시 지정학 노이즈로 무한 정지되던 문제 교정). 오늘 진짜 야간 리스크면 같은 게이트가 morning_gate_paused로 재차단 → 안전망 유지
@@ -459,9 +461,9 @@ TELEGRAM_BOT_TOKEN=      # 선택
 - `add(watch)` / `remove(position_id, code)`: 매수/청산 시 executor가 호출해 동기화
 
 ### app/services/news/watcher.py
-- `check_news(db)`: gemini-2.5-flash + google_search → severity 판정 → news_events 저장 → `_apply_dual_signal_action()`
+- `check_news(db)`: gemini-2.5-flash + google_search → severity 판정. 실패 시 20초 후 1회 재시도, 최종 실패 시 `check_failed` 마커 반환 (NORMAL로 위장 금지)
 - `morning_gate_check()`: 08:00 실행. 시작부에서 전날 켜진 news_auto_trade_paused stale 자동 해제(news_pause_at ≠ 오늘 KST) → 미국 선물/지정학 체크 → WARNING/CRITICAL 시 `morning_gate_paused=true`
-- `run_news_check_and_act()`: 스케줄러에서 호출. 장중 120분 간격 체크 (10분 tick 기반)
+- `run_news_check_and_act()`: 스케줄러에서 호출. 장중 120분 간격 체크 (10분 tick 기반). `check_failed`면 이벤트 저장 스킵 + 연속실패 카운트 + 3연속 시 어드민 알림
 - `_apply_dual_signal_action(db, result)`: AI 판정 × KOSPI 등락률 교차 검증 → emergency_close / tighten_stop / 알림만
 - `check_position_theses(db)`: 10:00/14:00. 2일+ HOLDING 포지션 8개씩 그룹 → gemini-2.5-flash + google_search thesis 재검증 → invalid+손실 시 조기 청산
 - `verify_news_events(db)`: 1일/3일 경과 이벤트에 실제 KOSPI/KOSDAQ 변화율 기록
