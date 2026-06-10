@@ -258,11 +258,12 @@ trading_system/
   - executor 정렬: `ai_probability + cross_signal_bonus` → `cross_signal_bonus 우선, 동점이면 rank`
   - min_probability 필터 제거 (DB 컬럼은 유지, executor에서 미사용)
 - **B-gate** (항상 동작): Stage4A/B 프롬프트에 "0개 반환 허용" 명시 — pick_count 충족 위한 억지 선정 금지
-- **A-gate** (verified 데이터 20건 이상 시 자동 활성화):
+- **A-gate** (키워드 OR 수치, 둘 중 하나면 Stage4 스킵 + 어드민 알림):
   - 매 run마다 `kospi_at_run` 저장, 16:00 잡이 `kospi_change_1d` 채움
-  - verified 20건 이상이면 `_BEAR_KEYWORDS` 감지 시 Stage4 완전 스킵 (`stage4_skipped=True`)
+  - **키워드 게이트** (verified 20건 이상 시): `_BEAR_KEYWORDS` 가 market_theme에 있으면 스킵
   - `_BEAR_KEYWORDS`: 하락장/폭락/급락/약세/하락세/조정장/침체/위기/crash/bear/매도세
-  - 데이터 축적 후 키워드 보정 또는 수치 기반 판단으로 교체 가능
+  - **수치 게이트** (2026-06-10 도입, 항상 활성): 전일 KOSPI ≤ -2.5% 또는 3거래일 누적 ≤ -4% → 스킵. `runner._is_index_unfavorable()` + `client.get_index_daily_closes()` (FHKUP03500100 지수 일봉, 당일 미확정 봉 제외). 지수 조회 실패 시 게이트 미적용(분석 차단 안 함 — 09:20 잡의 당일 -2% 체크가 별도 존재)
+  - 도입 배경: 6/5 폭락장(전일 -6%)에서 Stage1이 "AI 슈퍼사이클 호황" 강세 테마 서술 → 키워드 게이트 첫 실전 미스. LLM 서술 비의존 수치 판정 병행. 임계값은 표본 1 기반 보수적 시작값 — 데이터 축적 후 조정
 
 ## Stage4 환각 방어 구조
 Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:

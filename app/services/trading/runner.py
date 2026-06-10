@@ -21,13 +21,42 @@ logger = logging.getLogger(__name__)
 
 # Stage4 A-gate: 이 키워드가 market_theme에 있으면 하락장 신호
 _BEAR_KEYWORDS = ["하락장", "폭락", "급락", "약세", "하락세", "조정장", "침체", "위기", "crash", "bear", "매도세"]
-# 데이터가 이 건수 이상 쌓여야 A-gate 활성화 (충분한 calibration 전 오작동 방지)
+# 데이터가 이 건수 이상 쌓여야 키워드 A-gate 활성화 (충분한 calibration 전 오작동 방지)
 _GATE_MIN_DATA = 20
+# 수치 A-gate 임계값: 전일 KOSPI 등락률 / 최근 3거래일 누적 (2026-06-10 도입.
+# 6/5 폭락장에서 Stage1이 강세 테마를 서술해 키워드 게이트가 미스 → LLM 비의존 수치 게이트 병행.
+# 임계값은 표본 1(6/4-5) 기반 보수적 시작값 — 데이터 축적 후 조정)
+_NUMERIC_GATE_1D_PCT = -2.5
+_NUMERIC_GATE_3D_PCT = -4.0
 
 
 def _is_market_unfavorable(market_theme: str) -> bool:
     t = market_theme.lower()
     return any(kw in t for kw in _BEAR_KEYWORDS)
+
+
+def _is_index_unfavorable(db) -> str | None:
+    """
+    KOSPI 일봉 수치로 하락장 판정 (LLM 서술 비의존).
+    발동 시 사유 문자열 반환, 아니면 None.
+    지수 조회 실패 시 None — 분석 자체를 막지 않고 키워드 게이트만 적용
+    (09:20 매수 잡에 당일 지수 -2% 차단이 별도로 존재).
+    """
+    try:
+        client = get_kis_client(db)
+        closes = client.get_index_daily_closes("0001", days=6)  # 최신순, 당일 제외
+        if len(closes) < 4:
+            logger.warning("Numeric A-gate: insufficient index bars (%d)", len(closes))
+            return None
+        chg_1d = (closes[0] / closes[1] - 1) * 100
+        chg_3d = (closes[0] / closes[3] - 1) * 100
+        if chg_1d <= _NUMERIC_GATE_1D_PCT:
+            return f"전일 KOSPI {chg_1d:+.2f}% (임계 {_NUMERIC_GATE_1D_PCT}%)"
+        if chg_3d <= _NUMERIC_GATE_3D_PCT:
+            return f"KOSPI 3거래일 누적 {chg_3d:+.2f}% (임계 {_NUMERIC_GATE_3D_PCT}%)"
+    except Exception as e:
+        logger.warning("Numeric A-gate index fetch failed: %s", e)
+    return None
 
 
 class StrategyRunner:
@@ -293,19 +322,36 @@ class StrategyRunner:
             ).with_only_columns(_func.count())
         ) or 0
 
-        stage4_skipped = False
+        # 키워드 게이트(LLM 서술 기반, 데이터 충분 시) OR 수치 게이트(지수 기반, 항상)
+        skip_reason = None
         if verified_count >= _GATE_MIN_DATA and _is_market_unfavorable(macro.market_theme):
+            skip_reason = f"market_theme 하락 키워드 ({macro.market_theme})"
+        else:
+            numeric_reason = _is_index_unfavorable(self.db)
+            if numeric_reason:
+                skip_reason = f"지수 수치 게이트 ({numeric_reason})"
+
+        stage4_skipped = False
+        if skip_reason:
             logger.info(
-                "Stage4 SKIPPED by A-gate: theme=%s, verified_data=%d",
-                macro.market_theme, verified_count,
+                "Stage4 SKIPPED by A-gate: %s, verified_data=%d",
+                skip_reason, verified_count,
             )
             stage4_skipped = True
             picks_result = PickResult(
                 picks=[],
-                excluded_reason=f"A-gate: market unfavorable ({macro.market_theme})",
+                excluded_reason=f"A-gate: {skip_reason}",
                 model_used="none",
-                raw={"skipped": True, "theme": macro.market_theme},
+                raw={"skipped": True, "theme": macro.market_theme, "reason": skip_reason},
             )
+            try:
+                from app.services.telegram.notifier import notify_admins_warning
+                notify_admins_warning(
+                    f"A-gate 발동 — {strategy.name} 분석 스킵",
+                    f"{skip_reason}\n오늘 이 전략의 신규 추천이 생성되지 않습니다.",
+                )
+            except Exception as _e:
+                logger.error("Telegram alert failed: %s", _e)
         else:
             picks_result = self._run_stage4_grouped(macro, industry, stock_data, strategy)
 

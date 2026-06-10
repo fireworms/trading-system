@@ -318,6 +318,36 @@ class KISClient:
         except Exception:
             return {"level": 0.0, "change_pct": 0.0}
 
+    def get_index_daily_closes(self, code: str = "0001", days: int = 6) -> list[float]:
+        """
+        지수 일봉 종가 조회 (최신 → 오래된 순, 당일 미완성 봉 제외).
+        FHKUP03500100 inquire-daily-indexchartprice. code: '0001'=KOSPI, '1001'=KOSDAQ
+        A-gate 수치 판정용 — 장 시작 전(08:30)에도 전일까지의 확정 종가만 반환.
+        """
+        today = date.today().strftime("%Y%m%d")
+        start = (date.today() - timedelta(days=days + 20)).strftime("%Y%m%d")
+        data = self._get(
+            "/uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice",
+            "FHKUP03500100",
+            {
+                "FID_COND_MRKT_DIV_CODE": "U",
+                "FID_INPUT_ISCD":         code,
+                "FID_INPUT_DATE_1":       start,
+                "FID_INPUT_DATE_2":       today,
+                "FID_PERIOD_DIV_CODE":    "D",
+            },
+        )
+        closes: list[float] = []
+        for item in data.get("output2", []):
+            bar_date = item.get("stck_bsop_date", "")
+            close = item.get("bstp_nmix_prpr")
+            if not close or bar_date >= today:  # 당일 봉은 미확정 — 제외
+                continue
+            closes.append(float(close))
+            if len(closes) >= days:
+                break
+        return closes
+
     def get_current_price(self, stock_code: str) -> Decimal:
         """현재가 조회."""
         data = self._get(
