@@ -21,7 +21,8 @@ from google.genai import types
 from app.core.config import get_settings
 from app.services.gemini.prompts import (
     STAGE1_MACRO, STAGE2_HISTORICAL, STAGE3_INDUSTRY,
-    STAGE4A_ANALYSIS, STAGE4B_EXTRACT,
+    STAGE4A_ANALYSIS, STAGE4A_EARNINGS, STAGE4B_EXTRACT,
+    EARNINGS_CATALYST_DETECT,
     _FILTER_GUIDANCE,
 )
 
@@ -206,6 +207,35 @@ class GeminiAnalyzer:
             raw=data,
         )
 
+    def detect_earnings_catalysts(self, stocks_data: list[dict], today: date | None = None) -> dict[str, str]:
+        """사전필터된 종목 대상 최근 실적 카탈리스트 그라운딩 탐지 (1회 호출).
+        반환: {stock_code: note}. 실패 시 빈 dict (선정은 모멘텀 기준으로 진행)."""
+        stocks_list = "\n".join(
+            f"- {s['stock_code']}({s.get('stock_name', '')})"
+            for s in stocks_data if s.get("stock_code")
+        )
+        if not stocks_list:
+            return {}
+        prompt = EARNINGS_CATALYST_DETECT.format(
+            today=str(today or date.today()),
+            stocks_list=stocks_list,
+        )
+        try:
+            text = self._call_model_with_search(prompt, _CHAIN_STAGE1[0])
+            data = self._parse_json(text)
+        except Exception as e:
+            logger.warning("Earnings catalyst detection failed (proceeding momentum-only): %s", e)
+            return {}
+        result: dict[str, str] = {}
+        for c in data.get("catalysts", []):
+            code = str(c.get("code", "")).strip()
+            if code:
+                ctype = c.get("type", "")
+                note = c.get("note", "")
+                result[code] = f"[{ctype}] {note}".strip()
+        logger.info("Earnings catalysts detected: %d/%d stocks", len(result), len(stocks_data))
+        return result
+
     def stage4_picks(
         self,
         macro: MacroResult,
@@ -217,8 +247,10 @@ class GeminiAnalyzer:
         min_probability: Decimal,
         pick_count: int,
         candidate_filter: str = "mixed",
+        selection_mode: str = "momentum",
     ) -> PickResult:
-        """4단계: 종목 선정 — 분석(Flash-preview) + 추출(Flash-lite) 2단계."""
+        """4단계: 종목 선정 — 분석(Flash-preview) + 추출(Flash-lite) 2단계.
+        selection_mode=earnings_catalyst면 실적 카탈리스트 우선 프롬프트 사용."""
         guidance = _FILTER_GUIDANCE.get(candidate_filter, _FILTER_GUIDANCE["mixed"])
         valid_codes = ", ".join(
             f"{s['stock_code']}({s.get('stock_name', '')})"
@@ -227,7 +259,8 @@ class GeminiAnalyzer:
 
         # Step A: Flash-preview — 자유형식 분석 텍스트 생성
         # JSON 구조 출력 압박 없이 종목명·코드를 함께 쓴 분석에만 집중
-        prompt_a = STAGE4A_ANALYSIS.format(
+        prompt_template = STAGE4A_EARNINGS if selection_mode == "earnings_catalyst" else STAGE4A_ANALYSIS
+        prompt_a = prompt_template.format(
             macro_summary=macro.macro_summary,
             market_theme=macro.market_theme,
             expected_beneficiary=industry.expected_beneficiary,

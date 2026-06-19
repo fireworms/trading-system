@@ -105,6 +105,7 @@ trading_system/
 - hold_days, target_pct, stop_loss_pct, min_probability, pick_count, run_interval_days
 - **candidate_filter**: volume / largecap / mixed (기본 mixed)
 - **candidate_market**: KOSPI / KOSDAQ / NAS / ALL (기본 ALL)
+- **selection_mode**: momentum(기본) / earnings_catalyst — Stage4 선정 프롬프트 변형 분기 (전략 단위)
 - is_active, created_at
 
 ### user_strategies
@@ -238,6 +239,7 @@ trading_system/
 | Stage4-A (자유형식 분석) | gemini-3-flash-preview | gemini-3.1-flash-lite → gemini-2.5-flash-lite |
 | Stage4-B (코드 추출) | gemini-3.1-flash-lite | gemini-2.5-flash-lite |
 | BUY_CONFIRM (미사용, prompts.py에만 존재) | — | — |
+| 실적 카탈리스트 탐지 (earnings_catalyst 전략) | gemini-2.5-flash | - (검색 그라운딩, 실패 시 빈 결과) |
 | 뉴스 감시 (장중 2시간마다) | gemini-2.5-flash | - |
 | 모닝 게이트 (08:00) | gemini-2.5-flash | - |
 | Thesis 재검증 (10:00, 14:00) | gemini-2.5-flash | - |
@@ -276,6 +278,16 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 - stock_data에 stock_name 사전 주입 (AI 훈련 기억 대신 DB 이름 사용)
 - raw_response.price_snapshot: KIS 수집 시점 가격 감사 로그 저장
 - **PER/EPS 참고 필드 (2026-06-19)**: stock_data에 per/eps 동봉 → STAGE4A 프롬프트에 "참고용"으로 노출. 가드레일 6번: 저PER이라는 이유로 추세 없는 종목 선정 금지 / 고PER이라는 이유로 추세·수급 강한 종목 제외 금지 — 선정은 매크로·추세·수급·모멘텀(1~4번) 절대 우선. **prefilter 점수엔 미반영**(저PER 가점 = 밸류 드리프트 = 5/28에 걷어낸 큐레이션 회귀). 실데이터 검증(6/19): PER 싼 순서(NAVER 18<하이닉스 47<삼성 54<한미 132)와 모멘텀(RSI) 순서가 역상관 → PER 가점 시 추세 죽은 종목을 위로 올렸을 것. 단타 시간축에선 밸류로 익절/손절가 잡는 것도 부적합(재평가는 수개월 단위)
+
+## 전략 선정 변형 — selection_mode (2026-06-19)
+기존 전략은 파라미터·종목풀만 다르고 **Stage4 선정 프롬프트는 전역 공유**였음. `Strategy.selection_mode`로 전략 단위 선정 로직 분기 도입:
+- **momentum**(기본): STAGE4A_ANALYSIS (탑다운 매크로 모멘텀, 기존 (A))
+- **earnings_catalyst**: STAGE4A_EARNINGS — 모멘텀 기준(추세·수급·RSI) 위에 **실적 카탈리스트(서프라이즈/가이던스 상향/추정치 상향)를 최우선**. 단 카탈리스트만으로 선정 금지(추세·수급 동반 필수). forward EPS 숫자를 만들지 않고 *이벤트 유무*만 사용 — LLM 수치 환각·false precision 회피(ai_probability 폐기와 동일 철학)
+  - 흐름: `_run_stage4_grouped`가 사전필터 직후 `detect_earnings_catalysts`(그라운딩 1회) → stock_data에 earnings_catalyst 주입 → STAGE4A_EARNINGS로 선정
+  - 탐지 실패 시 빈 dict → 모멘텀 기준으로 진행(fail-safe). 검색 확인 사실만(없으면 빈 목록, 환각 금지)
+- **첫 적용**: `[TEST] 실적 카탈리스트` 전략 = `KOSPI 대형주 스윙`(hold 20/target 6/stop 3/largecap·KOSPI/pick 3) 파라미터 **그대로 복제** + selection_mode만 변경 → 선정 로직만 분리된 A/B. largecap 샘플링은 KOSPI200 시총순위 기반이라 두 전략이 거의 동일 풀 → 깨끗한 비교. 구독 없음(관찰 모드), 08:30 잡이 활성 전략 전체 실행 + verifier가 auto_trade 무관 채점이라 데이터 자동 누적
+  - earnings_catalyst를 단타(hold 7)가 아닌 대형주 스윙(hold 20)에 얹은 이유: 실적 카탈리스트는 대형주에서 데이터 풍부 + PEAD 드리프트가 수주 단위라 시간축 정합
+  - 씨드: `scripts/seed_earnings_catalyst_strategy.py` (대형주 템플릿 우선 복제, 멱등)
 
 ## Circuit Breaker
 - 직전 4건 청산이 전부 손실이면 해당 유저 매수 자동 차단 (4건 미만은 체크 안 함)
@@ -429,7 +441,8 @@ TELEGRAM_BOT_TOKEN=      # 선택
 - `stage1_macro()`: gemini-2.5-flash + google_search → MacroResult (macro_summary, key_factors, market_theme, sector_outlook)
 - `stage2_historical()`: gemini-3-flash-preview → HistoricalResult (유사 과거 시기 3개)
 - `stage3_industry()`: gemini-3.1-flash-lite → IndustryResult (섹터별 outlook)
-- `stage4_picks(stock_data, ...)`: 2단계 — A(flash-preview 자유형식 분석) → B(flash-lite 코드 추출). 그룹 분할은 runner가 담당
+- `stage4_picks(stock_data, ..., selection_mode)`: 2단계 — A(flash-preview 자유형식 분석) → B(flash-lite 코드 추출). 그룹 분할은 runner가 담당. selection_mode=earnings_catalyst면 STAGE4A_EARNINGS 프롬프트 사용(아니면 STAGE4A_ANALYSIS)
+- `detect_earnings_catalysts(stocks_data)`: 사전필터 종목 대상 최근 실적 카탈리스트(서프라이즈/가이던스 상향/추정치 상향) **1회 그라운딩** 탐지 → {code: note}. 검색 확인 사실만(없으면 빈 목록), 실패 시 빈 dict로 fail-safe(모멘텀 기준 진행). earnings_catalyst 전략 전용
 - `_call_with_fallback(prompt, chain)`: 모델 체인 순서대로 시도, 성공 시 (text, model_used) 반환
 - `_parse_json(text)`: JSON 파싱 실패 시 gemma-4-31b-it로 재시도
 
@@ -441,7 +454,7 @@ TELEGRAM_BOT_TOKEN=      # 선택
   - mixed: largecap 우선 + stride
 - `_collect_stock_data(candidates)`: KIS API로 종목별 현재가/RSI/이평선/수급/per·eps 수집 + stock_name DB 주입
 - `_prefilter_stocks(stock_data, n=20)`: 추세정배열·RSI(~60)·수급·거래량 점수로 75개→20개 압축 (모멘텀 리더 보존 + Stage4 컨텍스트 축소)
-- `_run_stage4_grouped(...)`: 20개를 10개씩 2그룹 분할 → 각 그룹 Stage4 독립 실행 → 확률순 집계
+- `_run_stage4_grouped(...)`: 20개를 10개씩 2그룹 분할 → 각 그룹 Stage4 독립 실행 → 확률순 집계. selection_mode=earnings_catalyst면 사전필터 직후 `detect_earnings_catalysts` 1회 호출 → stock_data에 earnings_catalyst 주입 후 stage4_picks에 mode 전달
 - `_is_market_unfavorable(market_theme)`: `_BEAR_KEYWORDS` 감지 → Stage4 스킵 여부 (A-gate, 검증 20건+ 시 활성화)
 
 ### app/services/trading/executor.py

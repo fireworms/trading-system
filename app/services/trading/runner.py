@@ -231,6 +231,14 @@ class StrategyRunner:
         from app.services.gemini.analyzer import PickResult
 
         filtered = self._prefilter_stocks(stock_data, strategy.candidate_filter, target=20)
+
+        # earnings_catalyst 모드: 사전필터된 종목 대상 실적 카탈리스트 1회 그라운딩 → stock_data에 주입
+        selection_mode = getattr(strategy, "selection_mode", "momentum")
+        if selection_mode == "earnings_catalyst":
+            catalysts = self.analyzer.detect_earnings_catalysts(filtered)
+            for s in filtered:
+                s["earnings_catalyst"] = catalysts.get(s.get("stock_code", ""))
+
         groups = [filtered[i:i + 10] for i in range(0, len(filtered), 10)]
 
         all_picks: list[dict] = []
@@ -249,6 +257,7 @@ class StrategyRunner:
                 min_probability=strategy.min_probability,
                 pick_count=strategy.pick_count,
                 candidate_filter=strategy.candidate_filter,
+                selection_mode=selection_mode,
             )
             all_picks.extend(result.picks)
             model_used = result.model_used or model_used
