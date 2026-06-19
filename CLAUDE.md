@@ -275,6 +275,7 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 4. **서버 검증**: price_map 외 코드 저장 거부 + stock_master 이름 교정 + KIS 가격 덮어쓰기
 - stock_data에 stock_name 사전 주입 (AI 훈련 기억 대신 DB 이름 사용)
 - raw_response.price_snapshot: KIS 수집 시점 가격 감사 로그 저장
+- **PER/EPS 참고 필드 (2026-06-19)**: stock_data에 per/eps 동봉 → STAGE4A 프롬프트에 "참고용"으로 노출. 가드레일 6번: 저PER이라는 이유로 추세 없는 종목 선정 금지 / 고PER이라는 이유로 추세·수급 강한 종목 제외 금지 — 선정은 매크로·추세·수급·모멘텀(1~4번) 절대 우선. **prefilter 점수엔 미반영**(저PER 가점 = 밸류 드리프트 = 5/28에 걷어낸 큐레이션 회귀). 실데이터 검증(6/19): PER 싼 순서(NAVER 18<하이닉스 47<삼성 54<한미 132)와 모멘텀(RSI) 순서가 역상관 → PER 가점 시 추세 죽은 종목을 위로 올렸을 것. 단타 시간축에선 밸류로 익절/손절가 잡는 것도 부적합(재평가는 수개월 단위)
 
 ## Circuit Breaker
 - 직전 4건 청산이 전부 손실이면 해당 유저 매수 자동 차단 (4건 미만은 체크 안 함)
@@ -284,7 +285,7 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 - GET /admin/realtime/status — KIS WS 연결 여부 + realtime_monitor 감시 종목 수
 
 ## KIS API 주요 엔드포인트
-- `FHKST01010100` inquire-price: 현재가 + 시가/고가/체결강도(cttr)/거래량
+- `FHKST01010100` inquire-price: 현재가 + 시가/고가/체결강도(cttr)/거래량 + **per/eps/pbr/bps**(밸류, 응답에 동봉 — 추가 호출 불필요)
 - `FHKST03010100` inquire-daily-itemchartprice: OHLCV (일봉)
 - `FHPUP02100000` inquire-index-price: 지수 현재가/등락률 (0001=KOSPI, 1001=KOSDAQ)
 - `TTTC8434R` inquire-balance: 잔고 조회 (avg_price=pchs_avg_pric)
@@ -409,7 +410,7 @@ TELEGRAM_BOT_TOKEN=      # 선택
 - `get_price_with_change(code)`: 현재가 + 시가 + 등락률 + bid_price (프론트/모니터용)
 - `get_intraday_status(code)`: 시가/고가/체결강도/거래량 (09:20 장중 체크용)
 - `get_index_change_pct()`: KOSPI(0001)/KOSDAQ(1001) 등락률 — 매수 전 -2% 체크
-- `_get_domestic_stock_info(code)`: 현재가+RSI+이평선+외국인/기관 순매수 통합 (runner 종목 데이터 수집용)
+- `_get_domestic_stock_info(code)`: 현재가+RSI+이평선+외국인/기관 순매수+**per/eps** 통합 (runner 종목 데이터 수집용). inquire-price 1회 호출로 price+per+eps 동시 추출 (get_current_price 중복 호출 제거). per/eps는 **trailing(직전 공시 실적) 기준** — forward 추정 서사와 다른 값. 적자기업·데이터없음은 None(0/음수 위장 금지). eps는 KIS가 "6564.00" 문자열 반환 → int(float()) 파싱
 - `get_stock_basic_info(code)`: CTPF1002R 섹터 조회 (매수 직전 MAX_PER_SECTOR 체크용)
 - `get_today_fill_price(code, side)`: TTTC8001R 당일 체결 조회. side="02"=매수, "01"=매도. 매수/매도 직후 실 체결가 반영에 사용
 - `buy_market_order(code, qty)` / `sell_market_order(code, qty)`: TTTC0802U / TTTC0801U 시장가 주문
@@ -438,7 +439,7 @@ TELEGRAM_BOT_TOKEN=      # 선택
   - largecap: KOSPI200/KOSDAQ150 시총 내림차순 상위 90% + stride 10%
   - volume: KIS 시총순위 API 실시간
   - mixed: largecap 우선 + stride
-- `_collect_stock_data(candidates)`: KIS API로 종목별 현재가/RSI/이평선/수급 수집 + stock_name DB 주입
+- `_collect_stock_data(candidates)`: KIS API로 종목별 현재가/RSI/이평선/수급/per·eps 수집 + stock_name DB 주입
 - `_prefilter_stocks(stock_data, n=20)`: 추세정배열·RSI(~60)·수급·거래량 점수로 75개→20개 압축 (모멘텀 리더 보존 + Stage4 컨텍스트 축소)
 - `_run_stage4_grouped(...)`: 20개를 10개씩 2그룹 분할 → 각 그룹 Stage4 독립 실행 → 확률순 집계
 - `_is_market_unfavorable(market_theme)`: `_BEAR_KEYWORDS` 감지 → Stage4 스킵 여부 (A-gate, 검증 20건+ 시 활성화)

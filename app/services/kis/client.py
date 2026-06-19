@@ -596,8 +596,19 @@ class KISClient:
         }
 
     def _get_domestic_stock_info(self, stock_code: str) -> dict:
-        """국내주식 통합 정보 (현재가 + OHLCV + 기술적지표 + 외국인/기관). currency=KRW."""
-        current_price = self.get_current_price(stock_code)
+        """국내주식 통합 정보 (현재가 + OHLCV + 기술적지표 + 외국인/기관 + 밸류). currency=KRW."""
+        price_data    = self._get(
+            "/uapi/domestic-stock/v1/quotations/inquire-price",
+            "FHKST01010100",
+            {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": stock_code},
+        )
+        po            = price_data.get("output", {})
+        current_price = Decimal(po.get("stck_prpr") or "0")
+        # 밸류 참고치 (적자기업은 per≤0 → None 처리, 0으로 위장 금지). 추가 API 호출 없음.
+        per           = float(po.get("per") or 0) or None
+        eps           = int(float(po.get("eps") or 0)) or None   # KIS는 "6564.00" 문자열 반환
+        if per is not None and per <= 0:
+            per = None
         bars          = self.get_ohlcv(stock_code)
         rsi           = self._compute_rsi(bars)
         mas           = self._compute_mas(bars)
@@ -615,6 +626,8 @@ class KISClient:
             "ma20":            int(mas["ma20"]) if mas["ma20"] else None,
             "ma60":            int(mas["ma60"]) if mas["ma60"] else None,
             "avg_volume_20d":  avg_volume,
+            "per":             per,    # 주가수익비율 (참고용, 적자기업=None)
+            "eps":             eps,    # 주당순이익 (참고용)
             "frgn_net_buy_1d": investor["frgn_net_buy_1d"],
             "frgn_net_buy_5d": investor["frgn_net_buy_5d"],
             "orgn_net_buy_1d": investor["orgn_net_buy_1d"],
@@ -667,6 +680,8 @@ class KISClient:
                 "ma20":            int(mas["ma20"]) if mas["ma20"] else None,
                 "ma60":            int(mas["ma60"]) if mas["ma60"] else None,
                 "avg_volume_20d":  avg_volume,
+                "per":             None,   # 백테스트는 과거 밸류 재현 불가
+                "eps":             None,
                 "frgn_net_buy_1d": 0,
                 "frgn_net_buy_5d": 0,
                 "orgn_net_buy_1d": 0,
