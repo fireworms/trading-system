@@ -176,6 +176,16 @@ def job_verify_news_events() -> None:
         _notify_error("뉴스 이벤트 검증 잡 실패", str(e))
 
 
+def job_collect_watchlist_flows() -> None:
+    """관심종목 일별 수급 적재 (KIS 30거래일 한계 보완 — 60/120일 누적용)."""
+    try:
+        from app.services.watchlist.flow_store import collect_all_watchlist_flows
+        collect_all_watchlist_flows()
+    except Exception as e:
+        logger.error("Watchlist flow collect failed: %s", e)
+        _notify_error("관심종목 수급 적재 잡 실패", str(e))
+
+
 def job_backup_db() -> None:
     """매일 03:30 pg_dump로 DB 백업, 최근 7개 유지."""
     import subprocess
@@ -373,6 +383,14 @@ def start_scheduler() -> None:
         job_verify_news_events,
         trigger=CronTrigger(day_of_week="mon-fri", hour=16, minute=0),
         id="verify_news_events",
+        replace_existing=True,
+    )
+
+    # 매일 장 마감 후: 관심종목 일별 수급 적재 (60/120일 누적 히스토리 축적)
+    _scheduler.add_job(
+        job_collect_watchlist_flows,
+        trigger=CronTrigger(day_of_week="mon-fri", hour=16, minute=10),
+        id="collect_watchlist_flows",
         replace_existing=True,
     )
 

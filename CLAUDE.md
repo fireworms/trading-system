@@ -42,7 +42,8 @@ trading_system/
 │   │   ├── stock_master.py      # StockMaster (KIS MST 기반 종목 풀)
 │   │   ├── app_config.py        # AppConfig (key-value 설정 테이블)
 │   │   ├── news_event.py        # NewsEvent (뉴스 감시 + 시장 영향 누적)
-│   │   └── watchlist.py         # WatchlistStock, StockAnalysis (중장기 수동매매 일지)
+│   │   ├── watchlist.py         # WatchlistStock, StockAnalysis (중장기 수동매매 일지)
+│   │   └── investor_flow.py     # InvestorFlowDaily (관심종목 일별 수급 적재, 공용)
 │   ├── api/
 │   │   ├── users.py             # 회원가입, 로그인, 브로커계좌 CRUD (hts_id 수정 포함)
 │   │   ├── strategies.py        # 전략 CRUD, 구독 관리
@@ -68,7 +69,8 @@ trading_system/
 │   │   │   ├── updater.py       # KIS MST 파일 파싱 → stock_master 갱신
 │   │   │   └── index_constituents.py  # KOSPI200/KOSDAQ150 구성종목
 │   │   ├── watchlist/
-│   │   │   └── analyzer.py      # 관심종목 분석 (수집→스냅샷→Gemini 구조화→저장)
+│   │   │   ├── analyzer.py      # 관심종목 분석 (수집→스냅샷→Gemini 구조화→저장)
+│   │   │   └── flow_store.py    # 일별 수급 적재/60·120일 누적 (KIS 30거래일 한계 보완)
 │   │   ├── telegram/
 │   │   │   └── notifier.py      # TelegramNotifier (멀티유저, chat_id별 전송)
 │   │   │                        # notify_admins_warning: 정책 경고 (⚠️ [WARNING])
@@ -180,6 +182,13 @@ trading_system/
   - **input_snapshot** (JSONB): 분석 시점 KIS 지표/재무/수급/추정실적 + data_flags(결측 명시) — 사후 재구성용
   - **watchlist_stocks에 FK 없음** — 관심종목 삭제해도 일지 영구 보존
 - 상세 설계·KIS 필드 디코딩 근거는 docs/watchlist_spec.md + 메모리 watchlist_tab.md 참조
+- **스냅샷 v2 (2026-07-02)**: fx_usdkrw(USD/KRW 3개월 추세) / market(KOSPI 레벨·1/3개월 + 종목 상대수익률) / PER 4종 병기(trailing·TTM·최근분기 연환산·컨센서스 forward — trailing 왜곡 대응) / 수급 페이스 판정 문자열(5일 vs 30일 일평균, 앱이 확정 — LLM 재계산 금지) / 개인 순매수 5/20/30일 / PBR 5년 밴드 근사(월봉÷당시 연간 BPS, 근사 명시)
+
+### investor_flow_daily ← 관심종목 수급 적재 (2026-07-02)
+- flow_id (PK), stock_code (idx), trade_date, frgn/orgn/prsn_ntby_amt (백만원), close
+- UNIQUE(stock_code, trade_date), 유저 스코핑 없음 (공용 시장 데이터)
+- KIS FHKST01010900이 최근 30거래일만 반환 → 16:10 잡 + 분석 실행이 매일 upsert해 60/120일 누적 구축
+- **백필 불가** — 2026-07-02부터 축적, 커버리지 미달 구간은 부분합으로 위장하지 않고 None + 일수 명시
 
 ## 자동매매 흐름
 
@@ -245,6 +254,7 @@ trading_system/
 | thesis_check | 10:00, 14:00 평일 | 보유 포지션 thesis 재검증 (8개씩 그룹 grounding) |
 | verify_recommendations | 00:10 매일 | 추천 결과 사후 검증 |
 | verify_news_events | 16:00 평일 | 뉴스 이벤트 + recommendation_runs 실제 시장 영향 검증 |
+| collect_watchlist_flows | 16:10 평일 | 관심종목 일별 수급 적재 (60/120일 누적, 2026-07-02 시작) |
 | news_watch_tick | 09:00~15:30 10분마다 평일 | 뉴스 감시 tick (120분마다 실행) |
 | update_stock_master | 03:00 일요일 | stock_master + 지수캐시 갱신 |
 
@@ -330,6 +340,9 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 - `FHKST66430300` financial-ratio: 분기 ROE/부채비율/EPS/BPS/성장률 (관심종목 탭)
 - `FHKST66430200` income-statement: 분기 손익 — **YTD 누적**이라 단일 분기는 차분 필요
 - `HHKST668300C0` estimate-perform: 컨센서스 추정실적 — output2/3 행 순서가 항목, 비율·EPS ×10 스케일, 목표주가 없음
+- `FHKST03030100` 해외 종목/지수/환율 기간별시세: FID_COND_MRKT_DIV_CODE='X' + 'FX@KRW' = USD/KRW 일봉 (관심종목 환율 컨텍스트, 2026-07-02 실검증)
+- `FHKUP03500100` 지수 일봉: **호출당 ~50행 제한** — get_index_daily_closes가 날짜 구간 청크 연속 조회로 보완
+- `FHKST03010100` FID_PERIOD_DIV_CODE='M'으로 월봉 조회 가능 (PBR 5년 밴드 근사용, 1회 호출 60개월)
 
 ## 뉴스 감시 시스템
 - **주기**: 장중(09:00~15:30) 40분마다 Gemini+검색그라운딩으로 체크
@@ -446,6 +459,9 @@ TELEGRAM_BOT_TOKEN=      # 선택
 - `get_index_change_pct()`: KOSPI(0001)/KOSDAQ(1001) 등락률 — 매수 전 -2% 체크
 - `_get_domestic_stock_info(code)`: 현재가+RSI+이평선+외국인/기관 순매수+**per/eps** 통합 (runner 종목 데이터 수집용). inquire-price 1회 호출로 price+per+eps 동시 추출 (get_current_price 중복 호출 제거). per/eps는 **trailing(직전 공시 실적) 기준** — forward 추정 서사와 다른 값. 적자기업·데이터없음은 None(0/음수 위장 금지). eps는 KIS가 "6564.00" 문자열 반환 → int(float()) 파싱
 - `get_stock_basic_info(code)`: CTPF1002R 섹터 조회 (매수 직전 MAX_PER_SECTOR 체크용)
+- `get_fx_daily_closes(symbol='FX@KRW', days)`: USD/KRW 환율 일봉 (FHKST03030100, mrkt div 'X')
+- `get_ohlcv_monthly(code, months)`: 월봉 — 1회 호출로 60개월 (PBR 5년 밴드 근사용)
+- `get_foreign_holding(code)`: inquire-price 동봉 — 외인 소진율 + per/pbr/eps/bps + 시총(market_cap_eok, 억원)
 - `get_today_fill_price(code, side)`: TTTC8001R 당일 체결 조회. side="02"=매수, "01"=매도. 매수/매도 직후 실 체결가 반영에 사용
 - `buy_market_order(code, qty)` / `sell_market_order(code, qty)`: TTTC0802U / TTTC0801U 시장가 주문
 - `get_kis_client_from_account(account)`: account_id 기준 싱글턴 반환 (`_client_registry`). 동일 계좌는 항상 같은 인스턴스 → 토큰 공유
@@ -529,10 +545,18 @@ TELEGRAM_BOT_TOKEN=      # 선택
 
 ### app/services/watchlist/analyzer.py
 - 관심종목 분석 서비스 (스펙: docs/watchlist_spec.md). AI = 데이터 집계+구조화, 예측 금지
-- `collect_input_snapshot(client, code, name, sector)`: 6개월 일봉 요약 + 분기 재무(YTD→단일분기 차분) + 컨센서스 추정 + 수급 30거래일 + data_flags(결측 명시) → 이 dict가 그대로 프롬프트 입력 + DB 저장 (사후 재구성 보장)
+- `collect_input_snapshot(client, code, name, sector, db=None)`: 6개월 일봉 요약 + 분기 재무(YTD→단일분기 차분) + 컨센서스 추정 + 수급 30거래일 + **환율 3개월 추세 + KOSPI 상대수익률 + PER 4종 병기 + 수급 페이스 판정 + PBR 5년 밴드** + data_flags(결측 명시) → 이 dict가 그대로 프롬프트 입력 + DB 저장 (사후 재구성 보장). db 넘기면 수급 적재 + 60/120일 누적 포함
+- `_pace_judgment(avg5, avg30)`: 수급 가속/둔화/전환 판정 문자열 생성 — LLM에 나눗셈 시키지 않기 위해 앱이 확정. 30일 평균 미미하면 중립 취급(비율 폭주 방지), ±20% 밴드 내 "페이스 유사", 부호 전환은 별도 라벨
+- `_pbr_band_5y()`: 월별 종가 ÷ 당시 최근 연간 BPS → 현재 PBR의 5년 퍼센타일 (자사주 소각/증자 왜곡 가능 — 근사 명시)
+- 프롬프트 규칙: 앱 계산 파생지표(judgment/상대수익률/trend_note/per_ttm/퍼센타일) **재계산 금지, 그대로 인용** / per_trailing 왜곡 시 per_ttm·forward 우선 / 환율=외인 수급 공통 팩터로 종목 고유 요인과 구분
 - `run_analysis(db, user_id, ...)`: 수집 → gemini-2.5-flash 검색 그라운딩 → JSON 파싱 → StockAnalysis 저장. **무효화_조건 비면 1회 강제 재요청** 후 실패 시 ValueError
 - analysis_date는 라벨 — KIS 입력은 항상 수집 시점 (snapshot.collected_at 기록)
-- 1차 범위: 수동 트리거만. 이벤트 자동 감지(실적/공시/수급·주가 급변)는 후속
+- 1차 범위: 수동 트리거만. 이벤트 자동 감지(실적/공시/수급·주가 급변)는 후속. 공매도 잔고는 미구현(KIS 일별추이 API 있어 후속 가능), 대차잔고는 KIS 미제공
+
+### app/services/watchlist/flow_store.py
+- `upsert_investor_flows(db, code, rows)`: KIS 일별 수급 → investor_flow_daily upsert (중복 일자 스킵)
+- `get_extended_flow(db, code)`: 적재분 60/120거래일 누적 — 커버리지 미달이면 부분합 대신 None + 일수 명시
+- `collect_all_watchlist_flows()`: 16:10 잡 — 전체 유저 관심종목 distinct 순회 적재
 
 ### app/api/watchlist.py
 - 관심종목 CRUD + `POST /watchlist/analyze` + 이력/상세 조회, 전부 current_user 스코핑

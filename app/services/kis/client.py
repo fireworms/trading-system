@@ -330,28 +330,40 @@ class KISClient:
         A-gate 수치 판정용 — 장 시작 전(08:30)에도 전일까지의 확정 종가만 반환.
         """
         today = date.today().strftime("%Y%m%d")
-        start = (date.today() - timedelta(days=days + 20)).strftime("%Y%m%d")
-        data = self._get(
-            "/uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice",
-            "FHKUP03500100",
-            {
-                "FID_COND_MRKT_DIV_CODE": "U",
-                "FID_INPUT_ISCD":         code,
-                "FID_INPUT_DATE_1":       start,
-                "FID_INPUT_DATE_2":       today,
-                "FID_PERIOD_DIV_CODE":    "D",
-            },
-        )
         closes: list[float] = []
-        for item in data.get("output2", []):
-            bar_date = item.get("stck_bsop_date", "")
-            close = item.get("bstp_nmix_prpr")
-            if not close or bar_date >= today:  # 당일 봉은 미확정 — 제외
-                continue
-            closes.append(float(close))
-            if len(closes) >= days:
-                break
-        return closes
+        seen: set[str] = set()
+        end = date.today()
+        # 호출당 약 50행 제한 — days가 크면 날짜 구간을 나눠 연속 조회
+        while len(closes) < days:
+            start = (end - timedelta(days=75)).strftime("%Y%m%d")  # ≈ 50거래일 여유
+            data = self._get(
+                "/uapi/domestic-stock/v1/quotations/inquire-daily-indexchartprice",
+                "FHKUP03500100",
+                {
+                    "FID_COND_MRKT_DIV_CODE": "U",
+                    "FID_INPUT_ISCD":         code,
+                    "FID_INPUT_DATE_1":       start,
+                    "FID_INPUT_DATE_2":       end.strftime("%Y%m%d"),
+                    "FID_PERIOD_DIV_CODE":    "D",
+                },
+            )
+            oldest: str | None = None
+            got_new = False
+            for item in data.get("output2", []):
+                bar_date = item.get("stck_bsop_date", "")
+                close = item.get("bstp_nmix_prpr")
+                if not close or not bar_date or bar_date >= today or bar_date in seen:
+                    continue  # 당일 봉은 미확정 — 제외
+                seen.add(bar_date)
+                closes.append(float(close))
+                got_new = True
+                oldest = bar_date if oldest is None or bar_date < oldest else oldest
+                if len(closes) >= days:
+                    break
+            if not got_new or not oldest:
+                break  # 데이터 소진
+            end = datetime.strptime(oldest, "%Y%m%d").date() - timedelta(days=1)
+        return closes[:days]
 
     def get_current_price(self, stock_code: str) -> Decimal:
         """현재가 조회."""
@@ -634,6 +646,7 @@ class KISClient:
                 "eps": self._float(o.get("eps")), "bps": self._float(o.get("bps")),
                 "current_price": self._float(o.get("stck_prpr")),
                 "change_pct":    self._float(o.get("prdy_ctrt")),
+                "market_cap_eok": self._float(o.get("hts_avls")),  # 시가총액(억원) — TTM PER 계산용
             }
         except Exception as e:
             logger.warning("foreign_holding failed for %s: %s", stock_code, e)
@@ -681,6 +694,72 @@ class KISClient:
             bars.extend(chunk)
             end = datetime.strptime(chunk[-1].date, "%Y%m%d").date() - timedelta(days=1)
         return bars[:days]
+
+    def get_ohlcv_monthly(self, stock_code: str, months: int = 60) -> list[OHLCVBar]:
+        """
+        월봉 조회 (최신 → 오래된 순). FID_PERIOD_DIV_CODE='M' — 호출 1회로 최대 100개월.
+        PBR 과거 밴드 근사 계산용 (월별 종가 ÷ 해당 연도 BPS).
+        """
+        today = date.today()
+        start = date(today.year - (months // 12 + 1), today.month, 1)
+        data = self._get(
+            "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+            "FHKST03010100",
+            {
+                "FID_COND_MRKT_DIV_CODE": "J",
+                "FID_INPUT_ISCD":         stock_code,
+                "FID_INPUT_DATE_1":       start.strftime("%Y%m%d"),
+                "FID_INPUT_DATE_2":       today.strftime("%Y%m%d"),
+                "FID_PERIOD_DIV_CODE":    "M",
+                "FID_ORG_ADJ_PRC":        "0",
+            },
+        )
+        bars = []
+        for item in data.get("output2", []):
+            close = item.get("stck_clpr", "0")
+            if not close or close == "0":
+                continue
+            bars.append(OHLCVBar(
+                date=item["stck_bsop_date"],
+                open=Decimal(item.get("stck_oprc") or close),
+                high=Decimal(item.get("stck_hgpr") or close),
+                low=Decimal(item.get("stck_lwpr") or close),
+                close=Decimal(close),
+                volume=int(item.get("acml_vol") or 0),
+            ))
+        return bars[:months]
+
+    def get_fx_daily_closes(self, symbol: str = "FX@KRW", days: int = 65) -> list[dict]:
+        """
+        환율 일별 종가 (최신 → 오래된 순). FHKST03030100 해외 종목/지수/환율 기간별시세,
+        FID_COND_MRKT_DIV_CODE='X'(환율). 기본 symbol 'FX@KRW' = USD/KRW.
+        반환: [{date: 'YYYYMMDD', close: float}], 실패 시 []
+        """
+        today = date.today()
+        start = today - timedelta(days=int(days * 1.6) + 15)
+        try:
+            data = self._get(
+                "/uapi/overseas-price/v1/quotations/inquire-daily-chartprice",
+                "FHKST03030100",
+                {
+                    "FID_COND_MRKT_DIV_CODE": "X",
+                    "FID_INPUT_ISCD":         symbol,
+                    "FID_INPUT_DATE_1":       start.strftime("%Y%m%d"),
+                    "FID_INPUT_DATE_2":       today.strftime("%Y%m%d"),
+                    "FID_PERIOD_DIV_CODE":    "D",
+                },
+            )
+        except Exception as e:
+            logger.warning("fx_daily failed for %s: %s", symbol, e)
+            return []
+        rows = []
+        for item in data.get("output2", []):
+            d = item.get("stck_bsop_date")
+            close = self._float(item.get("ovrs_nmix_prpr"))
+            if d and close:
+                rows.append({"date": d, "close": close})
+        rows.sort(key=lambda r: r["date"], reverse=True)
+        return rows[:days]
 
     # ------------------------------------------------------------------ #
     # 기술적 지표 계산 (내부 헬퍼)

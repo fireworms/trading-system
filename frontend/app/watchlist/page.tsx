@@ -53,9 +53,21 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
   const price = snap.price ?? {};
   const val = snap.valuation_current ?? {};
   const flow = snap.investor_flow ?? {};
+  const flowExt = snap.investor_flow_extended ?? {};
+  const fx = snap.fx_usdkrw ?? {};
+  const market = snap.market ?? {};
+  const pbrBand = val.pbr_band_5y ?? {};
+  const latestRatio = snap.fundamentals_quarterly?.ratios?.[0] ?? {};
+  const perForward = val.per_forward_consensus?.[0];
   const quarters: Record<string, unknown>[] = snap.fundamentals_quarterly?.income_single_q ?? [];
   const flags: Record<string, string> = snap.data_flags ?? {};
   const sources = r["뉴스_출처"] ?? [];
+  const paceNotes: { label: string; text: string }[] = [
+    fx.trend_note && { label: "환율", text: fx.trend_note },
+    market.relative_note && { label: "상대강도", text: market.relative_note },
+    flow.frgn_pace?.judgment && { label: "외국인", text: flow.frgn_pace.judgment },
+    flow.orgn_pace?.judgment && { label: "기관", text: flow.orgn_pace.judgment },
+  ].filter(Boolean) as { label: string; text: string }[];
 
   return (
     <div className="flex flex-col gap-4">
@@ -105,7 +117,7 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
           </span>
         </h3>
 
-        {/* 가격/밸류 요약 */}
+        {/* 가격/시장 요약 */}
         <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 text-xs">
           <SnapCell label="현재가" value={fmtNum(price.current_price, 0)} />
           <SnapCell label="1개월" value={<PctCell v={price.return_1m_pct} />} />
@@ -113,13 +125,54 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
           <SnapCell label="6개월" value={<PctCell v={price.return_6m_pct} />} />
           <SnapCell label="6M 밴드 위치" value={typeof price.pos_in_6m_band_pct === "number" ? `${price.pos_in_6m_band_pct}%` : "-"} />
           <SnapCell label="RSI(14)" value={fmtNum(price.rsi_14)} />
+          <SnapCell label="USD/KRW" value={fmtNum(fx.current, 1)} />
+          <SnapCell label="환율 3개월" value={<PctCell v={fx.change_3m_pct} />} />
+          <SnapCell label="KOSPI" value={fmtNum(market.kospi_level, 0)} />
+          <SnapCell label="KOSPI 대비 3M" value={typeof market.stock_rel_return_3m_pct === "number"
+            ? <span className={market.stock_rel_return_3m_pct >= 0 ? "text-red-400" : "text-blue-400"}>
+                {market.stock_rel_return_3m_pct >= 0 ? "+" : ""}{market.stock_rel_return_3m_pct.toFixed(1)}%p
+              </span> : "-"} />
+          <SnapCell label="ROE(분기)" value={fmtNum(latestRatio.roe, 2)} />
+          <SnapCell label="부채비율" value={fmtNum(latestRatio.debt_ratio, 1)} />
+        </div>
+
+        {/* 밸류 — PER 시점별 병기 (trailing 왜곡 방지) */}
+        <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 text-xs">
           <SnapCell label="PER(직전실적)" value={fmtNum(val.per_trailing, 2)} />
+          <SnapCell label="PER(TTM)" value={fmtNum(val.per_ttm, 2)} />
+          <SnapCell label="PER(최근분기 연환산)" value={fmtNum(val.per_last_q_annualized, 2)} />
+          <SnapCell label={perForward ? `PER(${perForward.period})` : "PER(컨센서스)"} value={fmtNum(perForward?.per, 2)} />
           <SnapCell label="PBR" value={fmtNum(val.pbr, 2)} />
+          <SnapCell label="PBR 5년 위치" value={typeof pbrBand.pbr_percentile_5y === "number"
+            ? `${pbrBand.pbr_percentile_5y}퍼센타일 (중앙값 ${fmtNum(pbrBand.pbr_5y_median, 2)})` : "-"} />
+        </div>
+
+        {/* 수급 — 30일 실측 + 자체 적재 60/120일 */}
+        <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 text-xs">
           <SnapCell label="외인 소진율" value={typeof flow.frgn_exhaust_rate_pct === "number" ? `${flow.frgn_exhaust_rate_pct}%` : "-"} />
           <SnapCell label="외인 5일" value={fmtMillion(flow.frgn_net_5d)} />
           <SnapCell label="외인 30일" value={fmtMillion(flow.frgn_net_30d)} />
+          <SnapCell label="외인 60일" value={fmtMillion(flowExt.frgn_net_60d)} />
           <SnapCell label="기관 30일" value={fmtMillion(flow.orgn_net_30d)} />
+          <SnapCell label="개인 30일" value={fmtMillion(flow.prsn_net_30d)} />
         </div>
+        {typeof flowExt.coverage_days === "number" && flowExt.coverage_days < 120 && (
+          <p className="text-xs text-gray-600">
+            60/120일 수급은 자체 적재 기반 — 현재 {flowExt.coverage_days}거래일분 축적
+            {flowExt.earliest_date ? ` (${flowExt.earliest_date}부터)` : ""}
+          </p>
+        )}
+
+        {/* 앱 계산 판정 — AI가 그대로 인용하는 문자열 */}
+        {paceNotes.length > 0 && (
+          <div className="bg-gray-900/60 rounded-lg px-3 py-2.5 flex flex-col gap-1">
+            {paceNotes.map((n) => (
+              <p key={n.label} className="text-xs text-gray-300">
+                <span className="text-gray-500 mr-1.5">{n.label}</span>{n.text}
+              </p>
+            ))}
+          </div>
+        )}
 
         {/* 분기 실적 (단일분기 차분) */}
         {quarters.length > 0 && (
@@ -130,9 +183,11 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
                   <th className="text-left py-1.5 pr-2">분기</th>
                   <th className="text-right py-1.5 px-2">매출</th>
                   <th className="text-right py-1.5 px-2">영업이익</th>
+                  <th className="text-right py-1.5 px-2">순이익</th>
                   <th className="text-right py-1.5 px-2">영업이익률</th>
                   <th className="text-right py-1.5 px-2">매출 YoY</th>
-                  <th className="text-right py-1.5 pl-2">영업익 YoY</th>
+                  <th className="text-right py-1.5 px-2">영업익 YoY</th>
+                  <th className="text-right py-1.5 pl-2">순익 YoY</th>
                 </tr>
               </thead>
               <tbody>
@@ -141,9 +196,11 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
                     <td className="py-1.5 pr-2 font-mono">{String(q.period ?? "-")}</td>
                     <td className="text-right py-1.5 px-2">{fmtEok(q.revenue_q)}</td>
                     <td className="text-right py-1.5 px-2">{fmtEok(q.operating_profit_q)}</td>
+                    <td className="text-right py-1.5 px-2">{fmtEok(q.net_income_q)}</td>
                     <td className="text-right py-1.5 px-2">{typeof q.op_margin_q_pct === "number" ? `${q.op_margin_q_pct}%` : "-"}</td>
                     <td className="text-right py-1.5 px-2"><PctCell v={q.revenue_yoy_pct} /></td>
-                    <td className="text-right py-1.5 pl-2"><PctCell v={q.op_yoy_pct} /></td>
+                    <td className="text-right py-1.5 px-2"><PctCell v={q.op_yoy_pct} /></td>
+                    <td className="text-right py-1.5 pl-2"><PctCell v={q.ni_yoy_pct} /></td>
                   </tr>
                 ))}
               </tbody>
@@ -170,6 +227,11 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
               ))}
             </ul>
           </div>
+        )}
+        {sources.length === 0 && (
+          <p className="text-xs text-amber-500/80">
+            ⚠ 뉴스/공시 출처 0건 — 이 분석은 검색 근거 없이 KIS 실측 데이터만으로 작성됨
+          </p>
         )}
 
         {/* 데이터 결측 플래그 — 뭘 못 보고 판단했는지 기록 */}
