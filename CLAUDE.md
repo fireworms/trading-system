@@ -1,5 +1,7 @@
 # Trading System - AI 기반 자동매매 시스템
 
+> 관심종목 분석 탭(중장기 수동매매) 스펙은 docs/watchlist_spec.md 참조. 해당 탭 관련 작업 시 반드시 먼저 읽을 것.
+
 ## 프로젝트 개요
 한국투자증권(KIS) API + Gemini AI를 활용한 자동매매 시스템
 - AI 4단계 파이프라인으로 매크로 분석 + 역사적 패턴 매칭 + 장중 확인 후 종목 매수
@@ -39,7 +41,8 @@ trading_system/
 │   │   ├── position.py          # Position (peak_price 포함)
 │   │   ├── stock_master.py      # StockMaster (KIS MST 기반 종목 풀)
 │   │   ├── app_config.py        # AppConfig (key-value 설정 테이블)
-│   │   └── news_event.py        # NewsEvent (뉴스 감시 + 시장 영향 누적)
+│   │   ├── news_event.py        # NewsEvent (뉴스 감시 + 시장 영향 누적)
+│   │   └── watchlist.py         # WatchlistStock, StockAnalysis (중장기 수동매매 일지)
 │   ├── api/
 │   │   ├── users.py             # 회원가입, 로그인, 브로커계좌 CRUD (hts_id 수정 포함)
 │   │   ├── strategies.py        # 전략 CRUD, 구독 관리
@@ -50,6 +53,7 @@ trading_system/
 │   │   ├── prompt_versions.py   # 프롬프트 버전 관리
 │   │   ├── stock_master.py      # 종목 풀 검색/통계
 │   │   ├── backtest.py          # 백테스트 실행/결과
+│   │   ├── watchlist.py         # 관심종목 CRUD + 분석 실행/이력 (중장기 탭)
 │   │   └── ws.py                # WebSocket /ws/prices (실시간 가격)
 │   ├── services/
 │   │   ├── kis/
@@ -63,6 +67,8 @@ trading_system/
 │   │   ├── stock_master/
 │   │   │   ├── updater.py       # KIS MST 파일 파싱 → stock_master 갱신
 │   │   │   └── index_constituents.py  # KOSPI200/KOSDAQ150 구성종목
+│   │   ├── watchlist/
+│   │   │   └── analyzer.py      # 관심종목 분석 (수집→스냅샷→Gemini 구조화→저장)
 │   │   ├── telegram/
 │   │   │   └── notifier.py      # TelegramNotifier (멀티유저, chat_id별 전송)
 │   │   │                        # notify_admins_warning: 정책 경고 (⚠️ [WARNING])
@@ -76,7 +82,10 @@ trading_system/
 │   └── schemas/
 │       ├── user.py
 │       ├── strategy.py
-│       └── recommendation.py    # PositionOut (target_price, trailing_stop_price 포함)
+│       ├── recommendation.py    # PositionOut (target_price, trailing_stop_price 포함)
+│       └── watchlist.py
+├── docs/
+│   └── watchlist_spec.md        # 관심종목 분석 탭 스펙 (관련 작업 시 필독)
 ├── frontend/                    # Next.js 프론트엔드
 ├── scripts/                     # seed 스크립트
 ├── migrations/                  # Alembic 마이그레이션
@@ -163,6 +172,15 @@ trading_system/
 ### prompt_versions
 - stage(1~4), version_no, prompt_text, performance_score
 
+### watchlist_stocks / stock_analyses ← 관심종목 분석 탭 (중장기 수동매매 일지)
+- watchlist_stocks: watch_id (PK), user_id (FK), stock_code, stock_name, sector, memo, added_at
+  - UNIQUE(user_id, stock_code) — 유저별 스코핑
+- stock_analyses: analysis_id (PK), user_id (FK), stock_code, stock_name, analysis_date, trigger_type(manual/earnings/disclosure/flow_spike/price_spike), gemini_model
+  - **result** (JSONB): 논거/단기_촉매/장기_논거/**무효화_조건**(핵심, falsifiable 강제)/밸류_코멘트/뉴스_출처
+  - **input_snapshot** (JSONB): 분석 시점 KIS 지표/재무/수급/추정실적 + data_flags(결측 명시) — 사후 재구성용
+  - **watchlist_stocks에 FK 없음** — 관심종목 삭제해도 일지 영구 보존
+- 상세 설계·KIS 필드 디코딩 근거는 docs/watchlist_spec.md + 메모리 watchlist_tab.md 참조
+
 ## 자동매매 흐름
 
 ### 분석 잡 (08:30 Mon/Wed/Fri)
@@ -241,6 +259,7 @@ trading_system/
 | BUY_CONFIRM (미사용, prompts.py에만 존재) | — | — |
 | 실적 카탈리스트 탐지 (earnings_catalyst 전략) | gemini-2.5-flash | - (검색 그라운딩, 실패 시 빈 결과) |
 | 뉴스 감시 (장중 2시간마다) | gemini-2.5-flash | - |
+| 관심종목 분석 (수동 트리거) | gemini-2.5-flash | - (검색 그라운딩, 파싱 실패 시 gemma 정제) |
 | 모닝 게이트 (08:00) | gemini-2.5-flash | - |
 | Thesis 재검증 (10:00, 14:00) | gemini-2.5-flash | - |
 | JSON 정제 | gemma-4-31b-it | - |
@@ -308,6 +327,9 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
   - 매수 직후 entry_price, 매도 직후 exit_price에 실 체결가 반영
 - `CTPF1002R` search-stock-info: 종목 기본정보 (섹터)
 - `FHPST01740000` 시총순위: KOSPI200/KOSDAQ150 구성종목 근사치
+- `FHKST66430300` financial-ratio: 분기 ROE/부채비율/EPS/BPS/성장률 (관심종목 탭)
+- `FHKST66430200` income-statement: 분기 손익 — **YTD 누적**이라 단일 분기는 차분 필요
+- `HHKST668300C0` estimate-perform: 컨센서스 추정실적 — output2/3 행 순서가 항목, 비율·EPS ×10 스케일, 목표주가 없음
 
 ## 뉴스 감시 시스템
 - **주기**: 장중(09:00~15:30) 40분마다 Gemini+검색그라운딩으로 체크
@@ -504,6 +526,17 @@ TELEGRAM_BOT_TOKEN=      # 선택
 - `_verify_pick()`: 일봉 날짜순 손절-우선 청산 모델(verifier.py와 동일 convention). pnl 비현실값(분할/상폐) ±클램프(-100~+200%)
 - `_compute_random_baseline(stock_data, target_date, strategy, client)`: 동일 풀 랜덤 픽 + **AI와 동일 목표/손절 청산·클램프** 적용(공정 비교)
 - **구조적 한계**: 매크로를 스텁(`market_theme="백테스트"`)함 — Stage1 그라운딩은 현재시점이라 과거날짜 lookahead 방지. 따라서 **매크로 정합 효과는 백테스트로 측정 불가, 기술기준만 평가**됨
+
+### app/services/watchlist/analyzer.py
+- 관심종목 분석 서비스 (스펙: docs/watchlist_spec.md). AI = 데이터 집계+구조화, 예측 금지
+- `collect_input_snapshot(client, code, name, sector)`: 6개월 일봉 요약 + 분기 재무(YTD→단일분기 차분) + 컨센서스 추정 + 수급 30거래일 + data_flags(결측 명시) → 이 dict가 그대로 프롬프트 입력 + DB 저장 (사후 재구성 보장)
+- `run_analysis(db, user_id, ...)`: 수집 → gemini-2.5-flash 검색 그라운딩 → JSON 파싱 → StockAnalysis 저장. **무효화_조건 비면 1회 강제 재요청** 후 실패 시 ValueError
+- analysis_date는 라벨 — KIS 입력은 항상 수집 시점 (snapshot.collected_at 기록)
+- 1차 범위: 수동 트리거만. 이벤트 자동 감지(실적/공시/수급·주가 급변)는 후속
+
+### app/api/watchlist.py
+- 관심종목 CRUD + `POST /watchlist/analyze` + 이력/상세 조회, 전부 current_user 스코핑
+- 삭제 시 분석 일지는 보존 (FK 없음). 이력 집계는 stock_code 기준 별도 쿼리
 
 ### app/services/telegram/notifier.py
 - `TelegramNotifier`: 멀티유저 텔레그램 알림. chat_id별 개별 전송

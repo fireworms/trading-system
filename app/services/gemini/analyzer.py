@@ -149,6 +149,12 @@ class GeminiAnalyzer:
                 logger.error("Gemma 4 JSON repair also failed: %s", e)
                 raise
 
+    def grounded_json(self, prompt: str, model: str = "gemini-2.5-flash") -> tuple[dict, str, str]:
+        """검색 그라운딩 1회 호출 + JSON 파싱 (공용 헬퍼).
+        반환: (파싱된 dict, 원문 텍스트, 사용 모델명). 파싱 실패 시 Gemma 정제 재시도 후 예외."""
+        text = self._call_model_with_search(prompt, model)
+        return self._parse_json(text), text, model
+
     # ------------------------------------------------------------------ #
     # 4단계 파이프라인
     # ------------------------------------------------------------------ #

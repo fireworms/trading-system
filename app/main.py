@@ -5,10 +5,11 @@ from fastapi.middleware.cors import CORSMiddleware
 
 logger = logging.getLogger(__name__)
 
-from app.api import users, strategies, recommendations, positions, market, admin, prompt_versions, stock_master, backtest, news_events
+from app.api import users, strategies, recommendations, positions, market, admin, prompt_versions, stock_master, backtest, news_events, watchlist
 from app.api import ws as ws_api
 import app.models.app_config   # noqa: F401 — Alembic autogenerate 인식용
 import app.models.news_event    # noqa: F401
+import app.models.watchlist     # noqa: F401
 
 
 @asynccontextmanager
@@ -160,6 +161,7 @@ app.include_router(prompt_versions.router, prefix="/api/v1")
 app.include_router(stock_master.router, prefix="/api/v1")
 app.include_router(backtest.router, prefix="/api/v1")
 app.include_router(news_events.router, prefix="/api/v1")
+app.include_router(watchlist.router, prefix="/api/v1")
 app.include_router(ws_api.router)   # WebSocket은 prefix 없이 /ws/prices
 
 

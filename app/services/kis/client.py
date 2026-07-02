@@ -464,6 +464,225 @@ class KISClient:
         }
 
     # ------------------------------------------------------------------ #
+    # 관심종목 분석용 (docs/watchlist_spec.md)
+    # 실패 시 None/[] 반환 — 가짜 값(0 등)으로 위장 금지, 호출부가 "데이터 없음" 플래그 처리
+    # ------------------------------------------------------------------ #
+
+    @staticmethod
+    def _float(v) -> float | None:
+        try:
+            f = float(v)
+        except (ValueError, TypeError):
+            return None
+        return f
+
+    def get_financial_ratios(self, stock_code: str, quarterly: bool = True) -> list[dict]:
+        """
+        재무비율 조회 (FHKST66430300). 분기별 ROE/부채비율/EPS/BPS/성장률.
+        반환: 최신순 [{period, sales_growth, op_profit_growth, net_income_growth,
+                       roe, eps, bps, debt_ratio, reserve_rate}], 실패 시 []
+        """
+        try:
+            data = self._get(
+                "/uapi/domestic-stock/v1/finance/financial-ratio",
+                "FHKST66430300",
+                {"FID_DIV_CLS_CODE": "1" if quarterly else "0",
+                 "fid_cond_mrkt_div_code": "J", "fid_input_iscd": stock_code},
+            )
+        except Exception as e:
+            logger.warning("financial_ratios failed for %s: %s", stock_code, e)
+            return []
+        return [
+            {
+                "period":            r.get("stac_yymm"),
+                "sales_growth":      self._float(r.get("grs")),
+                "op_profit_growth":  self._float(r.get("bsop_prfi_inrt")),
+                "net_income_growth": self._float(r.get("ntin_inrt")),
+                "roe":               self._float(r.get("roe_val")),
+                "eps":               self._float(r.get("eps")),
+                "bps":               self._float(r.get("bps")),
+                "debt_ratio":        self._float(r.get("lblt_rate")),
+                "reserve_rate":      self._float(r.get("rsrv_rate")),
+            }
+            for r in data.get("output", [])
+        ]
+
+    def get_income_statements(self, stock_code: str, quarterly: bool = True) -> list[dict]:
+        """
+        손익계산서 조회 (FHKST66430200). 단위: 억원.
+        주의: 분기 조회 시 각 행은 해당 분기말까지의 **YTD 누적**값 —
+        단일 분기 값은 호출부에서 차분으로 계산해야 함.
+        반환: 최신순 [{period, revenue, operating_profit, net_income}], 실패 시 []
+        """
+        try:
+            data = self._get(
+                "/uapi/domestic-stock/v1/finance/income-statement",
+                "FHKST66430200",
+                {"FID_DIV_CLS_CODE": "1" if quarterly else "0",
+                 "fid_cond_mrkt_div_code": "J", "fid_input_iscd": stock_code},
+            )
+        except Exception as e:
+            logger.warning("income_statements failed for %s: %s", stock_code, e)
+            return []
+        return [
+            {
+                "period":           r.get("stac_yymm"),
+                "revenue":          self._float(r.get("sale_account")),
+                "operating_profit": self._float(r.get("bsop_prti")),
+                "net_income":       self._float(r.get("thtr_ntin")),
+            }
+            for r in data.get("output", [])
+        ]
+
+    # estimate-perform output2/3는 필드명이 data1~5(연도)이고 행 순서가 항목을 의미.
+    # 행 라벨은 2026-07-02 삼성전자 실응답을 재무비율/손익계산서 실적치와 교차검증해 확정
+    # (영업이익 436011억·증감율 33.2%·ROE 10.85·부채비율 29.94 일치 확인).
+    # 비율·EPS 계열은 ×10 스케일로 옴 → /10, 금액 계열은 억원 그대로.
+    _ESTIMATE_O2_ROWS = [
+        ("revenue", 1), ("revenue_growth", 10),
+        ("operating_profit", 1), ("op_growth", 10),
+        ("net_income", 1), ("ni_growth", 10),
+    ]
+    _ESTIMATE_O3_ROWS = [
+        ("ebitda", 1), ("eps", 10), ("eps_growth", 10), ("per", 10),
+        ("ev_ebitda", 10), ("roe", 10), ("debt_ratio", 10), ("interest_coverage", 10),
+    ]
+
+    def get_estimate_perform(self, stock_code: str) -> dict | None:
+        """
+        종목추정실적 조회 (HHKST668300C0) — 증권사 컨센서스 기반 연도별 추정.
+        반환: {analyst, opinion, est_date, periods, revenue[], operating_profit[],
+               eps[], per[], roe[], ...} (periods와 index 정렬, 'E' 접미사=추정치)
+        커버리지 없는 종목/실패 시 None. ※ 목표주가는 이 API에 없음.
+        """
+        try:
+            data = self._get(
+                "/uapi/domestic-stock/v1/quotations/estimate-perform",
+                "HHKST668300C0",
+                {"SHT_CD": stock_code},
+            )
+        except Exception as e:
+            logger.warning("estimate_perform failed for %s: %s", stock_code, e)
+            return None
+
+        periods = [r.get("dt") for r in data.get("output4", []) if r.get("dt")]
+        o1 = data.get("output1") or {}
+        if not periods or not o1.get("item_kor_nm"):
+            return None  # 컨센서스 커버리지 없음
+
+        def _rows(rows: list, labels: list[tuple[str, int]]) -> dict:
+            out = {}
+            for (label, scale), row in zip(labels, rows):
+                vals = []
+                for i in range(1, len(periods) + 1):
+                    v = self._float(row.get(f"data{i}"))
+                    vals.append(round(v / scale, 2) if v is not None else None)
+                out[label] = vals
+            return out
+
+        result = {
+            "analyst":  o1.get("name1") or None,
+            "opinion":  o1.get("rcmd_name") or None,
+            "est_date": o1.get("estdate") or None,
+            "periods":  periods,
+        }
+        result.update(_rows(data.get("output2", []), self._ESTIMATE_O2_ROWS))
+        result.update(_rows(data.get("output3", []), self._ESTIMATE_O3_ROWS))
+        return result
+
+    def get_investor_daily(self, stock_code: str) -> list[dict]:
+        """
+        일별 투자자 순매수 (FHKST01010900) — API 한계로 최근 30거래일까지만.
+        amt 단위: 백만원. 반환: 최신순, 실패 시 []
+        """
+        try:
+            data = self._get(
+                "/uapi/domestic-stock/v1/quotations/inquire-investor",
+                "FHKST01010900",
+                {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": stock_code},
+            )
+        except Exception as e:
+            logger.warning("investor_daily failed for %s: %s", stock_code, e)
+            return []
+        return [
+            {
+                "date":          r.get("stck_bsop_date"),
+                "close":         self._float(r.get("stck_clpr")),
+                "frgn_ntby_qty": self._float(r.get("frgn_ntby_qty")),
+                "orgn_ntby_qty": self._float(r.get("orgn_ntby_qty")),
+                "prsn_ntby_qty": self._float(r.get("prsn_ntby_qty")),
+                "frgn_ntby_amt": self._float(r.get("frgn_ntby_tr_pbmn")),
+                "orgn_ntby_amt": self._float(r.get("orgn_ntby_tr_pbmn")),
+                "prsn_ntby_amt": self._float(r.get("prsn_ntby_tr_pbmn")),
+            }
+            for r in data.get("output", [])
+        ]
+
+    def get_foreign_holding(self, stock_code: str) -> dict | None:
+        """외국인 보유 현황 (inquire-price 동봉 필드). 현재 시점 값만 제공됨."""
+        try:
+            data = self._get(
+                "/uapi/domestic-stock/v1/quotations/inquire-price",
+                "FHKST01010100",
+                {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": stock_code},
+            )
+            o = data.get("output", {})
+            return {
+                "frgn_exhaust_rate": self._float(o.get("hts_frgn_ehrt")),   # 외국인 소진율(%)
+                "frgn_holding_qty":  self._float(o.get("frgn_hldn_qty")),
+                "per": self._float(o.get("per")), "pbr": self._float(o.get("pbr")),
+                "eps": self._float(o.get("eps")), "bps": self._float(o.get("bps")),
+                "current_price": self._float(o.get("stck_prpr")),
+                "change_pct":    self._float(o.get("prdy_ctrt")),
+            }
+        except Exception as e:
+            logger.warning("foreign_holding failed for %s: %s", stock_code, e)
+            return None
+
+    def get_ohlcv_long(self, stock_code: str, days: int = 180) -> list[OHLCVBar]:
+        """
+        일봉 장기 조회 — inquire-daily-itemchartprice가 호출당 100건 제한이라
+        날짜 구간을 나눠 연속 조회. 반환: 최신순 최대 days개.
+        """
+        bars: list[OHLCVBar] = []
+        end = date.today()
+        seen: set[str] = set()
+        while len(bars) < days:
+            start = end - timedelta(days=170)  # 100거래일 ≈ 145달력일, 여유 포함
+            data = self._get(
+                "/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice",
+                "FHKST03010100",
+                {
+                    "FID_COND_MRKT_DIV_CODE": "J",
+                    "FID_INPUT_ISCD":         stock_code,
+                    "FID_INPUT_DATE_1":       start.strftime("%Y%m%d"),
+                    "FID_INPUT_DATE_2":       end.strftime("%Y%m%d"),
+                    "FID_PERIOD_DIV_CODE":    "D",
+                    "FID_ORG_ADJ_PRC":        "0",
+                },
+            )
+            chunk = []
+            for item in data.get("output2", []):
+                close = item.get("stck_clpr", "0")
+                d = item.get("stck_bsop_date")
+                if not close or close == "0" or not d or d in seen:
+                    continue
+                seen.add(d)
+                chunk.append(OHLCVBar(
+                    date=d,
+                    open=Decimal(item.get("stck_oprc") or close),
+                    high=Decimal(item.get("stck_hgpr") or close),
+                    low=Decimal(item.get("stck_lwpr") or close),
+                    close=Decimal(close),
+                    volume=int(item.get("acml_vol") or 0),
+                ))
+            if not chunk:
+                break  # 상장 이전 구간 도달
+            bars.extend(chunk)
+            end = datetime.strptime(chunk[-1].date, "%Y%m%d").date() - timedelta(days=1)
+        return bars[:days]
+
+    # ------------------------------------------------------------------ #
     # 기술적 지표 계산 (내부 헬퍼)
     # ------------------------------------------------------------------ #
 

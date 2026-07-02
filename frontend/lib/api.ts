@@ -377,6 +377,44 @@ export interface NewsEvent {
   verified_3d: boolean;
 }
 
+export type WatchTriggerType = "manual" | "earnings" | "disclosure" | "flow_spike" | "price_spike";
+
+export interface WatchlistItem {
+  watch_id: string;
+  stock_code: string;
+  stock_name: string;
+  sector: string | null;
+  memo: string;
+  added_at: string;
+  analysis_count: number;
+  last_analysis_date: string | null;
+}
+
+// AI 구조화 출력 (docs/watchlist_spec.md — 5개 섹션 + 뉴스 출처)
+export interface WatchAnalysisResult {
+  "논거"?: string;
+  "단기_촉매"?: { "이벤트"?: string; "예상_시점"?: string; "성격"?: string }[];
+  "장기_논거"?: string;
+  "무효화_조건"?: string[];
+  "밸류_코멘트"?: string;
+  "뉴스_출처"?: { "제목"?: string; "매체"?: string; "날짜"?: string; url?: string }[];
+}
+
+export interface StockAnalysisSummary {
+  analysis_id: string;
+  stock_code: string;
+  stock_name: string;
+  analysis_date: string;
+  trigger_type: WatchTriggerType | string;
+  gemini_model: string;
+  result: WatchAnalysisResult | null;
+  created_at: string;
+}
+
+export interface StockAnalysisDetail extends StockAnalysisSummary {
+  input_snapshot: Record<string, any> | null;
+}
+
 // ------------------------------------------------------------------ //
 // API
 // ------------------------------------------------------------------ //
@@ -538,5 +576,30 @@ export const api = {
   newsEvents: {
     list: (severity?: string) =>
       authFetch<NewsEvent[]>(`/news-events${severity ? `?severity=${severity}` : ""}`),
+  },
+
+  watchlist: {
+    list: () => authFetch<WatchlistItem[]>("/watchlist"),
+    add: (stock_code: string, memo = "") =>
+      authFetch<WatchlistItem>("/watchlist", {
+        method: "POST",
+        body: JSON.stringify({ stock_code, memo }),
+      }),
+    updateMemo: (watchId: string, memo: string) =>
+      authFetch<WatchlistItem>(`/watchlist/${watchId}`, {
+        method: "PATCH",
+        body: JSON.stringify({ memo }),
+      }),
+    remove: (watchId: string) =>
+      authFetch<void>(`/watchlist/${watchId}`, { method: "DELETE" }),
+    analyze: (body: { stock_code: string; analysis_date?: string; trigger_type?: WatchTriggerType }) =>
+      authFetch<StockAnalysisDetail>("/watchlist/analyze", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    analyses: (stockCode: string) =>
+      authFetch<StockAnalysisSummary[]>(`/watchlist/analyses/${stockCode}`),
+    analysisDetail: (analysisId: string) =>
+      authFetch<StockAnalysisDetail>(`/watchlist/analysis/${analysisId}`),
   },
 };
