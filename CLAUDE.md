@@ -517,7 +517,7 @@ TELEGRAM_BOT_TOKEN=      # 선택
 
 ### app/services/news/watcher.py
 - `check_news(db)`: gemini-2.5-flash + google_search → severity 판정. 실패 시 20초 후 1회 재시도, 최종 실패 시 `check_failed` 마커 반환 (NORMAL로 위장 금지)
-- `morning_gate_check()`: 08:00 실행. 시작부에서 전날 켜진 news_auto_trade_paused stale 자동 해제(news_pause_at ≠ 오늘 KST) → **QQQ 전일 등락률 수치 게이트**(-1.5% WARNING / -3% CRITICAL, `get_us_price_with_change("QQQ","NAS")`, LLM 비의존) + Gemini 미국선물/지정학 체크 → 둘 중 나쁜 쪽 채택 → WARNING/CRITICAL 시 `morning_gate_paused=true`. Gemini 실패해도 수치만으로 차단 가능(fail-safe), `morning_gate_last_check`에 QQQ 실측 vs LLM 수치 기록 (게이트 정확도 사후검증용)
+- `morning_gate_check()`: 08:00 실행. 시작부에서 전날 켜진 news_auto_trade_paused stale 자동 해제(news_pause_at ≠ 오늘 KST) → **QQQ 전일 등락률 수치 게이트**(-1.5% WARNING / -3% CRITICAL, `get_us_price_with_change("QQQ","NAS")`, LLM 비의존) + Gemini 미국선물/지정학 체크 → 둘 중 나쁜 쪽 채택 → WARNING/CRITICAL 시 `morning_gate_paused=true`. Gemini 실패해도 수치만으로 차단 가능(fail-safe), `morning_gate_last_check`에 QQQ 실측 vs LLM 수치 기록 (게이트 정확도 사후검증용, date는 KST 거래일 — UTC로 쓰면 08:00 KST 실행 시 전날로 밀림)
 - `run_news_check_and_act()`: 스케줄러에서 호출. 장중 120분 간격 체크 (10분 tick 기반). `check_failed`면 이벤트 저장 스킵 + 연속실패 카운트 + 3연속 시 어드민 알림
 - `_apply_dual_signal_action(db, result)`: AI 판정 × KOSPI 등락률 교차 검증 → emergency_close / tighten_stop / 알림만
 - `check_position_theses(db)`: 10:00/14:00. 2일+ HOLDING 포지션 8개씩 그룹 → gemini-2.5-flash + google_search thesis 재검증 → invalid+손실 시 조기 청산

@@ -9,6 +9,7 @@ import logging
 import time
 from datetime import datetime, timezone
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 
@@ -205,7 +206,6 @@ def morning_gate_check() -> None:
         # WARNING은 시점 이벤트인데 수동 재개만 가능해 무한 정지되던 문제 교정 —
         # 오늘 실제 야간 리스크는 아래 게이트 체크가 morning_gate_paused로 재차단한다.
         if get_config(db, "news_auto_trade_paused", "false") == "true":
-            from zoneinfo import ZoneInfo
             pause_at  = get_config(db, "news_pause_at", "")
             today_kst = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
             if pause_at != today_kst:
@@ -286,8 +286,9 @@ def morning_gate_check() -> None:
             reason = f"{reason} / {suffix}" if reason else suffix
 
         # 게이트 정확도 사후검증용 기록 (LLM이 읽은 수치 vs 실제 수치)
+        # 08:00 KST = 전일 23:00 UTC — 거래일 매칭을 위해 KST 날짜로 기록
         set_config(db, "morning_gate_last_check", json.dumps({
-            "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+            "date": datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d"),
             "severity": severity,
             "qqq_pct": us_chg,
             "llm_futures_pct": llm_futures_pct,
@@ -379,7 +380,6 @@ def run_news_check_and_act() -> None:
         db.add(event)
 
         if result["severity"] == "WARNING":
-            from zoneinfo import ZoneInfo
             set_config(db, "news_auto_trade_paused", "true")
             set_config(db, "news_pause_reason", result["event_description"])
             # 익일 자동 해제용 — pause 발생 KST 날짜 기록 (morning_gate가 stale 판정)
