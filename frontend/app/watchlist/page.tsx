@@ -44,6 +44,12 @@ function fmtMillion(v: unknown): string {
   return fmtEok(eok);
 }
 
+/** DART rcept_dt "20260701" → "2026-07-01" */
+function fmtYmd(s: unknown): string {
+  if (typeof s !== "string") return "-";
+  return s.length === 8 ? `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6)}` : s;
+}
+
 // ------------------------------------------------------------------ //
 // 분석 상세 뷰: 5개 섹션 + 입력 스냅샷 (사후 검증용으로 함께 표시)
 // ------------------------------------------------------------------ //
@@ -62,6 +68,10 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
   const quarters: Record<string, unknown>[] = snap.fundamentals_quarterly?.income_single_q ?? [];
   const flags: Record<string, string> = snap.data_flags ?? {};
   const sources = r["뉴스_출처"] ?? [];
+  const dart = snap.dart_disclosures ?? {};
+  const dartItems: Record<string, any>[] = dart.items ?? [];
+  const newsRecent = snap.news_recent ?? {};
+  const newsItems: Record<string, any>[] = newsRecent.items ?? [];
   const paceNotes: { label: string; text: string }[] = [
     fx.trend_note && { label: "환율", text: fx.trend_note },
     market.relative_note && { label: "상대강도", text: market.relative_note },
@@ -205,6 +215,57 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
                 ))}
               </tbody>
             </table>
+          </div>
+        )}
+
+        {/* DART 공시 — 공식 API 확정 입력 (검색 발견 아님) */}
+        {dart.available && (
+          <div>
+            <p className="text-xs text-gray-500 mb-1.5">
+              DART 공시 <span className="text-gray-600">({dart.window ?? "최근 14일"} · 공식 API 확정 입력)</span>
+            </p>
+            {dartItems.length === 0 ? (
+              <p className="text-xs text-gray-600">해당 기간 공시 없음 (공식 API 확인)</p>
+            ) : (
+              <ul className="flex flex-col gap-1">
+                {dartItems.map((d, i) => (
+                  <li key={i} className="text-xs text-gray-400">
+                    <span className="font-mono text-gray-600 mr-1.5">{fmtYmd(d.date)}</span>
+                    {d.url ? (
+                      <a href={d.url} target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">
+                        {d.title || d.url}
+                      </a>
+                    ) : (
+                      <span className="text-gray-300">{d.title}</span>
+                    )}
+                    {d.filer && <span className="ml-1.5 text-gray-600">{d.filer}</span>}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        )}
+
+        {/* 최신 뉴스 입력 — 네이버 뉴스 API, AI에 우선 참조로 주입된 목록 */}
+        {newsRecent.available && newsItems.length > 0 && (
+          <div>
+            <p className="text-xs text-gray-500 mb-1.5">
+              최신 뉴스 입력 <span className="text-gray-600">(네이버 뉴스 API 최신순 · AI 우선 참조 목록)</span>
+            </p>
+            <ul className="flex flex-col gap-1">
+              {newsItems.map((n, i) => (
+                <li key={i} className="text-xs text-gray-400">
+                  <span className="font-mono text-gray-600 mr-1.5">{n.date ?? "날짜 불명"}</span>
+                  {n.link ? (
+                    <a href={n.link} target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">
+                      {n.title || n.link}
+                    </a>
+                  ) : (
+                    <span className="text-gray-300">{n.title}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
           </div>
         )}
 
