@@ -182,7 +182,7 @@ trading_system/
   - **input_snapshot** (JSONB): 분석 시점 KIS 지표/재무/수급/추정실적 + data_flags(결측 명시) — 사후 재구성용
   - **watchlist_stocks에 FK 없음** — 관심종목 삭제해도 일지 영구 보존
 - 상세 설계·KIS 필드 디코딩 근거는 docs/watchlist_spec.md + 메모리 watchlist_tab.md 참조
-- **스냅샷 v2 (2026-07-02)**: fx_usdkrw(USD/KRW 3개월 추세) / market(KOSPI 레벨·1/3개월 + 종목 상대수익률) / PER 4종 병기(trailing·TTM·최근분기 연환산·컨센서스 forward — trailing 왜곡 대응) / 수급 페이스 판정 문자열(5일 vs 30일 일평균, 앱이 확정 — LLM 재계산 금지) / 개인 순매수 5/20/30일 / PBR 5년 밴드 근사(월봉÷당시 연간 BPS, 근사 명시)
+- **스냅샷 v2 (2026-07-02, 실검증 2026-07-03 완료)**: fx_usdkrw(USD/KRW 3개월 추세) / market(KOSPI 레벨·1/3개월 + 종목 상대수익률) / PER 4종 병기(trailing·TTM·최근분기 연환산·컨센서스 forward — trailing 왜곡 대응) / 수급 페이스 판정 문자열(5일 vs 30일 일평균, 앱이 확정 — LLM 재계산 금지) / 개인 순매수 5/20/30일 / PBR 5년 밴드 근사(월봉÷당시 연간 BPS, 근사 명시)
 
 ### investor_flow_daily ← 관심종목 수급 적재 (2026-07-02)
 - flow_id (PK), stock_code (idx), trade_date, frgn/orgn/prsn_ntby_amt (백만원), close
@@ -549,6 +549,7 @@ TELEGRAM_BOT_TOKEN=      # 선택
 - `_pace_judgment(avg5, avg30)`: 수급 가속/둔화/전환 판정 문자열 생성 — LLM에 나눗셈 시키지 않기 위해 앱이 확정. 30일 평균 미미하면 중립 취급(비율 폭주 방지), ±20% 밴드 내 "페이스 유사", 부호 전환은 별도 라벨
 - `_pbr_band_5y()`: 월별 종가 ÷ 당시 최근 연간 BPS → 현재 PBR의 5년 퍼센타일 (자사주 소각/증자 왜곡 가능 — 근사 명시)
 - 프롬프트 규칙: 앱 계산 파생지표(judgment/상대수익률/trend_note/per_ttm/퍼센타일) **재계산 금지, 그대로 인용** / per_trailing 왜곡 시 per_ttm·forward 우선 / 환율=외인 수급 공통 팩터로 종목 고유 요인과 구분
+- **뉴스 최신성 가드 (2026-07-03)**: 프롬프트에 14일 창 앵커 + 주가 변동 동인 필수 검색(앱이 1개월/당일 수치 확정 주입) / 파싱 후 14일 내 기사 0건이면 재검색 1회 → 그래도 없으면 `data_flags.news_recency` 명시 후 저장(억지 인용 강제 안 함). 배경: 그라운딩이 앵커 없이는 구 자료로 수렴 (7/2 분석 = 4월 기사 재탕)
 - `run_analysis(db, user_id, ...)`: 수집 → gemini-2.5-flash 검색 그라운딩 → JSON 파싱 → StockAnalysis 저장. **무효화_조건 비면 1회 강제 재요청** 후 실패 시 ValueError
 - analysis_date는 라벨 — KIS 입력은 항상 수집 시점 (snapshot.collected_at 기록)
 - 1차 범위: 수동 트리거만. 이벤트 자동 감지(실적/공시/수급·주가 급변)는 후속. 공매도 잔고는 미구현(KIS 일별추이 API 있어 후속 가능), 대차잔고는 KIS 미제공
