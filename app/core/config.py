@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     telegram_bot_token: str | None = Field(None, alias="TELEGRAM_BOT_TOKEN")
     # telegram_chat_id는 users.telegram_chat_id(DB)로 관리 — .env 불필요
 
+    # 외부 데이터 어댑터 (관심종목 분석) — 미설정 시 해당 소스만 스킵 (data_flags 폴백)
+    dart_api_key: str | None = Field(None, alias="DART_API_KEY")
+    naver_client_id: str | None = Field(None, alias="NAVER_CLIENT_ID")
+    naver_client_secret: str | None = Field(None, alias="NAVER_CLIENT_SECRET")
+
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24
 

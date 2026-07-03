@@ -71,6 +71,10 @@ trading_system/
 │   │   ├── watchlist/
 │   │   │   ├── analyzer.py      # 관심종목 분석 (수집→스냅샷→Gemini 구조화→저장)
 │   │   │   └── flow_store.py    # 일별 수급 적재/60·120일 누적 (KIS 30거래일 한계 보완)
+│   │   ├── dart/
+│   │   │   └── client.py        # DART OpenDART 공시 어댑터 (corp_code 매핑 캐시 + 최근 14일 공시)
+│   │   ├── naver/
+│   │   │   └── news.py          # 네이버 뉴스 검색 어댑터 (최신순 + 제목 중복 제거)
 │   │   ├── telegram/
 │   │   │   └── notifier.py      # TelegramNotifier (멀티유저, chat_id별 전송)
 │   │   │                        # notify_admins_warning: 정책 경고 (⚠️ [WARNING])
@@ -384,6 +388,9 @@ GEMINI_API_KEY=
 DATABASE_URL=postgresql+asyncpg://...
 SECRET_KEY=
 TELEGRAM_BOT_TOKEN=      # 선택
+DART_API_KEY=            # 선택 — 관심종목 공시 어댑터 (미설정 시 data_flags 폴백)
+NAVER_CLIENT_ID=         # 선택 — 관심종목 뉴스 어댑터
+NAVER_CLIENT_SECRET=
 ```
 - KIS API 키/계좌번호는 .env 사용 안 함 → DB broker_accounts에 Fernet 암호화 저장
 - HTS 아이디는 DB broker_accounts.hts_id (프론트 포지션 페이지 > 계좌 설정에서 입력)
@@ -550,6 +557,7 @@ TELEGRAM_BOT_TOKEN=      # 선택
 - `_pbr_band_5y()`: 월별 종가 ÷ 당시 최근 연간 BPS → 현재 PBR의 5년 퍼센타일 (자사주 소각/증자 왜곡 가능 — 근사 명시)
 - 프롬프트 규칙: 앱 계산 파생지표(judgment/상대수익률/trend_note/per_ttm/퍼센타일) **재계산 금지, 그대로 인용** / per_trailing 왜곡 시 per_ttm·forward 우선 / 환율=외인 수급 공통 팩터로 종목 고유 요인과 구분
 - **뉴스 최신성 가드 (2026-07-03)**: 프롬프트에 14일 창 앵커 + 주가 변동 동인 필수 검색(앱이 1개월/당일 수치 확정 주입) / 파싱 후 14일 내 기사 0건이면 재검색 1회 → 그래도 없으면 `data_flags.news_recency` 명시 후 저장(억지 인용 강제 안 함). 배경: 그라운딩이 앵커 없이는 구 자료로 수렴 (7/2 분석 = 4월 기사 재탕)
+- **외부 데이터 어댑터 (2026-07-03)**: 스냅샷에 `dart_disclosures`(DART 공식 API 최근 14일 공시 — 확정 데이터) + `news_recent`(네이버 뉴스 최신순 10건, 제목 중복 제거) 주입. Gemini 검색은 "발견"이 아닌 해석·시장 반응·내용 보강 담당으로 역할 조정. 어댑터 실패 시 분석 안 죽고 data_flags 기록 (공시 "0건"은 실패가 아닌 확정 사실 — status 013은 available=True). DART는 티커가 아닌 8자리 corp_code 사용 — corpCode.xml 매핑을 `~/.dart_corp_code.json` 캐시(30일 TTL, 미매핑 시 강제갱신하되 24h 최소간격)
 - `run_analysis(db, user_id, ...)`: 수집 → gemini-2.5-flash 검색 그라운딩 → JSON 파싱 → StockAnalysis 저장. **무효화_조건 비면 1회 강제 재요청** 후 실패 시 ValueError
 - analysis_date는 라벨 — KIS 입력은 항상 수집 시점 (snapshot.collected_at 기록)
 - 1차 범위: 수동 트리거만. 이벤트 자동 감지(실적/공시/수급·주가 급변)는 후속. 공매도 잔고는 미구현(KIS 일별추이 API 있어 후속 가능), 대차잔고는 KIS 미제공
