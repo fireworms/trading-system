@@ -13,7 +13,8 @@ from sqlalchemy import select
 from app.models.position import Position, PositionStatus
 from app.models.strategy import Strategy, UserStrategy
 from app.models.recommendation import Recommendation, RecommendationRun
-from app.services.kis.client import get_kis_client_from_account
+from app.models.user import AccountType, BrokerAccount
+from app.services.trading.virtual_broker import get_trading_client
 
 logger = logging.getLogger(__name__)
 
@@ -108,12 +109,15 @@ class TradeExecutor:
                            get_config(self.db, reason_key, ""))
             return True
 
+        # 가상계좌 청산은 제외 — CB는 실계좌 자본 보호 레이어
         recent = self.db.scalars(
             select(Position)
+            .join(BrokerAccount, Position.account_id == BrokerAccount.account_id)
             .where(
                 Position.user_id == user_id,
                 Position.status != PositionStatus.HOLDING,
                 Position.pnl_pct.isnot(None),
+                BrokerAccount.account_type != AccountType.VIRTUAL,
             )
             .order_by(Position.exit_date.desc())
             .limit(4)
@@ -159,11 +163,11 @@ class TradeExecutor:
             logger.warning("Auto trade paused by morning gate: %s", reason)
             return
 
-        # Circuit breaker 체크 (유저별)
-        if self._check_circuit_breaker(sub.user_id):
+        # Circuit breaker 체크 (유저별) — 실계좌 자본 보호 레이어라 가상계좌 매수엔 미적용
+        if sub.account.account_type != AccountType.VIRTUAL and self._check_circuit_breaker(sub.user_id):
             return
 
-        client = get_kis_client_from_account(sub.account)
+        client = get_trading_client(sub.account)
         strategy = sub.strategy
 
         # 크로스 시그널 보너스 우선, 동점이면 AI 추천 순위(rank) 순
@@ -187,10 +191,11 @@ class TradeExecutor:
                 logger.info("Cross signal bonus +%.1f%% for %s (rank=%s)",
                             bonus, rec.stock_code, rec.rank)
 
-            # 이미 포지션이 있으면 스킵
+            # 이미 이 계좌에 포지션이 있으면 스킵 (실계좌+가상계좌 병행 구독 허용)
             existing = self.db.scalar(
                 select(Position).where(
                     Position.user_id == sub.user_id,
+                    Position.account_id == sub.account_id,
                     Position.rec_id == rec.rec_id,
                 )
             )
@@ -355,13 +360,14 @@ class TradeExecutor:
             if run is None:
                 continue
 
-            # 이미 이 run에서 매수한 포지션이 있으면 스킵
+            # 이미 이 run에서 이 계좌로 매수한 포지션이 있으면 스킵 (실+가상 병행 구독 허용)
             already_bought = self.db.scalar(
                 select(Position)
                 .join(Recommendation, Position.rec_id == Recommendation.rec_id)
                 .where(
                     Recommendation.run_id == run.run_id,
                     Position.user_id == sub.user_id,
+                    Position.account_id == sub.account_id,
                 )
                 .limit(1)
             )
@@ -416,13 +422,12 @@ class TradeExecutor:
         for pos in today_positions:
             by_account[pos.account_id].append(pos)
 
-        from app.models.user import BrokerAccount
         for account_id, positions in by_account.items():
             account = self.db.get(BrokerAccount, account_id)
             if not account:
                 continue
             try:
-                client = get_kis_client_from_account(account)
+                client = get_trading_client(account)
                 balance_items = client.get_balance()
                 fill_map = {item.stock_code: item.avg_price for item in balance_items}
 
@@ -466,7 +471,7 @@ class TradeExecutor:
     def _check_position(self, pos: Position) -> None:
         rec = pos.recommendation
         strategy = pos.strategy
-        client = get_kis_client_from_account(pos.account)
+        client = get_trading_client(pos.account)
 
         current_price = client.get_current_price(pos.stock_code)
         today = date.today()
@@ -600,6 +605,9 @@ class TradeExecutor:
         if notifier:
             user = self.db.get(User, pos.user_id)
             if user and user.telegram_chat_id:
+                strategy_name = pos.strategy.name if pos.strategy else ""
+                if pos.account and pos.account.account_type == AccountType.VIRTUAL:
+                    strategy_name = f"[가상] {strategy_name}".strip()
                 notifier.notify_position_closed(
                     chat_id=user.telegram_chat_id,
                     stock_code=pos.stock_code,
@@ -608,7 +616,7 @@ class TradeExecutor:
                     entry_price=pos.entry_price,
                     exit_price=exit_price,
                     pnl_pct=pos.pnl_pct,
-                    strategy_name=pos.strategy.name if pos.strategy else "",
+                    strategy_name=strategy_name,
                 )
 
     # ------------------------------------------------------------------ #
@@ -625,7 +633,7 @@ class TradeExecutor:
         failed: list[str] = []
         for pos in positions:
             try:
-                client = get_kis_client_from_account(pos.account)
+                client = get_trading_client(pos.account)
                 current_price = client.get_current_price(pos.stock_code)
                 self._close_position(pos, current_price, PositionStatus.MANUAL_EXIT, client)
                 if pos.status == PositionStatus.HOLDING:
@@ -668,7 +676,7 @@ class TradeExecutor:
 
         for pos in positions:
             try:
-                client = get_kis_client_from_account(pos.account)
+                client = get_trading_client(pos.account)
                 current_price = client.get_current_price(pos.stock_code)
 
                 if current_price <= pos.entry_price:

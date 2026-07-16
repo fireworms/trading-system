@@ -5,11 +5,11 @@ from sqlalchemy import select
 
 from app.core.database import get_db
 from app.core.security import hash_password, verify_password, create_access_token, encrypt_secret
-from app.models.user import User, Permission, BrokerAccount
+from app.models.user import User, Permission, BrokerAccount, BrokerType, AccountType
 from app.schemas.user import (
     UserCreate, UserUpdate, UserOut, PermissionOut,
     BrokerAccountCreate, BrokerAccountUpdate, BrokerAccountOut,
-    LoginRequest, TokenOut, TelegramUpdate,
+    VirtualAccountCreate, LoginRequest, TokenOut, TelegramUpdate,
 )
 from app.api.deps import get_current_user, require_admin
 
@@ -116,6 +116,33 @@ def add_broker_account(
         api_key_enc=encrypt_secret(body.api_key),
         api_secret_enc=encrypt_secret(body.api_secret),
         account_type=body.account_type,
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+    return account
+
+
+@router.post("/{user_id}/accounts/virtual", response_model=BrokerAccountOut, status_code=201)
+def add_virtual_account(
+    user_id: uuid.UUID,
+    body: VirtualAccountCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """가상계좌 생성 — KIS 키 없이 자체 체결 시뮬레이션으로 운영되는 계좌."""
+    if current_user.user_id != user_id and current_user.role not in ("ADMIN", "SUPER_ADMIN"):
+        raise HTTPException(status_code=403, detail="Forbidden")
+
+    account = BrokerAccount(
+        user_id=user_id,
+        broker=BrokerType.KIS,
+        account_no=body.label or f"가상-{uuid.uuid4().hex[:6].upper()}",
+        api_key_enc="",
+        api_secret_enc="",
+        account_type=AccountType.VIRTUAL,
+        virtual_cash=body.initial_cash,
+        virtual_cash_initial=body.initial_cash,
     )
     db.add(account)
     db.commit()

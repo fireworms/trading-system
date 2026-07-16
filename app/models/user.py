@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 from sqlalchemy import (
-    String, Boolean, DateTime, ForeignKey, Enum as SAEnum, Text
+    String, Boolean, DateTime, ForeignKey, Enum as SAEnum, Text, Numeric
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.dialects.postgresql import UUID
@@ -24,7 +24,8 @@ class BrokerType(str, enum.Enum):
 
 class AccountType(str, enum.Enum):
     REAL = "REAL"
-    PAPER = "PAPER"
+    PAPER = "PAPER"      # KIS 모의투자 (VTS 도메인, VTTC TR)
+    VIRTUAL = "VIRTUAL"  # 자체 시뮬레이션 — KIS 키 없음, 실시세 기반 가상 체결
 
 
 def _utcnow() -> datetime:
@@ -87,6 +88,9 @@ class BrokerAccount(Base):
     account_type: Mapped[AccountType] = mapped_column(
         SAEnum(AccountType, name="account_type"), default=AccountType.REAL, nullable=False
     )
+    # VIRTUAL 계좌 전용 — 가상 예수금 (매수 차감 / 매도 복원)
+    virtual_cash: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    virtual_cash_initial: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
     user: Mapped["User"] = relationship(back_populates="broker_accounts")

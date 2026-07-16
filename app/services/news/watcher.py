@@ -629,7 +629,7 @@ def check_position_theses() -> None:
     from app.core.config import get_settings
     from app.core.database import SessionLocal
     from app.models.position import Position, PositionStatus
-    from app.services.kis.client import get_kis_client_from_account
+    from app.services.trading.virtual_broker import get_trading_client
 
     api_key = get_settings().gemini_api_key
     if not api_key:
@@ -712,7 +712,7 @@ def check_position_theses() -> None:
                 continue
 
             try:
-                client_k = get_kis_client_from_account(pos.account)
+                client_k = get_trading_client(pos.account)
                 current_price = client_k.get_current_price(pos.stock_code)
             except Exception as e:
                 logger.error("Thesis check: price fetch failed for %s: %s", pos.stock_code, e)

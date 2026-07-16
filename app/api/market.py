@@ -11,7 +11,8 @@ logger = logging.getLogger(__name__)
 
 from app.core.database import get_db
 from app.models.user import User, BrokerAccount
-from app.services.kis.client import get_kis_client, get_kis_client_from_account, OHLCVBar, BalanceItem
+from app.services.kis.client import get_kis_client, OHLCVBar, BalanceItem
+from app.services.trading.virtual_broker import get_trading_client
 from app.api.deps import get_current_user
 
 router = APIRouter(prefix="/market", tags=["market"])
@@ -95,11 +96,12 @@ class MarketOverviewOut(BaseModel):
 
 
 def _user_account(user: User, db: Session) -> BrokerAccount:
-    """현재 유저의 첫 번째 활성 계좌 반환."""
+    """현재 유저의 첫 번째 활성 계좌 반환 (REAL 우선 — 잔고 위젯은 실계좌 기준)."""
     account = db.scalar(
         select(BrokerAccount)
         .where(BrokerAccount.user_id == user.user_id)
         .where(BrokerAccount.is_active == True)  # noqa: E712
+        .order_by(BrokerAccount.account_type)  # enum 정의 순: REAL → PAPER → VIRTUAL
         .limit(1)
     )
     if not account:
@@ -294,7 +296,7 @@ def get_balance(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        client = get_kis_client_from_account(_user_account(current_user, db))
+        client = get_trading_client(_user_account(current_user, db))
         return client.get_balance()
     except HTTPException:
         raise
@@ -308,7 +310,7 @@ def get_buyable_cash(
     current_user: User = Depends(get_current_user),
 ):
     try:
-        client = get_kis_client_from_account(_user_account(current_user, db))
+        client = get_trading_client(_user_account(current_user, db))
         return {"buyable_cash": int(client.get_buyable_cash())}
     except HTTPException:
         raise

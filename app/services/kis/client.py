@@ -393,6 +393,21 @@ class KISClient:
             change_pct = round(vrss * sign / prev_close * 100, 2) if prev_close else 0.0
         return {"price": price, "change_pct": change_pct}
 
+    def get_quote(self, stock_code: str) -> dict:
+        """호가 조회 (FHKST01010200) — 매도호가1/매수호가1. 값 없으면(장외 등) None."""
+        data = self._get(
+            "/uapi/domestic-stock/v1/quotations/inquire-asking-price-exp-ccn",
+            "FHKST01010200",
+            {"FID_COND_MRKT_DIV_CODE": "J", "FID_INPUT_ISCD": stock_code},
+        )
+        o = data.get("output1", {})
+        ask1 = Decimal(o.get("askp1") or "0")
+        bid1 = Decimal(o.get("bidp1") or "0")
+        return {
+            "ask1": ask1 if ask1 > 0 else None,
+            "bid1": bid1 if bid1 > 0 else None,
+        }
+
     def get_us_price_with_change(self, symbol: str, exchange: str) -> dict:
         """해외주식 현재가 + 등락률 1회 API 호출로 반환. 반환: {price: float, change_pct: float}"""
         data = self._get(
@@ -1161,11 +1176,16 @@ def get_kis_client(db=None) -> "KISClient":
 
 def _client_from_db(db) -> "KISClient":
     from sqlalchemy import select
-    from app.models.user import BrokerAccount
+    from app.models.user import BrokerAccount, AccountType
 
+    # VIRTUAL 계좌는 KIS 키가 없어 시장 데이터 클라이언트로 쓸 수 없다 — REAL 우선
     account = db.scalar(
         select(BrokerAccount)
-        .where(BrokerAccount.is_active == True)  # noqa: E712
+        .where(
+            BrokerAccount.is_active == True,  # noqa: E712
+            BrokerAccount.account_type != AccountType.VIRTUAL,
+        )
+        .order_by(BrokerAccount.account_type)  # enum 정의 순: REAL → PAPER
         .limit(1)
     )
     if not account:
@@ -1176,6 +1196,9 @@ def _client_from_db(db) -> "KISClient":
 def get_kis_client_from_account(account) -> "KISClient":
     """BrokerAccount 모델 → 복호화 → KISClient 싱글턴 반환.
     같은 account_id에 대해 항상 동일 인스턴스를 반환해 인메모리 토큰 캐시를 공유한다."""
+    if account.account_type.value == "VIRTUAL":
+        # 가상계좌는 KIS 키가 없다 — get_trading_client(virtual_broker)를 써야 한다
+        raise RuntimeError(f"VIRTUAL 계좌({account.account_id})로 KISClient를 만들 수 없습니다")
     account_id = str(account.account_id)
     with _registry_lock:
         if account_id not in _client_registry:

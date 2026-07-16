@@ -162,6 +162,7 @@ export interface Position {
   target_price: string | null;
   trailing_stop_price: string | null;
   trailing_stop_override: boolean | null;
+  account_type: string | null;
 }
 
 export interface BrokerAccount {
@@ -171,6 +172,8 @@ export interface BrokerAccount {
   account_type: string;
   hts_id: string | null;
   is_active: boolean;
+  virtual_cash: string | null;
+  virtual_cash_initial: string | null;
 }
 
 export interface Subscription {
@@ -482,7 +485,8 @@ export const api = {
   },
 
   positions: {
-    stats: () => authFetch<ProfitStats>("/positions/stats"),
+    stats: (scope: "real" | "virtual" | "all" = "real") =>
+      authFetch<ProfitStats>(`/positions/stats?scope=${scope}`),
     list: (status?: PositionStatus) =>
       authFetch<Position[]>(`/positions${status ? `?status=${status}` : ""}`),
     close: (positionId: string) =>
@@ -513,6 +517,11 @@ export const api = {
       authFetch<BrokerAccount>(`/users/${userId}/accounts`, {
         method: "POST",
         body: JSON.stringify({ broker: "KIS", ...body }),
+      }),
+    addVirtualAccount: (userId: string, body: { initial_cash: number; label?: string }) =>
+      authFetch<BrokerAccount>(`/users/${userId}/accounts/virtual`, {
+        method: "POST",
+        body: JSON.stringify(body),
       }),
     listBrokerAccounts: (userId: string) =>
       authFetch<BrokerAccount[]>(`/users/${userId}/accounts`),

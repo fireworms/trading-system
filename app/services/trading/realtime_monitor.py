@@ -294,7 +294,7 @@ def _close_position_sync(
 ) -> None:
     from app.core.database import SessionLocal
     from app.models.position import Position, PositionStatus
-    from app.services.kis.client import get_kis_client_from_account
+    from app.services.trading.virtual_broker import get_trading_client
     from app.services.trading.executor import TradeExecutor
 
     monitor = get_monitor()
@@ -313,7 +313,7 @@ def _close_position_sync(
                 else PositionStatus.STOP_LOSS
             )
             executor = TradeExecutor(db)
-            client = get_kis_client_from_account(pos.account)
+            client = get_trading_client(pos.account)
             executor._close_position(pos, current_price, new_status, client)
             db.commit()
 

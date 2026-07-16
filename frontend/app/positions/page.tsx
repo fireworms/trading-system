@@ -51,6 +51,14 @@ export default function PositionsPage() {
   const [htsLoading, setHtsLoading] = useState(false);
   const [htsMsg, setHtsMsg]     = useState("");
 
+  // 가상계좌 생성
+  const [vaCash, setVaCash]         = useState("10000000");
+  const [vaLoading, setVaLoading]   = useState(false);
+  const [vaMsg, setVaMsg]           = useState("");
+
+  // 계좌 타입 필터 (가상 손익이 실계좌 요약에 섞이지 않도록)
+  const [acctFilter, setAcctFilter] = useState<"ALL" | "REAL" | "VIRTUAL">("ALL");
+
   const isAdmin = me?.role === "ADMIN" || me?.role === "SUPER_ADMIN";
 
   // 보유 종목 + 수동매수 선택 종목 + 삼성전자(WS 헬스체크) 실시간 구독
@@ -212,6 +220,22 @@ export default function PositionsPage() {
     }
   }
 
+  async function handleCreateVirtualAccount() {
+    if (!me) return;
+    const cash = parseInt(vaCash.replace(/,/g, ""), 10);
+    if (!cash || cash < 100000) { setVaMsg("초기자금은 100,000원 이상이어야 합니다"); return; }
+    setVaLoading(true); setVaMsg("");
+    try {
+      const created = await api.users.addVirtualAccount(me.user_id, { initial_cash: cash });
+      setAccounts((prev) => [...prev, created]);
+      setVaMsg(`가상계좌 생성 완료 (${created.account_no})`);
+    } catch (e: unknown) {
+      setVaMsg(e instanceof Error ? e.message : "생성 실패");
+    } finally {
+      setVaLoading(false);
+    }
+  }
+
   async function handleTrailingOverride(positionId: string, value: "strategy" | "on" | "off") {
     const override = value === "strategy" ? "strategy" : value === "on";
     try {
@@ -226,9 +250,16 @@ export default function PositionsPage() {
     await loadNewsConfig();
   }
 
-  const filtered  = positions.filter((p) => p.status === tab);
-  const holding   = positions.filter((p) => p.status === "HOLDING");
-  const closed    = positions.filter((p) => p.status !== "HOLDING");
+  const hasVirtual = positions.some((p) => p.account_type === "VIRTUAL")
+    || accounts.some((a) => a.account_type === "VIRTUAL");
+  const scoped = positions.filter((p) =>
+    acctFilter === "ALL" ? true
+    : acctFilter === "VIRTUAL" ? p.account_type === "VIRTUAL"
+    : p.account_type !== "VIRTUAL"
+  );
+  const filtered  = scoped.filter((p) => p.status === tab);
+  const holding   = scoped.filter((p) => p.status === "HOLDING");
+  const closed    = scoped.filter((p) => p.status !== "HOLDING");
   const winCount  = closed.filter((p) => p.status === "TARGET_HIT").length;
   const winRate   = closed.length > 0 ? ((winCount / closed.length) * 100).toFixed(1) : null;
   const avgPnl    = closed.length > 0
@@ -262,21 +293,19 @@ export default function PositionsPage() {
           )}
         </div>
         <div className="flex gap-2">
+          <button
+            onClick={() => setShowAccountPanel(!showAccountPanel)}
+            className="text-sm px-3 py-1.5 rounded-lg border border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 transition-colors"
+          >
+            계좌 설정
+          </button>
           {isAdmin && (
-            <>
-              <button
-                onClick={() => setShowAccountPanel(!showAccountPanel)}
-                className="text-sm px-3 py-1.5 rounded-lg border border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 transition-colors"
-              >
-                계좌 설정
-              </button>
-              <button
-                onClick={() => { setShowNewsPanel(!showNewsPanel); if (!showNewsPanel) loadNewsConfig(); }}
-                className="text-sm px-3 py-1.5 rounded-lg border border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 transition-colors"
-              >
-                뉴스 감시 설정
-              </button>
-            </>
+            <button
+              onClick={() => { setShowNewsPanel(!showNewsPanel); if (!showNewsPanel) loadNewsConfig(); }}
+              className="text-sm px-3 py-1.5 rounded-lg border border-gray-600 text-gray-400 hover:text-white hover:border-gray-400 transition-colors"
+            >
+              뉴스 감시 설정
+            </button>
           )}
           <button
             onClick={() => setShowBuyModal(true)}
@@ -296,36 +325,76 @@ export default function PositionsPage() {
       </div>
 
       {/* 계좌 설정 패널 */}
-      {showAccountPanel && isAdmin && accounts.length > 0 && (
+      {showAccountPanel && (
         <div className="bg-gray-800 rounded-2xl p-5 mb-4">
           <h3 className="font-semibold mb-4 text-sm">계좌 설정</h3>
-          <div className="flex flex-wrap gap-4 items-end">
-            <div>
-              <label className="text-xs text-gray-400 mb-1 block">
-                계좌 ({accounts[0].broker} {accounts[0].account_no})
-              </label>
-              <div className="text-xs text-gray-500">HTS 아이디 (체결통보 WebSocket용)</div>
-            </div>
-            <div>
-              <label className="text-xs text-gray-400 mb-1 block">HTS 아이디</label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={htsId}
-                  onChange={(e) => setHtsId(e.target.value)}
-                  placeholder="예: fireworm"
-                  className="bg-gray-700 rounded-lg px-3 py-2 text-sm w-36 outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <button
-                  onClick={handleSaveHtsId}
-                  disabled={htsLoading}
-                  className="text-xs bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-3 py-2 rounded-lg"
-                >
-                  {htsLoading ? "저장 중..." : "저장"}
-                </button>
+          {accounts.length > 0 && (
+            <div className="flex flex-wrap gap-4 items-end mb-5">
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">
+                  계좌 ({accounts[0].broker} {accounts[0].account_no})
+                </label>
+                <div className="text-xs text-gray-500">HTS 아이디 (체결통보 WebSocket용)</div>
               </div>
-              {htsMsg && <p className="text-xs text-green-400 mt-1">{htsMsg}</p>}
+              <div>
+                <label className="text-xs text-gray-400 mb-1 block">HTS 아이디</label>
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={htsId}
+                    onChange={(e) => setHtsId(e.target.value)}
+                    placeholder="예: fireworm"
+                    className="bg-gray-700 rounded-lg px-3 py-2 text-sm w-36 outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <button
+                    onClick={handleSaveHtsId}
+                    disabled={htsLoading}
+                    className="text-xs bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white px-3 py-2 rounded-lg"
+                  >
+                    {htsLoading ? "저장 중..." : "저장"}
+                  </button>
+                </div>
+                {htsMsg && <p className="text-xs text-green-400 mt-1">{htsMsg}</p>}
+              </div>
             </div>
+          )}
+
+          {/* 가상계좌 */}
+          <div className="border-t border-gray-700 pt-4">
+            <div className="text-xs text-gray-400 mb-2">
+              가상계좌 — KIS 실시세 기반 체결 시뮬레이션 (매수=매도호가, 매도=매수호가, 수수료·거래세 반영)
+            </div>
+            {accounts.filter((a) => a.account_type === "VIRTUAL").map((a) => (
+              <div key={a.account_id} className="flex items-center gap-3 text-sm mb-2">
+                <span className="px-1.5 py-0.5 rounded bg-purple-900/60 text-purple-300 text-xs">가상</span>
+                <span className="text-gray-200">{a.account_no}</span>
+                <span className="text-xs text-gray-400">
+                  예수금 <span className="text-white">{Number(a.virtual_cash ?? 0).toLocaleString()}원</span>
+                  {a.virtual_cash_initial && (
+                    <span className="ml-1 text-gray-500">/ 초기 {Number(a.virtual_cash_initial).toLocaleString()}원</span>
+                  )}
+                </span>
+              </div>
+            ))}
+            <div className="flex items-center gap-2 mt-2">
+              <input
+                type="number"
+                value={vaCash}
+                onChange={(e) => setVaCash(e.target.value)}
+                min={100000}
+                step={1000000}
+                className="bg-gray-700 rounded-lg px-3 py-2 text-sm w-40 outline-none focus:ring-2 focus:ring-purple-500"
+              />
+              <span className="text-xs text-gray-400">원</span>
+              <button
+                onClick={handleCreateVirtualAccount}
+                disabled={vaLoading}
+                className="text-xs bg-purple-700 hover:bg-purple-600 disabled:opacity-50 text-white px-3 py-2 rounded-lg"
+              >
+                {vaLoading ? "생성 중..." : "가상계좌 만들기"}
+              </button>
+            </div>
+            {vaMsg && <p className="text-xs text-purple-300 mt-1">{vaMsg}</p>}
           </div>
         </div>
       )}
@@ -384,7 +453,7 @@ export default function PositionsPage() {
       </div>
 
       {/* 탭 */}
-      <div className="flex gap-1 mb-4 flex-wrap">
+      <div className="flex items-center gap-1 mb-4 flex-wrap">
         {STATUS_TABS.map((t) => (
           <button key={t.value} onClick={() => setTab(t.value)}
             className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
@@ -392,10 +461,24 @@ export default function PositionsPage() {
             }`}>
             {t.label}
             <span className="ml-1 text-xs opacity-70">
-              {positions.filter((p) => p.status === t.value).length}
+              {scoped.filter((p) => p.status === t.value).length}
             </span>
           </button>
         ))}
+        {hasVirtual && (
+          <div className="ml-auto flex gap-1">
+            {([["ALL", "전체"], ["REAL", "실계좌"], ["VIRTUAL", "가상"]] as const).map(([v, label]) => (
+              <button key={v} onClick={() => setAcctFilter(v)}
+                className={`px-2.5 py-1 rounded-lg text-xs transition-colors ${
+                  acctFilter === v
+                    ? v === "VIRTUAL" ? "bg-purple-700 text-white" : "bg-gray-600 text-white"
+                    : "text-gray-400 hover:bg-gray-700"
+                }`}>
+                {label}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* 포지션 카드 목록 */}
@@ -425,6 +508,9 @@ export default function PositionsPage() {
                       {pos.stock_name || pos.stock_code}
                     </span>
                     <span className="ml-1.5 text-xs text-gray-500">{pos.stock_name ? pos.stock_code : ""}</span>
+                    {pos.account_type === "VIRTUAL" && (
+                      <span className="ml-1.5 px-1.5 py-0.5 rounded bg-purple-900/60 text-purple-300 text-xs align-middle">가상</span>
+                    )}
                   </div>
                   <Badge value={pos.status} />
                   {/* 보유중: 미실현 손익 */}
@@ -553,7 +639,9 @@ export default function PositionsPage() {
                 >
                   {accounts.map((a) => (
                     <option key={a.account_id} value={a.account_id}>
-                      {a.broker} {a.account_no} ({a.account_type})
+                      {a.account_type === "VIRTUAL"
+                        ? `가상 ${a.account_no} (예수금 ${Number(a.virtual_cash ?? 0).toLocaleString()}원)`
+                        : `${a.broker} ${a.account_no} (${a.account_type})`}
                     </option>
                   ))}
                 </select>

@@ -60,27 +60,36 @@ def _enrich(pos: Position, stock_name: str = "") -> PositionOut:
         target_price=target_price,
         trailing_stop_price=trailing_stop_price,
         trailing_stop_override=pos.trailing_stop_override,
+        account_type=pos.account.account_type.value if pos.account else None,
     )
 
 
 @router.get("/stats")
 def get_stats(
+    scope: str = "real",
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    """확정손익 통계 — 전체 KPI / 전략별 / 월별 / 종목별."""
+    """확정손익 통계 — 전체 KPI / 전략별 / 월별 / 종목별.
+    scope: real(기본, 실계좌만) / virtual(가상계좌만) / all — 가상 손익이 실계좌 KPI에 섞이지 않도록 분리."""
     from app.models.strategy import Strategy
     from app.models.stock_master import StockMaster
+    from app.models.user import AccountType, BrokerAccount
     from collections import defaultdict
 
-    closed = db.scalars(
-        select(Position).where(
-            Position.user_id == current_user.user_id,
-            Position.status != PositionStatus.HOLDING,
-            Position.exit_price.isnot(None),
-            Position.pnl_pct.isnot(None),
-        ).order_by(Position.exit_date.desc())
-    ).all()
+    q = select(Position).where(
+        Position.user_id == current_user.user_id,
+        Position.status != PositionStatus.HOLDING,
+        Position.exit_price.isnot(None),
+        Position.pnl_pct.isnot(None),
+    )
+    if scope in ("real", "virtual"):
+        q = q.join(BrokerAccount, Position.account_id == BrokerAccount.account_id)
+        if scope == "real":
+            q = q.where(BrokerAccount.account_type != AccountType.VIRTUAL)
+        else:
+            q = q.where(BrokerAccount.account_type == AccountType.VIRTUAL)
+    closed = db.scalars(q.order_by(Position.exit_date.desc())).all()
 
     # stock_code → stock_name 캐시 (stock_master 단건 조회)
     codes = {pos.stock_code for pos in closed}
@@ -289,9 +298,9 @@ def close_position(
     if pos.status != PositionStatus.HOLDING:
         raise HTTPException(status_code=400, detail="Already closed")
 
-    from app.services.kis.client import get_kis_client_from_account
+    from app.services.trading.virtual_broker import get_trading_client
     import time as _time
-    client = get_kis_client_from_account(pos.account)
+    client = get_trading_client(pos.account)
 
     try:
         client.sell_market_order(pos.stock_code, pos.quantity)
@@ -320,7 +329,7 @@ def close_all_positions(
 ):
     """보유 중인 전체 포지션 수동 청산."""
     from datetime import date
-    from app.services.kis.client import get_kis_client_from_account
+    from app.services.trading.virtual_broker import get_trading_client
 
     positions = db.scalars(
         select(Position).where(
@@ -333,7 +342,7 @@ def close_all_positions(
     results = []
     for pos in positions:
         try:
-            client = get_kis_client_from_account(pos.account)
+            client = get_trading_client(pos.account)
             client.sell_market_order(pos.stock_code, pos.quantity)
             _time.sleep(1)
             fill_price = client.get_today_fill_price(pos.stock_code, side="01") \
@@ -363,7 +372,7 @@ def manual_buy(
     기존 포지션과 별개로 새 Position 레코드 생성.
     """
     from datetime import date
-    from app.services.kis.client import get_kis_client_from_account
+    from app.services.trading.virtual_broker import get_trading_client
     from app.models.user import BrokerAccount
 
     stock_code  = body.get("stock_code", "").strip()
@@ -378,7 +387,7 @@ def manual_buy(
     if not account or account.user_id != current_user.user_id:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    client = get_kis_client_from_account(account)
+    client = get_trading_client(account)
     current_price = client.get_current_price(stock_code)
     quantity = int(amount // current_price)
     if quantity <= 0:

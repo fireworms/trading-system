@@ -79,28 +79,56 @@ function OverallKpi({ kpi }: { kpi: TradeKPI }) {
   );
 }
 
+const SCOPE_TABS = [
+  { value: "real",    label: "실계좌" },
+  { value: "virtual", label: "가상" },
+] as const;
+type StatsScope = (typeof SCOPE_TABS)[number]["value"];
+
 export default function StatsPage() {
   const router = useRouter();
   const [stats, setStats] = useState<ProfitStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [scope, setScope] = useState<StatsScope>("real");
 
   useEffect(() => {
     if (!getToken()) { router.push("/login"); return; }
-    api.positions.stats()
+    setLoading(true);
+    api.positions.stats(scope)
       .then(setStats)
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [scope]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) return (
     <div className="min-h-screen bg-gray-900 flex items-center justify-center text-gray-400">로딩 중...</div>
   );
 
+  const scopeTabs = (
+    <div className="flex gap-1">
+      {SCOPE_TABS.map((t) => (
+        <button key={t.value} onClick={() => setScope(t.value)}
+          className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
+            scope === t.value
+              ? t.value === "virtual" ? "bg-purple-700 text-white" : "bg-blue-600 text-white"
+              : "text-gray-400 hover:bg-gray-700"
+          }`}>
+          {t.label}
+        </button>
+      ))}
+    </div>
+  );
+
   if (!stats || stats.overall.total_trades === 0) return (
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <div className="max-w-5xl mx-auto">
-        <h1 className="text-xl font-bold mb-6">수익통계</h1>
-        <p className="text-gray-500">확정된 거래가 없습니다. 첫 번째 포지션이 청산되면 통계가 표시됩니다.</p>
+        <div className="flex items-center justify-between mb-6">
+          <h1 className="text-xl font-bold">수익통계</h1>
+          {scopeTabs}
+        </div>
+        <p className="text-gray-500">
+          {scope === "virtual" ? "가상계좌의 " : ""}확정된 거래가 없습니다. 첫 번째 포지션이 청산되면 통계가 표시됩니다.
+        </p>
       </div>
     </div>
   );
@@ -110,7 +138,15 @@ export default function StatsPage() {
   return (
     <div className="min-h-screen bg-gray-900 text-white p-6">
       <div className="max-w-5xl mx-auto flex flex-col gap-8">
-        <h1 className="text-xl font-bold">수익통계</h1>
+        <div className="flex items-center justify-between">
+          <h1 className="text-xl font-bold">
+            수익통계
+            {scope === "virtual" && (
+              <span className="ml-2 px-1.5 py-0.5 rounded bg-purple-900/60 text-purple-300 text-xs align-middle">가상</span>
+            )}
+          </h1>
+          {scopeTabs}
+        </div>
 
         {/* 전체 KPI */}
         <section>

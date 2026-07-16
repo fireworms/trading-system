@@ -56,6 +56,11 @@ class BrokerAccountUpdate(BaseModel):
     hts_id: str | None = None
 
 
+class VirtualAccountCreate(BaseModel):
+    initial_cash: Decimal = Field(default=Decimal("10000000"), gt=0)
+    label: str | None = Field(default=None, max_length=50)
+
+
 class BrokerAccountOut(BaseModel):
     account_id: uuid.UUID
     broker: BrokerType
@@ -63,6 +68,8 @@ class BrokerAccountOut(BaseModel):
     account_type: AccountType
     hts_id: str | None
     is_active: bool
+    virtual_cash: Decimal | None = None
+    virtual_cash_initial: Decimal | None = None
 
     model_config = {"from_attributes": True}
 

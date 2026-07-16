@@ -84,5 +84,6 @@ class PositionOut(BaseModel):
     trailing_stop_price: Decimal | None
     target_hit_at: datetime | None = None
     trailing_stop_override: bool | None = None  # None=전략에 따름, True=ON, False=OFF
+    account_type: str | None = None  # REAL / PAPER / VIRTUAL (가상계좌 배지용)
 
     model_config = {"from_attributes": True}
