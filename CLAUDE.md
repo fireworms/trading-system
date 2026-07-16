@@ -394,7 +394,7 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
   - 프론트 미실현 손익: bid_price 기준 계산 (시장가 매도 실체결 기준), 퍼센트+원화 금액 표시
   - 삼성전자(005930) 항상 구독 → 포지션 없어도 프론트 WS 헬스체크 가능
   - LIVE 배지 2개: 구독(프론트 WS), 서버(KIS WS + realtime_monitor 감시 종목 수, 30초 폴링)
-  - NEXT_PUBLIC_WS_URL=ws://192.168.0.10:8000 (.env.local 필수)
+  - API/WS 주소는 접속 호스트 기준 자동 유도 (고정 필요 시 .env.local NEXT_PUBLIC_WS_URL)
 - **체결통보**: H0STCNI0 — 멀티유저 구조
   - `_exec_canos: set[str]` — 등록된 모든 계좌 hts_id 동시 구독
   - 체결 데이터 f[0](hts_id) → account_id → 해당 유저 포지션만 entry_price/peak_price 업데이트
