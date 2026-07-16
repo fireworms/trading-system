@@ -100,6 +100,38 @@ class TelegramNotifier:
         self._send(chat_id, text)
 
     # ------------------------------------------------------------------ #
+    # 관심종목 무효화_조건 감시
+    # ------------------------------------------------------------------ #
+
+    def notify_invalidation_triggered(
+        self, chat_id: str, stock_name: str, stock_code: str, items: list[dict],
+    ) -> None:
+        """무효화 조건 충족 전이 알림. items: [{"조건", "detail"}]"""
+        lines = [
+            f"⚠️ <b>[무효화 조건 충족] {stock_name} ({stock_code})</b>",
+            "분석 시점 AI가 설정한 조건입니다 — 논거 재점검이 필요하며, 매매 판단은 직접 하세요.",
+        ]
+        for it in items:
+            lines += [f"\n• {it.get('조건', '')}", f"  → 실측: {it.get('detail', '')}"]
+        self._send(chat_id, "\n".join(lines))
+
+    def notify_watchlist_conditions(
+        self, chat_id: str, stock_name: str, stock_code: str,
+        auto_conditions: list[dict], manual_conditions: list[dict],
+    ) -> None:
+        """분석 완료 시 조건 감시 안내 — 자동 감시 대상 요약 + 수동 확인 필요 목록."""
+        lines = [f"📋 <b>[분석 완료] {stock_name} ({stock_code}) 무효화 조건 감시 안내</b>"]
+        if auto_conditions:
+            lines.append(f"\n🤖 자동 감시 {len(auto_conditions)}건 (매 거래일 16:20 체크, 충족 시 알림):")
+            lines += [f"• {c.get('조건', '')}" for c in auto_conditions]
+        if manual_conditions:
+            lines.append("\n🔍 자동 감시 불가 — 직접 확인 필요:")
+            for c in manual_conditions:
+                method = (c.get("params") or {}).get("확인_방법", "상시 뉴스/공시 확인")
+                lines += [f"• {c.get('조건', '')}", f"  ↳ 확인: {method}"]
+        self._send(chat_id, "\n".join(lines))
+
+    # ------------------------------------------------------------------ #
     # 경고 / 에러
     # ------------------------------------------------------------------ #
 

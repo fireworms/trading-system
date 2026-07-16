@@ -61,6 +61,10 @@ class StockAnalysis(Base):
     input_snapshot: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     # Gemini 원문 (디버깅용)
     raw_response: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # 무효화_조건 자동 체크 상태 (16:20 잡이 갱신) —
+    # {checked_at, items: [{state, detail, check_type, triggered_at, notified_at}]}
+    # items는 result.무효화_조건과 위치 정렬
+    condition_status: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, nullable=False

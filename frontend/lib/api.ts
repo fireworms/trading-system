@@ -399,12 +399,29 @@ export interface WatchlistItem {
   last_analysis_date: string | null;
 }
 
+// 무효화_조건 구조화 항목 (구 분석은 string — 렌더링에서 둘 다 처리)
+export interface WatchInvalidationCondition {
+  "조건"?: string;
+  check_type?: "flow" | "fx" | "valuation" | "earnings" | "consensus" | "manual" | string;
+  params?: Record<string, any>;
+  spec_note?: string;
+}
+
+// 16:20 잡이 갱신하는 조건별 자동 체크 상태 (items는 무효화_조건과 위치 정렬)
+export interface ConditionStatusItem {
+  state: "ok" | "triggered" | "pending_data" | "manual" | "error" | string;
+  detail: string;
+  check_type?: string;
+  triggered_at?: string | null;
+  notified_at?: string | null;
+}
+
 // AI 구조화 출력 (docs/watchlist_spec.md — 5개 섹션 + 뉴스 출처)
 export interface WatchAnalysisResult {
   "논거"?: string;
   "단기_촉매"?: { "이벤트"?: string; "예상_시점"?: string; "성격"?: string }[];
   "장기_논거"?: string;
-  "무효화_조건"?: string[];
+  "무효화_조건"?: (string | WatchInvalidationCondition)[];
   "밸류_코멘트"?: string;
   "뉴스_출처"?: { "제목"?: string; "매체"?: string; "날짜"?: string; url?: string }[];
 }
@@ -417,6 +434,7 @@ export interface StockAnalysisSummary {
   trigger_type: WatchTriggerType | string;
   gemini_model: string;
   result: WatchAnalysisResult | null;
+  condition_status: { checked_at: string | null; items: ConditionStatusItem[] } | null;
   created_at: string;
 }
 

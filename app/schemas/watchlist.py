@@ -42,6 +42,8 @@ class AnalysisSummaryOut(BaseModel):
     trigger_type: str
     gemini_model: str
     result: dict | None          # 5개 섹션 + 뉴스_출처 (스냅샷 제외 — 상세에서 제공)
+    # 무효화_조건 자동 체크 상태 — {checked_at, items: [{state, detail, ...}]} (16:20 잡 갱신)
+    condition_status: dict | None = None
     created_at: datetime
 
     model_config = {"from_attributes": True}

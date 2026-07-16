@@ -70,7 +70,8 @@ trading_system/
 │   │   │   └── index_constituents.py  # KOSPI200/KOSDAQ150 구성종목
 │   │   ├── watchlist/
 │   │   │   ├── analyzer.py      # 관심종목 분석 (수집→스냅샷→Gemini 구조화→저장)
-│   │   │   └── flow_store.py    # 일별 수급 적재/60·120일 누적 (KIS 30거래일 한계 보완)
+│   │   │   ├── flow_store.py    # 일별 수급 적재/60·120일 누적 (KIS 30거래일 한계 보완)
+│   │   │   └── invalidation.py  # 무효화_조건 자동 판정 (결정론 체커 + 16:20 잡 + 전이 알림)
 │   │   ├── dart/
 │   │   │   └── client.py        # DART OpenDART 공시 어댑터 (corp_code 매핑 캐시 + 최근 14일 공시)
 │   │   ├── naver/
@@ -198,6 +199,7 @@ trading_system/
 - stock_analyses: analysis_id (PK), user_id (FK), stock_code, stock_name, analysis_date, trigger_type(manual/earnings/disclosure/flow_spike/price_spike), gemini_model
   - **result** (JSONB): 논거/단기_촉매/장기_논거/**무효화_조건**(핵심, falsifiable 강제)/밸류_코멘트/뉴스_출처
   - **input_snapshot** (JSONB): 분석 시점 KIS 지표/재무/수급/추정실적 + data_flags(결측 명시) — 사후 재구성용
+  - **condition_status** (JSONB, 2026-07-16): 무효화_조건 자동 체크 상태 — {checked_at, items:[{state, detail, check_type, triggered_at, notified_at}]}, items는 무효화_조건과 위치 정렬. 16:20 잡이 갱신
   - **watchlist_stocks에 FK 없음** — 관심종목 삭제해도 일지 영구 보존
 - 상세 설계·KIS 필드 디코딩 근거는 docs/watchlist_spec.md + 메모리 watchlist_tab.md 참조
 - **스냅샷 v2 (2026-07-02, 실검증 2026-07-03 완료)**: fx_usdkrw(USD/KRW 3개월 추세) / market(KOSPI 레벨·1/3개월 + 종목 상대수익률) / PER 4종 병기(trailing·TTM·최근분기 연환산·컨센서스 forward — trailing 왜곡 대응) / 수급 페이스 판정 문자열(5일 vs 30일 일평균, 앱이 확정 — LLM 재계산 금지) / 개인 순매수 5/20/30일 / PBR 5년 밴드 근사(월봉÷당시 연간 BPS, 근사 명시)
@@ -273,6 +275,7 @@ trading_system/
 | verify_recommendations | 00:10 매일 | 추천 결과 사후 검증 |
 | verify_news_events | 16:00 평일 | 뉴스 이벤트 + recommendation_runs 실제 시장 영향 검증 |
 | collect_watchlist_flows | 16:10 평일 | 관심종목 일별 수급 적재 (60/120일 누적, 2026-07-02 시작) |
+| check_invalidations | 16:20 평일 | 관심종목 무효화_조건 자동 판정 (수급 적재 직후, 충족 전이 시 유저 알림) |
 | news_watch_tick | 09:00~15:30 10분마다 평일 | 뉴스 감시 tick (120분마다 실행) |
 | update_stock_master | 03:00 일요일 | stock_master + 지수캐시 갱신 |
 
@@ -574,7 +577,18 @@ NAVER_CLIENT_SECRET=
 - 프롬프트 규칙: 앱 계산 파생지표(judgment/상대수익률/trend_note/per_ttm/퍼센타일) **재계산 금지, 그대로 인용** / per_trailing 왜곡 시 per_ttm·forward 우선 / 환율=외인 수급 공통 팩터로 종목 고유 요인과 구분
 - **뉴스 최신성 가드 (2026-07-03)**: 프롬프트에 14일 창 앵커 + 주가 변동 동인 필수 검색(앱이 1개월/당일 수치 확정 주입) / 파싱 후 14일 내 기사 0건이면 재검색 1회 → 그래도 없으면 `data_flags.news_recency` 명시 후 저장(억지 인용 강제 안 함). 배경: 그라운딩이 앵커 없이는 구 자료로 수렴 (7/2 분석 = 4월 기사 재탕)
 - **외부 데이터 어댑터 (2026-07-03)**: 스냅샷에 `dart_disclosures`(DART 공식 API 최근 14일 공시 — 확정 데이터) + `news_recent`(네이버 뉴스 최신순 10건, 제목 중복 제거) 주입. Gemini 검색은 "발견"이 아닌 해석·시장 반응·내용 보강 담당으로 역할 조정. 어댑터 실패 시 분석 안 죽고 data_flags 기록 (공시 "0건"은 실패가 아닌 확정 사실 — status 013은 available=True). DART는 티커가 아닌 8자리 corp_code 사용 — corpCode.xml 매핑을 `~/.dart_corp_code.json` 캐시(30일 TTL, 미매핑 시 강제갱신하되 24h 최소간격)
-- `run_analysis(db, user_id, ...)`: 수집 → gemini-2.5-flash 검색 그라운딩 → JSON 파싱 → StockAnalysis 저장. **무효화_조건 비면 1회 강제 재요청** 후 실패 시 ValueError
+- `run_analysis(db, user_id, ...)`: 수집 → gemini-2.5-flash 검색 그라운딩 → JSON 파싱 → StockAnalysis 저장. **무효화_조건 비면 1회 강제 재요청** 후 실패 시 ValueError. 무효화_조건은 `normalize_conditions`로 구조 검증 후 저장, 완료 시 조건 감시 안내 텔레그램 (best-effort)
+- **무효화_조건 구조화 (2026-07-16)**: `{조건, check_type, params}` 객체 배열 — flow(수급 연속일/누적액)/fx(환율 레벨)/valuation(PBR 5년 퍼센타일)/earnings(대상 분기 실적, 공시 후 판정)/consensus(분석 시점 컨센 대비 하향%)/manual(정성, 확인_방법 명시). params 임계값은 입력 데이터에서 도출 강제, manual에 날짜 지어내기 금지
+
+### app/services/watchlist/invalidation.py
+- 무효화_조건 자동 판정 — **판정은 앱이 결정론적으로, LLM 관여 없음** (추가 Gemini 호출 0회)
+- `normalize_conditions(raw)`: LLM 출력 검증 — 문자열(구 포맷)/스펙 불완전 조건은 오판 대신 manual 강등 (spec_note 기록)
+- `evaluate_condition(...)`: 타입별 체크 → (state, detail). state: ok/triggered/**pending_data**(미공시 분기·수급 커버리지 부족 — 부분 데이터로 단정 금지)/manual/error
+- `check_analysis(...)`: 최신 분석 1건의 조건 전체 판정 → condition_status 갱신, **미충족→충족 전이만** 반환 (경계 왕복 노이즈 방지, 해제 후 재충족은 재알림)
+- `check_all_watchlist_invalidations()`: 16:20 잡 진입점 — 관심종목 순회(삭제된 종목 자동 제외), 환율은 공통 팩터라 1회만 조회, 전이 시 소유 유저에게만 텔레그램. 수동 트리거: POST /admin/invalidation-check/trigger
+- `send_condition_notice(...)`: 분석 완료 시 자동 감시 대상/수동 확인 필요 조건 1회 안내
+- consensus 기준값은 input_snapshot.consensus_estimate (분석 시점) — 사후 재구성 데이터 재사용
+- **자동 청산 없음** — 감시는 기계, 매매 판단은 사람 (중장기 수동매매 탭 성격 유지)
 - analysis_date는 라벨 — KIS 입력은 항상 수집 시점 (snapshot.collected_at 기록)
 - 1차 범위: 수동 트리거만. 이벤트 자동 감지(실적/공시/수급·주가 급변)는 후속. 공매도 잔고는 미구현(KIS 일별추이 API 있어 후속 가능), 대차잔고는 KIS 미제공
 

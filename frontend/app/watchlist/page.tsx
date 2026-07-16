@@ -50,6 +50,15 @@ function fmtYmd(s: unknown): string {
   return s.length === 8 ? `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6)}` : s;
 }
 
+// 무효화 조건 자동 체크 상태 배지 (state → 표시)
+const COND_BADGE: Record<string, { label: string; cls: string }> = {
+  triggered:    { label: "⚠️ 충족",    cls: "bg-red-900/70 text-red-300" },
+  ok:           { label: "✅ 미충족",  cls: "bg-emerald-900/60 text-emerald-300" },
+  pending_data: { label: "⏳ 판정 보류", cls: "bg-gray-700 text-gray-300" },
+  manual:       { label: "🔍 수동 확인", cls: "bg-sky-900/60 text-sky-300" },
+  error:        { label: "체크 오류",   cls: "bg-gray-700 text-gray-400" },
+};
+
 // ------------------------------------------------------------------ //
 // 분석 상세 뷰: 5개 섹션 + 입력 스냅샷 (사후 검증용으로 함께 표시)
 // ------------------------------------------------------------------ //
@@ -108,11 +117,39 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
       </Section>
 
       <Section title="무효화 조건 — 이 신호가 뜨면 이 판단은 틀린 것" tone="border-amber-700/60">
-        <ul className="flex flex-col gap-1.5 list-disc list-inside">
-          {(r["무효화_조건"] ?? []).map((c, i) => (
-            <li key={i} className="text-sm text-amber-200/90 leading-relaxed">{c}</li>
-          ))}
+        <ul className="flex flex-col gap-2">
+          {(r["무효화_조건"] ?? []).map((c, i) => {
+            const text = typeof c === "string" ? c : c["조건"] ?? "";
+            const checkType = typeof c === "string" ? "manual" : c.check_type ?? "manual";
+            const method = typeof c === "string" ? undefined : c.params?.["확인_방법"];
+            const st = detail.condition_status?.items?.[i];
+            const badge = st
+              ? COND_BADGE[st.state] ?? COND_BADGE.error
+              : checkType === "manual"
+                ? COND_BADGE.manual
+                : { label: "감시 대기", cls: "bg-gray-700 text-gray-400" }; // 16:20 첫 체크 전
+            return (
+              <li key={i} className="text-sm text-amber-200/90 leading-relaxed flex items-start gap-2">
+                <span className={`shrink-0 text-xs px-1.5 py-0.5 rounded mt-0.5 ${badge.cls}`}>
+                  {badge.label}
+                </span>
+                <span>
+                  {text}
+                  {(st?.detail || method) && (
+                    <span className="block text-xs text-gray-500 mt-0.5">
+                      {st?.detail ?? `확인: ${method}`}
+                    </span>
+                  )}
+                </span>
+              </li>
+            );
+          })}
         </ul>
+        {detail.condition_status?.checked_at && (
+          <p className="text-xs text-gray-600 mt-2">
+            자동 체크: {new Date(detail.condition_status.checked_at).toLocaleString("ko-KR")} (매 거래일 16:20)
+          </p>
+        )}
       </Section>
 
       <Section title="밸류 코멘트" tone="border-gray-600">

@@ -186,6 +186,16 @@ def job_collect_watchlist_flows() -> None:
         _notify_error("관심종목 수급 적재 잡 실패", str(e))
 
 
+def job_check_invalidations() -> None:
+    """관심종목 무효화_조건 자동 판정 (16:20 — 16:10 수급 적재 직후, 충족 전이 시 유저 알림)."""
+    try:
+        from app.services.watchlist.invalidation import check_all_watchlist_invalidations
+        check_all_watchlist_invalidations()
+    except Exception as e:
+        logger.error("Invalidation check failed: %s", e)
+        _notify_error("무효화 조건 체크 잡 실패", str(e))
+
+
 def job_backup_db() -> None:
     """매일 03:30 pg_dump로 DB 백업, 최근 7개 유지."""
     import subprocess
@@ -391,6 +401,14 @@ def start_scheduler() -> None:
         job_collect_watchlist_flows,
         trigger=CronTrigger(day_of_week="mon-fri", hour=16, minute=10),
         id="collect_watchlist_flows",
+        replace_existing=True,
+    )
+
+    # 매일 장 마감 후: 관심종목 무효화_조건 자동 판정 (수급 적재 직후라 당일 데이터 반영)
+    _scheduler.add_job(
+        job_check_invalidations,
+        trigger=CronTrigger(day_of_week="mon-fri", hour=16, minute=20),
+        id="check_invalidations",
         replace_existing=True,
     )
 

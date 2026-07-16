@@ -184,6 +184,19 @@ def trigger_thesis_check(
     return {"message": "Thesis 재검증 시작됨"}
 
 
+@router.post("/invalidation-check/trigger")
+def trigger_invalidation_check(
+    background_tasks: BackgroundTasks,
+    _: User = Depends(require_admin),
+):
+    """관심종목 무효화_조건 자동 판정 수동 실행 (테스트용)."""
+    def _run():
+        from app.services.watchlist.invalidation import check_all_watchlist_invalidations
+        check_all_watchlist_invalidations()
+    background_tasks.add_task(_run)
+    return {"message": "무효화 조건 체크 시작됨"}
+
+
 @router.post("/morning-gate/trigger")
 def trigger_morning_gate(
     background_tasks: BackgroundTasks,
