@@ -413,8 +413,10 @@ NAVER_CLIENT_SECRET=
 ```
 - KIS API 키/계좌번호는 .env 사용 안 함 → DB broker_accounts에 Fernet 암호화 저장
 - HTS 아이디는 DB broker_accounts.hts_id (프론트 포지션 페이지 > 계좌 설정에서 입력)
+- **frontend/.env.local (git 미추적)**: `ALLOWED_DEV_ORIGINS=<쉼표구분 호스트>` — next.config.ts allowedDevOrigins의 실값. 새 접속 경로(도메인/IP) 추가 시 여기에 등록 후 프론트 재시작
 
 ## 주의사항
+- **레포는 GitHub 공개 (2026-07-16 전환, 포트폴리오용)** — 커밋에 실계좌번호·API 키·내부 IP/호스트명 절대 금지. 호스트 고유 값은 git 미추적 .env.local에만. 공개 전 filter-repo로 히스토리 치환 완료 상태를 되돌리는 커밋 금지
 - API 키는 절대 코드에 하드코딩 금지
 - broker_accounts의 api_key, api_secret은 Fernet 암호화 (security.py)
 - 모든 금액/수량은 Decimal 타입 사용 (float 금지)
