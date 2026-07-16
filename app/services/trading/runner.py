@@ -14,7 +14,7 @@ from app.models.recommendation import (
     RecommendationRun, MacroAnalysis, Recommendation
 )
 from app.models.stock_master import StockMaster
-from app.services.gemini.analyzer import GeminiAnalyzer
+from app.services.gemini.analyzer import GeminiAnalyzer, PickResult
 from app.services.kis.client import get_kis_client, get_kis_client_from_account
 
 logger = logging.getLogger(__name__)
@@ -228,8 +228,6 @@ class StrategyRunner:
 
     def _run_stage4_grouped(self, macro, industry, stock_data: list[dict], strategy: Strategy):
         """사전필터(20개) → 10개씩 그룹 → Stage4 반복 실행 → 집계."""
-        from app.services.gemini.analyzer import PickResult
-
         filtered = self._prefilter_stocks(stock_data, strategy.candidate_filter, target=20)
 
         # earnings_catalyst 모드: 사전필터된 종목 대상 실적 카탈리스트 1회 그라운딩 → stock_data에 주입
