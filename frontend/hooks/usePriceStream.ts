@@ -8,8 +8,12 @@ export interface LivePrice {
   volume: number;
 }
 
+// 접속 호스트 기준으로 WS 주소 자동 유도 — api.ts BASE와 동일 원칙
 const WS_URL =
-  (process.env.NEXT_PUBLIC_WS_URL ?? "ws://localhost:8000") + "/ws/prices";
+  (process.env.NEXT_PUBLIC_WS_URL
+    ?? (typeof window !== "undefined"
+      ? `ws://${window.location.hostname}:8000`
+      : "ws://localhost:8000")) + "/ws/prices";
 
 export function usePriceStream(codes: string[]) {
   const [prices, setPrices]     = useState<Record<string, LivePrice>>({});

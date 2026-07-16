@@ -1,4 +1,10 @@
-const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000/api/v1";
+// 접속 호스트 기준으로 백엔드 주소 자동 유도 (내부 IP·외부 포트포워딩 모두 동작).
+// NEXT_PUBLIC_API_URL은 명시적 override용 (설정 시 모든 접속 경로에서 그 주소 고정 — 외부 접속 깨짐 주의)
+const BASE =
+  process.env.NEXT_PUBLIC_API_URL
+  ?? (typeof window !== "undefined"
+    ? `http://${window.location.hostname}:8000/api/v1`
+    : "http://localhost:8000/api/v1");
 
 // ------------------------------------------------------------------ //
 // Token
