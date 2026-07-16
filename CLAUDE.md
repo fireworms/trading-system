@@ -80,6 +80,7 @@ trading_system/
 │   │   │                        # notify_admins_warning: 정책 경고 (⚠️ [WARNING])
 │   │   │                        # notify_admins_error: 코드 오류·긴급 조치 (🚨 [ERROR])
 │   │   └── trading/
+│   │       ├── virtual_broker.py    # 가상계좌 체결 시뮬레이터 + get_trading_client 팩토리
 │   │       ├── realtime_monitor.py  # 실시간 포지션 모니터 (서버사이드 상시 구독, 즉시 손절/익절)
 │   │       ├── scheduler.py     # APScheduler 잡 정의
 │   │       ├── runner.py        # StrategyRunner (AI 파이프라인, 분석만)
@@ -111,8 +112,21 @@ trading_system/
 - broker: KIS
 - account_no, api_key_enc(Fernet), api_secret_enc(Fernet)
 - **hts_id**: KIS HTS 아이디 (H0STCNI0 체결통보 WebSocket용, nullable)
-- account_type: REAL / PAPER
+- account_type: REAL / PAPER / **VIRTUAL** (가상계좌 — KIS 키 없음, 자체 체결 시뮬레이션, 2026-07-16)
+- **virtual_cash / virtual_cash_initial**: VIRTUAL 전용 가상 예수금 (매수 차감/매도 복원)
 - is_active
+
+### 가상계좌 (VIRTUAL) — 자체 모의투자 (2026-07-16)
+- KIS 모의투자(VTS) 미사용 — 실시세 기반 자체 시뮬레이션. `services/trading/virtual_broker.py`
+- **체결 모델 (보수적)**: 매수=매도호가1(ask1), 매도=매수호가1(bid1) → 스프레드 비용 반영. 호가 실패 시 현재가 ±10bp. 매도 시 왕복 수수료·거래세(_COMMISSION) 예수금 차감 → virtual_cash 곡선이 pnl_pct 누적과 정합
+- **`get_trading_client(account)` 팩토리** (virtual_broker.py): VIRTUAL이면 VirtualBroker, 아니면 KISClient 싱글턴. executor/positions API/realtime_monitor/thesis 재검증 전부 이 팩토리 사용 — **브로커 호출 지점 추가 시 get_kis_client_from_account 직접 호출 금지**
+- VirtualBroker는 시세를 실전 클라이언트에 위임(__getattr__), 잔고 차감은 단일 UPDATE(레이스 방지), 잔고부족 시 주문 거부. get_balance는 HOLDING 포지션 기반(avg=entry라 체결가 보정 no-op)
+- **실+가상 병행 구독 가능**: 매수 중복 체크가 계좌 단위 (user_id+account_id+rec_id)
+- **Circuit Breaker는 실계좌 전용**: 가상 청산은 CB 집계 제외 + 가상 매수는 CB 차단 안 받음 (자본 보호 레이어이지 전략 평가 대상 아님)
+- **통계 격리**: GET /positions/stats?scope=real(기본)|virtual|all — 가상 손익이 실계좌 KPI에 안 섞임. PositionOut.account_type으로 프론트 "가상" 배지
+- 시장데이터 팩토리(_client_from_db, market.py _user_account)는 VIRTUAL 제외/REAL 우선 — VIRTUAL엔 KIS 키가 없어 get_kis_client_from_account가 RuntimeError
+- 자동매수(09:20)·실시간 트레일링/손절·만료·thesis 청산 모두 가상계좌 동일 동작. 텔레그램 청산 알림 [가상] 태그
+- 생성: POST /users/{id}/accounts/virtual (initial_cash) 또는 포지션 페이지 > 계좌 설정
 
 ### strategies
 - strategy_id (PK, UUID), created_by (FK)
@@ -331,6 +345,7 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 
 ## KIS API 주요 엔드포인트
 - `FHKST01010100` inquire-price: 현재가 + 시가/고가/체결강도(cttr)/거래량 + **per/eps/pbr/bps**(밸류, 응답에 동봉 — 추가 호출 불필요)
+- `FHKST01010200` inquire-asking-price-exp-ccn: 호가 (askp1/bidp1) — 가상계좌 체결 시뮬레이션용 (`get_quote`)
 - `FHKST03010100` inquire-daily-itemchartprice: OHLCV (일봉)
 - `FHPUP02100000` inquire-index-price: 지수 현재가/등락률 (0001=KOSPI, 1001=KOSDAQ)
 - `TTTC8434R` inquire-balance: 잔고 조회 (avg_price=pchs_avg_pric)
@@ -471,7 +486,8 @@ NAVER_CLIENT_SECRET=
 - `get_foreign_holding(code)`: inquire-price 동봉 — 외인 소진율 + per/pbr/eps/bps + 시총(market_cap_eok, 억원)
 - `get_today_fill_price(code, side)`: TTTC8001R 당일 체결 조회. side="02"=매수, "01"=매도. 매수/매도 직후 실 체결가 반영에 사용
 - `buy_market_order(code, qty)` / `sell_market_order(code, qty)`: TTTC0802U / TTTC0801U 시장가 주문
-- `get_kis_client_from_account(account)`: account_id 기준 싱글턴 반환 (`_client_registry`). 동일 계좌는 항상 같은 인스턴스 → 토큰 공유
+- `get_quote(code)`: FHKST01010200 호가 — {ask1, bid1} (0이면 None). 가상계좌 체결가 산정용
+- `get_kis_client_from_account(account)`: account_id 기준 싱글턴 반환 (`_client_registry`). 동일 계좌는 항상 같은 인스턴스 → 토큰 공유. **VIRTUAL 계좌는 RuntimeError — get_trading_client 사용**
 
 ### app/services/kis/realtime.py
 - `KISRealtimeClient`: KIS WebSocket(H0STCNT0 가격 + H0STCNI0 체결통보) 클라이언트
