@@ -93,7 +93,8 @@ trading_system/
 │       ├── recommendation.py    # PositionOut (target_price, trailing_stop_price 포함)
 │       └── watchlist.py
 ├── docs/
-│   └── watchlist_spec.md        # 관심종목 분석 탭 스펙 (관련 작업 시 필독)
+│   ├── watchlist_spec.md        # 관심종목 분석 탭 스펙 (관련 작업 시 필독)
+│   └── setup.md                 # 설치/마이그레이션 가이드 (README에서 분리)
 ├── frontend/                    # Next.js 프론트엔드
 ├── scripts/                     # seed 스크립트
 ├── migrations/                  # Alembic 마이그레이션
