@@ -9,6 +9,7 @@ import logging
 import threading
 import time
 from datetime import date, datetime, timedelta
+from zoneinfo import ZoneInfo
 from decimal import Decimal
 from dataclasses import dataclass
 
@@ -98,6 +99,7 @@ class KISClient:
         self._base       = _BASE_REAL if is_real else _BASE_VIRTUAL
         self._token: str | None = None
         self._token_exp: datetime | None = None
+        self._holiday_cache: dict[str, bool] = {}  # {YYYYMMDD: 개장일 여부}
 
     # ------------------------------------------------------------------ #
     # 인증
@@ -285,6 +287,45 @@ class KISClient:
             return Decimal(val) if val else None
         except Exception:
             return None
+
+    def is_market_open_day(self, date_yyyymmdd: str | None = None) -> bool | None:
+        """CTCA0903R 국내휴장일조회 — 해당 일자 개장일(opnd_yn) 여부.
+        휴장일에는 지수/호가 API가 신뢰 불가능한 값을 반환하므로 (2026-07-17 제헌절
+        등락률 -6.4% 오출력 → 듀얼시그널 오발동) 시장 조치 전 반드시 이걸로 판정.
+        조회 실패 시 None — 호출자가 안전 방향을 결정한다.
+        """
+        if date_yyyymmdd is None:
+            date_yyyymmdd = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+        if date_yyyymmdd in self._holiday_cache:
+            return self._holiday_cache[date_yyyymmdd]
+        try:
+            data = self._get(
+                "/uapi/domestic-stock/v1/quotations/chk-holiday",
+                "CTCA0903R",
+                {"BASS_DT": date_yyyymmdd, "CTX_AREA_NK": "", "CTX_AREA_FK": ""},
+            )
+            rows = data.get("output", [])
+            row = next((r for r in rows if r.get("bass_dt") == date_yyyymmdd), None)
+            if row is None or row.get("opnd_yn") not in ("Y", "N"):
+                return None
+            is_open = row["opnd_yn"] == "Y"
+            self._holiday_cache[date_yyyymmdd] = is_open
+            return is_open
+        except Exception as e:
+            logger.warning("Holiday check failed for %s: %s", date_yyyymmdd, e)
+            return None
+
+    def is_market_open_now(self) -> bool:
+        """정규장 운영 중 여부 — KST 평일 09:00~15:30 + 휴장일 아님.
+        휴장일 조회 실패 시 개장으로 간주 (판정 불가로 보호 조치·주문을 막지 않는다).
+        """
+        now = datetime.now(ZoneInfo("Asia/Seoul"))
+        if now.weekday() >= 5:
+            return False
+        if not ("0900" <= now.strftime("%H%M") <= "1530"):
+            return False
+        open_day = self.is_market_open_day(now.strftime("%Y%m%d"))
+        return True if open_day is None else open_day
 
     def get_index_change_pct(self) -> dict:
         """KOSPI/KOSDAQ 현재 등락률 조회.

@@ -406,10 +406,13 @@ def run_news_check_and_act() -> None:
 def _apply_dual_signal_action(db, news_result: dict) -> None:
     """
     AI severity + 실시간 KOSPI 등락률 교차 검증 후 조치.
-    - CRITICAL + KOSPI -2% 이하 → 전 포지션 긴급 청산
+    - CRITICAL + KOSPI -2% 이하 → 전략 포지션 긴급 청산
     - WARNING/CRITICAL + KOSPI -1% 이하 → 수익 포지션 손절선 강화
     모델 오탐 방지: AI 단독 신호로는 청산/손절 강화 미발동.
+    휴장일/장외에는 미발동 — 휴장일 KIS 등락률은 신뢰 불가 (7/17 제헌절 -6.4% 오출력).
+    동일 이벤트 지속 시 당일 재청산은 KOSPI가 직전 발동 대비 1%p 더 악화된 경우만.
     """
+    from app.core.config_store import get_config, set_config
     from app.services.kis.client import get_kis_client
     from app.services.trading.executor import TradeExecutor
     from app.services.telegram.notifier import notify_admins_error
@@ -417,6 +420,11 @@ def _apply_dual_signal_action(db, news_result: dict) -> None:
     severity_pre = news_result["severity"]
     try:
         client = get_kis_client(db)
+        if not client.is_market_open_now():
+            logger.warning(
+                "Dual signal: market closed — no action taken (severity=%s)", severity_pre
+            )
+            return
         market = client.get_index_change_pct()
         kospi_chg = market.get("KOSPI")
     except Exception as e:
@@ -443,12 +451,29 @@ def _apply_dual_signal_action(db, news_result: dict) -> None:
     executor = TradeExecutor(db)
 
     if severity == "CRITICAL" and kospi_chg <= -2.0:
+        # 당일 재발동 억제: 동일 이벤트가 매 틱 CRITICAL로 지속되면 청산이 반복 실행돼
+        # 발동 이후 새로 잡은 포지션까지 즉시 쓸린다. 직전 발동 대비 1%p 추가 악화 시에만 재청산.
+        today_kst = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d")
+        last_date  = get_config(db, "news_emergency_close_date")
+        last_kospi = get_config(db, "news_emergency_close_kospi")
+        if last_date == today_kst and last_kospi:
+            refire_below = float(last_kospi) - 1.0
+            if kospi_chg > refire_below:
+                logger.info(
+                    "Dual signal CRITICAL suppressed — already fired today at KOSPI %s%%, "
+                    "now %.1f%% (refire below %.1f%%)",
+                    last_kospi, kospi_chg, refire_below,
+                )
+                return
+
         logger.warning("Dual signal CRITICAL+KOSPI%.1f%% → emergency close all", kospi_chg)
         closed = executor.emergency_close_all_positions(reason=f"[CRITICAL] {reason}")
+        set_config(db, "news_emergency_close_date", today_kst)
+        set_config(db, "news_emergency_close_kospi", f"{kospi_chg:.2f}")
         try:
             notify_admins_error(
                 "🚨 뉴스 긴급 청산",
-                f"{reason}\n\nKOSPI {kospi_chg:+.1f}% — {closed}개 포지션 전량 청산됐습니다.",
+                f"{reason}\n\nKOSPI {kospi_chg:+.1f}% — 전략 포지션 {closed}개가 청산됐습니다.",
             )
         except Exception:
             pass

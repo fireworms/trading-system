@@ -624,10 +624,25 @@ class TradeExecutor:
     # ------------------------------------------------------------------ #
 
     def emergency_close_all_positions(self, reason: str) -> int:
-        """CRITICAL + KOSPI -2% 동시 감지 시 모든 HOLDING 포지션 즉시 청산."""
+        """CRITICAL + KOSPI -2% 동시 감지 시 전략 HOLDING 포지션 즉시 청산.
+        무전략 수동매수는 제외 — 자동 진입은 자동 방어, 수동 진입은 사람 판단
+        (관심종목 탭의 역발상 매수를 시스템이 뒤집지 않는다). 제외분은 소유자에게 알림만.
+        """
         positions = self.db.scalars(
-            select(Position).where(Position.status == PositionStatus.HOLDING)
+            select(Position).where(
+                Position.status == PositionStatus.HOLDING,
+                Position.strategy_id.is_not(None),
+            )
         ).all()
+
+        manual_positions = self.db.scalars(
+            select(Position).where(
+                Position.status == PositionStatus.HOLDING,
+                Position.strategy_id.is_(None),
+            )
+        ).all()
+        if manual_positions:
+            self._notify_manual_positions_excluded(manual_positions, reason)
 
         closed = 0
         failed: list[str] = []
@@ -660,14 +675,43 @@ class TradeExecutor:
                 logger.error("Telegram alert failed: %s", e)
         return closed
 
+    def _notify_manual_positions_excluded(self, positions: list, reason: str) -> None:
+        """긴급 청산에서 제외된 무전략 수동 포지션을 소유자별로 알림 (best-effort)."""
+        from app.services.telegram.notifier import get_notifier
+        from app.models.user import User
+
+        notifier = get_notifier()
+        if not notifier:
+            return
+        by_user: dict = {}
+        for pos in positions:
+            by_user.setdefault(pos.user_id, []).append(pos.stock_code)
+        for user_id, codes in by_user.items():
+            try:
+                user = self.db.get(User, user_id)
+                if user and user.telegram_chat_id:
+                    notifier.notify_warning(
+                        user.telegram_chat_id,
+                        "뉴스 긴급 청산 — 수동 포지션 제외",
+                        f"{reason}\n\n전략 없는 수동매수 포지션 {len(codes)}건"
+                        f"({', '.join(codes)})은 자동 청산 대상이 아닙니다. "
+                        f"시장 급락 중이니 직접 판단해주세요.",
+                    )
+            except Exception as e:
+                logger.error("Manual position notice failed for user %s: %s", user_id, e)
+
     def tighten_stop_losses(self, reason: str) -> int:
-        """WARNING + KOSPI -1% 동시 감지 시 수익 포지션을 현재가 기준 트레일링으로 전환.
-        손실 중인 포지션은 기존 고정 손절선 유지.
+        """WARNING + KOSPI -1% 동시 감지 시 수익 중인 전략 포지션을 현재가 기준 트레일링으로 전환.
+        손실 중인 포지션은 기존 고정 손절선 유지. 무전략 수동매수는 제외
+        (strategy.stop_loss_pct 없이는 손절선 계산 불가 + 수동 판단 영역).
         """
         from app.services.trading.realtime_monitor import get_monitor
 
         positions = self.db.scalars(
-            select(Position).where(Position.status == PositionStatus.HOLDING)
+            select(Position).where(
+                Position.status == PositionStatus.HOLDING,
+                Position.strategy_id.is_not(None),
+            )
         ).all()
 
         monitor = get_monitor()

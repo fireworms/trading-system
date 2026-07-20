@@ -52,6 +52,10 @@ class VirtualBroker:
 
     def _fill_price(self, stock_code: str, side: str) -> Decimal:
         """side "02"=매수(ask1), "01"=매도(bid1). 호가 없으면 현재가 ± 슬리피지."""
+        # 실계좌 충실도: 장외/휴장에는 KIS가 시장가 주문을 거부한다. 휴장일 호가·현재가는
+        # 전일 잔상이라 체결 자체가 허구가 됨 (7/17 제헌절 휴장 중 청산 체결 사례)
+        if not self._market.is_market_open_now():
+            raise RuntimeError(f"장 운영시간이 아닙니다 — 가상 주문 거부 ({stock_code})")
         try:
             quote = self._market.get_quote(stock_code)
             price = quote["ask1"] if side == "02" else quote["bid1"]
