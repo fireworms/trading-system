@@ -196,6 +196,17 @@ def job_check_invalidations() -> None:
         _notify_error("무효화 조건 체크 잡 실패", str(e))
 
 
+def job_watchlist_event_scan() -> None:
+    """관심종목 이벤트 감지 (16:30 — 수급 적재·무효화 체크 후): 공시/수급·주가 급변 감지
+    + 트리거급 이벤트는 자동 분석 → 유저 알림. 휴장일은 내부에서 자동 스킵."""
+    try:
+        from app.services.watchlist.events import scan_watchlist_events
+        scan_watchlist_events()
+    except Exception as e:
+        logger.error("Watchlist event scan failed: %s", e)
+        _notify_error("관심종목 이벤트 스캔 잡 실패", str(e))
+
+
 def job_backup_db() -> None:
     """매일 03:30 pg_dump로 DB 백업, 최근 7개 유지."""
     import subprocess
@@ -409,6 +420,14 @@ def start_scheduler() -> None:
         job_check_invalidations,
         trigger=CronTrigger(day_of_week="mon-fri", hour=16, minute=20),
         id="check_invalidations",
+        replace_existing=True,
+    )
+
+    # 매일 장 마감 후: 관심종목 이벤트 감지 (공시/수급·주가 급변 → 알림 + 자동 분석)
+    _scheduler.add_job(
+        job_watchlist_event_scan,
+        trigger=CronTrigger(day_of_week="mon-fri", hour=16, minute=30),
+        id="watchlist_event_scan",
         replace_existing=True,
     )
 

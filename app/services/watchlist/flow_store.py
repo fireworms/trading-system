@@ -21,7 +21,12 @@ def _dec(v) -> Decimal | None:
 
 
 def upsert_investor_flows(db, stock_code: str, rows: list[dict]) -> int:
-    """KIS get_investor_daily 응답을 적재. 이미 있는 (종목, 일자)는 건너뜀. 반환: 신규 행 수."""
+    """KIS get_investor_daily 응답을 적재. 이미 있는 (종목, 일자)는 최신 응답으로 갱신.
+
+    do_nothing이 아닌 do_update인 이유: 장중 분석이 미확정(0) 행을 먼저 넣으면
+    16:10 잡의 확정값이 영원히 못 덮어쓰는 동결 버그 (7/16·7/20 frgn=0 실사례).
+    같은 소스의 최신 조회가 항상 더 확정된 값이다.
+    """
     values = []
     for r in rows:
         d = r.get("date")
@@ -37,8 +42,15 @@ def upsert_investor_flows(db, stock_code: str, rows: list[dict]) -> int:
         })
     if not values:
         return 0
-    stmt = pg_insert(InvestorFlowDaily).values(values).on_conflict_do_nothing(
-        constraint="uq_invflow_stock_date"
+    stmt = pg_insert(InvestorFlowDaily).values(values)
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_invflow_stock_date",
+        set_={
+            "frgn_ntby_amt": stmt.excluded.frgn_ntby_amt,
+            "orgn_ntby_amt": stmt.excluded.orgn_ntby_amt,
+            "prsn_ntby_amt": stmt.excluded.prsn_ntby_amt,
+            "close": stmt.excluded.close,
+        },
     )
     result = db.execute(stmt)
     db.commit()

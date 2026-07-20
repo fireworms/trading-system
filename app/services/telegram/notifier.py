@@ -131,6 +131,23 @@ class TelegramNotifier:
                 lines += [f"• {c.get('조건', '')}", f"  ↳ 확인: {method}"]
         self._send(chat_id, "\n".join(lines))
 
+    def notify_watchlist_event(
+        self, chat_id: str, stock_name: str, stock_code: str, event_lines: list[str],
+        analysis_note: str | None = None, highlights: list[str] | None = None,
+        condition_summary: str | None = None,
+    ) -> None:
+        """관심종목 이벤트 감지 알림 — 이벤트 사실 + 자동 분석 요약. 매매 지시 아님."""
+        lines = [f"📡 <b>[관심종목 이벤트] {stock_name} ({stock_code})</b>"]
+        lines += [f"• {ev}" for ev in event_lines]
+        if analysis_note:
+            lines.append(f"\n🤖 {analysis_note}")
+        for h in highlights or []:
+            lines.append(f"• {h}")
+        if condition_summary:
+            lines.append(f"\n무효화_조건: {condition_summary}")
+        lines.append("\n해석은 참고용입니다 — 매매 판단은 직접 하세요.")
+        self._send(chat_id, "\n".join(lines))
+
     # ------------------------------------------------------------------ #
     # 경고 / 에러
     # ------------------------------------------------------------------ #

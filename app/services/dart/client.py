@@ -132,6 +132,7 @@ def fetch_recent_disclosures(stock_code: str, end_date: date | None = None,
             "date": it.get("rcept_dt"),
             "title": (it.get("report_nm") or "").strip(),
             "filer": it.get("flr_nm"),
+            "rcept_no": it.get("rcept_no"),  # 이벤트 감지 중복 판정 키
             "url": _VIEWER_URL.format(rcept_no=it.get("rcept_no")),
         } for it in data.get("list", [])[:limit]]
         return {"available": True, "source": "DART OpenDART list API",

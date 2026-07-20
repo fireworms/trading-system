@@ -197,6 +197,21 @@ def trigger_invalidation_check(
     return {"message": "무효화 조건 체크 시작됨"}
 
 
+@router.post("/watchlist-events/trigger")
+def trigger_watchlist_event_scan(
+    background_tasks: BackgroundTasks,
+    force: bool = False,
+    _: User = Depends(require_admin),
+):
+    """관심종목 이벤트 감지 수동 실행. force=true면 당일 수급/주가 감지 재실행
+    (공시는 rcept_no 중복 방지가 항상 적용돼 재알림 없음)."""
+    def _run():
+        from app.services.watchlist.events import scan_watchlist_events
+        scan_watchlist_events(force=force)
+    background_tasks.add_task(_run)
+    return {"message": "관심종목 이벤트 스캔 시작됨"}
+
+
 @router.post("/morning-gate/trigger")
 def trigger_morning_gate(
     background_tasks: BackgroundTasks,
