@@ -71,7 +71,8 @@ trading_system/
 │   │   ├── watchlist/
 │   │   │   ├── analyzer.py      # 관심종목 분석 (수집→스냅샷→Gemini 구조화→저장)
 │   │   │   ├── flow_store.py    # 일별 수급 적재/60·120일 누적 (KIS 30거래일 한계 보완)
-│   │   │   └── invalidation.py  # 무효화_조건 자동 판정 (결정론 체커 + 16:20 잡 + 전이 알림)
+│   │   │   ├── invalidation.py  # 무효화_조건 자동 판정 (결정론 체커 + 16:20 잡 + 전이 알림)
+│   │   │   └── events.py        # 이벤트 자동 감지 (DART 공시/수급·주가 급변/실적 캘린더 + 자동 분석, 16:30 잡)
 │   │   ├── dart/
 │   │   │   └── client.py        # DART OpenDART 공시 어댑터 (corp_code 매핑 캐시 + 최근 14일 공시)
 │   │   ├── naver/
@@ -122,7 +123,7 @@ trading_system/
 - KIS 모의투자(VTS) 미사용 — 실시세 기반 자체 시뮬레이션. `services/trading/virtual_broker.py`
 - **체결 모델 (보수적)**: 매수=매도호가1(ask1), 매도=매수호가1(bid1) → 스프레드 비용 반영. 호가 실패 시 현재가 ±10bp. 매도 시 왕복 수수료·거래세(_COMMISSION) 예수금 차감 → virtual_cash 곡선이 pnl_pct 누적과 정합
 - **`get_trading_client(account)` 팩토리** (virtual_broker.py): VIRTUAL이면 VirtualBroker, 아니면 KISClient 싱글턴. executor/positions API/realtime_monitor/thesis 재검증 전부 이 팩토리 사용 — **브로커 호출 지점 추가 시 get_kis_client_from_account 직접 호출 금지**
-- VirtualBroker는 시세를 실전 클라이언트에 위임(__getattr__), 잔고 차감은 단일 UPDATE(레이스 방지), 잔고부족 시 주문 거부. get_balance는 HOLDING 포지션 기반(avg=entry라 체결가 보정 no-op)
+- VirtualBroker는 시세를 실전 클라이언트에 위임(__getattr__), 잔고 차감은 단일 UPDATE(레이스 방지), 잔고부족 시 주문 거부. **장외/휴장 시 주문 거부** (실계좌 충실도 — 휴장일 전일 잔상 호가로 허구 체결되던 7/17 사례 교정, 2026-07-20). get_balance는 HOLDING 포지션 기반(avg=entry라 체결가 보정 no-op)
 - **실+가상 병행 구독 가능**: 매수 중복 체크가 계좌 단위 (user_id+account_id+rec_id)
 - **Circuit Breaker는 실계좌 전용**: 가상 청산은 CB 집계 제외 + 가상 매수는 CB 차단 안 받음 (자본 보호 레이어이지 전략 평가 대상 아님)
 - **통계 격리**: GET /positions/stats?scope=real(기본)|virtual|all — 가상 손익이 실계좌 KPI에 안 섞임. PositionOut.account_type으로 프론트 "가상" 배지
@@ -249,9 +250,13 @@ trading_system/
 
 ### 뉴스 감시 듀얼 시그널 조치
 장중 뉴스 감시(2시간마다)에서 WARNING/CRITICAL 감지 시 실시간 KOSPI 등락률로 교차 검증:
-- `CRITICAL + KOSPI ≤ -2%` → 전 포지션 즉시 청산 (MANUAL_EXIT) + 텔레그램
-- `WARNING/CRITICAL + KOSPI ≤ -1%` → 수익 포지션 현재가 기준 trailing 전환 + 텔레그램
+- `CRITICAL + KOSPI ≤ -2%` → 전략 포지션 즉시 청산 (MANUAL_EXIT) + 텔레그램
+- `WARNING/CRITICAL + KOSPI ≤ -1%` → 수익 중 전략 포지션 현재가 기준 trailing 전환 + 텔레그램
 - AI 단독 신호 (KOSPI 멀쩡) → 알림만 (오탐 방지)
+- **3중 보강 (2026-07-20)**:
+  - **휴장일/장외 가드**: 조치 전 `is_market_open_now()` 확인 — 휴장이면 무조치. 배경: 7/17 제헌절 휴장에 KIS 지수 API가 직전 거래일(7/16 -6.4%) 등락률을 그대로 반환 → CRITICAL과 교차돼 가상 포지션이 전일 잔상 호가로 오청산됨
+  - **스코프 = 전략 포지션만**: 청산/손절강화는 `strategy_id` 있는 포지션만. 무전략 수동매수는 소유자에게 "직접 판단" 알림만 (자동 진입은 자동 방어, 수동 진입은 사람 판단 — 관심종목 역발상 매수를 시스템이 뒤집지 않음)
+  - **당일 재발동 억제**: 긴급 청산 발동 시 KOSPI 등락률을 app_config(`news_emergency_close_date/kospi`)에 기록, 같은 날은 직전 대비 1%p 추가 악화 시에만 재청산 (동일 이벤트 지속 CRITICAL이 매 틱 재청산 → 장중 신규 포지션까지 쓸리던 문제)
 
 ### Thesis 재검증 (10:00, 14:00)
 - 대상: 2일+ 보유 HOLDING 포지션
@@ -277,6 +282,7 @@ trading_system/
 | verify_news_events | 16:00 평일 | 뉴스 이벤트 + recommendation_runs 실제 시장 영향 검증 |
 | collect_watchlist_flows | 16:10 평일 | 관심종목 일별 수급 적재 (60/120일 누적, 2026-07-02 시작) |
 | check_invalidations | 16:20 평일 | 관심종목 무효화_조건 자동 판정 (수급 적재 직후, 충족 전이 시 유저 알림) |
+| watchlist_event_scan | 16:30 평일 | 관심종목 이벤트 감지 (공시/수급·주가 급변 → 알림 + 트리거급은 자동 분석, 휴장일 스킵) |
 | news_watch_tick | 09:00~15:30 10분마다 평일 | 뉴스 감시 tick (120분마다 실행) |
 | update_stock_master | 03:00 일요일 | stock_master + 지수캐시 갱신 |
 
@@ -359,6 +365,7 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
   - `get_today_fill_price(stock_code, side="02")` — side "02"=매수, "01"=매도
   - 매수 직후 entry_price, 매도 직후 exit_price에 실 체결가 반영
 - `CTPF1002R` search-stock-info: 종목 기본정보 (섹터)
+- `CTCA0903R` chk-holiday: 국내휴장일조회 — `is_market_open_day()` (날짜별 캐시). 휴장일엔 지수/호가 API가 직전 거래일 잔상을 반환하므로 시장 조치·가상 체결 전 필수 판정 (2026-07-20)
 - `FHPST01740000` 시총순위: KOSPI200/KOSDAQ150 구성종목 근사치
 - `FHKST66430300` financial-ratio: 분기 ROE/부채비율/EPS/BPS/성장률 (관심종목 탭)
 - `FHKST66430200` income-statement: 분기 손익 — **YTD 누적**이라 단일 분기는 차분 필요
@@ -484,7 +491,8 @@ NAVER_CLIENT_SECRET=
 - `get_current_price(code)`: FHKST01010100, 현재가만 반환
 - `get_price_with_change(code)`: 현재가 + 시가 + 등락률 + bid_price (프론트/모니터용)
 - `get_intraday_status(code)`: 시가/고가/체결강도/거래량 (09:20 장중 체크용)
-- `get_index_change_pct()`: KOSPI(0001)/KOSDAQ(1001) 등락률 — 매수 전 -2% 체크
+- `get_index_change_pct()`: KOSPI(0001)/KOSDAQ(1001) 등락률 — 매수 전 -2% 체크. **휴장일엔 직전 거래일 값을 그대로 반환하므로 시장 조치 전 is_market_open_now() 필수**
+- `is_market_open_day(date)` / `is_market_open_now()`: CTCA0903R 휴장일 조회(날짜별 캐시) + KST 평일 09:00~15:30. 조회 실패 시 개장 간주 (보호 조치를 막지 않는 fail-safe)
 - `_get_domestic_stock_info(code)`: 현재가+RSI+이평선+외국인/기관 순매수+**per/eps** 통합 (runner 종목 데이터 수집용). inquire-price 1회 호출로 price+per+eps 동시 추출 (get_current_price 중복 호출 제거). per/eps는 **trailing(직전 공시 실적) 기준** — forward 추정 서사와 다른 값. 적자기업·데이터없음은 None(0/음수 위장 금지). eps는 KIS가 "6564.00" 문자열 반환 → int(float()) 파싱
 - `get_stock_basic_info(code)`: CTPF1002R 섹터 조회 (매수 직전 MAX_PER_SECTOR 체크용)
 - `get_fx_daily_closes(symbol='FX@KRW', days)`: USD/KRW 환율 일봉 (FHKST03030100, mrkt div 'X')
@@ -531,8 +539,8 @@ NAVER_CLIENT_SECRET=
 - `_check_position(pos)`: 목표가/손절가 계산 + trailing 모드 체크 + 타임아웃(+1거래일 신고점 없으면 TARGET_HIT) 처리
 - `_close_position(pos, status, price)`: 시장가 매도 → 1초 대기 → `get_today_fill_price(side="01")`로 실 체결가 → exit_price 저장 → 모니터 제거
 - `_check_circuit_breaker(user_id)`: 직전 4건 청산 전부 손실 시 cb_paused 플래그 설정
-- `emergency_close_all_positions(reason)`: 전 포지션 즉시 청산 (뉴스 CRITICAL+KOSPI -2% 시)
-- `tighten_stop_losses(reason)`: 수익 포지션 현재가 기준 trailing 전환 (뉴스 WARNING+KOSPI -1% 시)
+- `emergency_close_all_positions(reason)`: 전략 HOLDING 포지션 즉시 청산 (뉴스 CRITICAL+KOSPI -2% 시). 무전략 수동매수는 제외 + 소유자 알림만 (`_notify_manual_positions_excluded`)
+- `tighten_stop_losses(reason)`: 수익 중 전략 포지션 현재가 기준 trailing 전환 (뉴스 WARNING+KOSPI -1% 시). 무전략 포지션 제외 (strategy 없인 손절선 계산 불가)
 - `_build_cross_signal(db)`: 오늘 전략 추천 집계 → 종목별 다양성 점수 계산
 - `_cross_signal_bonus(code, signal)`: 점수 1.0→+7%, 0.5→+3.5%, 상한 +10%
 
@@ -548,7 +556,7 @@ NAVER_CLIENT_SECRET=
 - `check_news(db)`: gemini-2.5-flash + google_search → severity 판정. 실패 시 20초 후 1회 재시도, 최종 실패 시 `check_failed` 마커 반환 (NORMAL로 위장 금지)
 - `morning_gate_check()`: 08:00 실행. 시작부에서 전날 켜진 news_auto_trade_paused stale 자동 해제(news_pause_at ≠ 오늘 KST) → **QQQ 전일 등락률 수치 게이트**(-1.5% WARNING / -3% CRITICAL, `get_us_price_with_change("QQQ","NAS")`, LLM 비의존) + Gemini 미국선물/지정학 체크 → 둘 중 나쁜 쪽 채택 → WARNING/CRITICAL 시 `morning_gate_paused=true`. Gemini 실패해도 수치만으로 차단 가능(fail-safe), `morning_gate_last_check`에 QQQ 실측 vs LLM 수치 기록 (게이트 정확도 사후검증용, date는 KST 거래일 — UTC로 쓰면 08:00 KST 실행 시 전날로 밀림)
 - `run_news_check_and_act()`: 스케줄러에서 호출. 장중 120분 간격 체크 (10분 tick 기반). `check_failed`면 이벤트 저장 스킵 + 연속실패 카운트 + 3연속 시 어드민 알림
-- `_apply_dual_signal_action(db, result)`: AI 판정 × KOSPI 등락률 교차 검증 → emergency_close / tighten_stop / 알림만
+- `_apply_dual_signal_action(db, result)`: AI 판정 × KOSPI 등락률 교차 검증 → emergency_close / tighten_stop / 알림만. 휴장/장외 무조치 + 당일 재발동 억제(1%p 추가 악화 시만 재청산)
 - `check_position_theses(db)`: 10:00/14:00. 2일+ HOLDING 포지션 8개씩 그룹 → gemini-2.5-flash + google_search thesis 재검증 → invalid+손실 시 조기 청산
 - `verify_news_events(db)`: 1일/3일 경과 이벤트에 실제 KOSPI/KOSDAQ 변화율 기록
 - `verify_run_market_outcomes(db)`: 전날 recommendation_runs의 kospi_change_1d 채움 (A-gate 데이터 축적)
@@ -596,9 +604,18 @@ NAVER_CLIENT_SECRET=
 - 1차 범위: 수동 트리거만. 이벤트 자동 감지(실적/공시/수급·주가 급변)는 후속. 공매도 잔고는 미구현(KIS 일별추이 API 있어 후속 가능), 대차잔고는 KIS 미제공
 
 ### app/services/watchlist/flow_store.py
-- `upsert_investor_flows(db, code, rows)`: KIS 일별 수급 → investor_flow_daily upsert (중복 일자 스킵)
+- `upsert_investor_flows(db, code, rows)`: KIS 일별 수급 → investor_flow_daily upsert (**중복 일자는 최신 응답으로 갱신** — 장중 분석이 미확정 0 행을 먼저 넣으면 16:10 잡 확정값이 영영 못 덮던 동결 버그를 2026-07-20 do_update로 교정)
 - `get_extended_flow(db, code)`: 적재분 60/120거래일 누적 — 커버리지 미달이면 부분합 대신 None + 일수 명시
 - `collect_all_watchlist_flows()`: 16:10 잡 — 전체 유저 관심종목 distinct 순회 적재
+
+### app/services/watchlist/events.py
+- 이벤트 자동 감지 + 트리거급 자동 분석 (16:30 잡 `scan_watchlist_events`, 감지는 전부 결정론 — Gemini 0회, 휴장일 스킵)
+- `detect_disclosures`: DART 당일(3일 창) 신규 공시 — rcept_no 중복 방지(app_config `watchlist_seen_disclosures`, 30일 프루닝), 중요 유형 키워드 분류(실적/자본변동/구조개편/주요사항/대형계약/자사주/지배구조/리스크/조회공시), 미매칭 잡공시 무시. "영업(잠정)실적"처럼 괄호 낀 실전 표기 매칭 주의
+- `detect_flow_spike`: 당일 외인/기관 |순매수| ≥ 30일 평균의 3배 + 10억원 이상 (적재 20일 미만이면 침묵)
+- `detect_price_spike`: 당일 등락률 ±5% 이상
+- `earnings_calendar_notice`: 정기보고서 법정 제출기한(분기·반기 45일/사업보고서 90일) D-14/D-7 안내 — 한국은 발표일 사전 확정 공표가 드물어 법정 기한만 결정론 계산 가능, 잠정실적 조기 공시는 공시 감지가 담당. 주말 밀림 허용(스테이지 기록으로 중복 방지)
+- 트리거급 이벤트(실적/자본변동/구조개편/주요사항/대형계약/리스크/수급·주가 급변) → `run_analysis(trigger_type=...)` 자동 실행(유저·종목·일 1회 상한) → 무효화_조건 즉시 재판정 → 이벤트+분석 요약+조건 판정 통합 텔레그램. 분석 실패 시에도 이벤트 알림은 발송. 자동 매매 개입 없음
+- 수동 트리거: POST /admin/watchlist-events/trigger (force=수급/주가 당일 재감지)
 
 ### app/api/watchlist.py
 - 관심종목 CRUD + `POST /watchlist/analyze` + 이력/상세 조회, 전부 current_user 스코핑
