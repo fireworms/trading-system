@@ -345,6 +345,7 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 - **첫 적용**: `[TEST] 실적 카탈리스트` 전략 = `KOSPI 대형주 스윙`(hold 20/target 6/stop 3/largecap·KOSPI/pick 3) 파라미터 **그대로 복제** + selection_mode만 변경 → 선정 로직만 분리된 A/B. largecap 샘플링은 KOSPI200 시총순위 기반이라 두 전략이 거의 동일 풀 → 깨끗한 비교. 구독 없음(관찰 모드), 08:30 잡이 활성 전략 전체 실행 + verifier가 auto_trade 무관 채점이라 데이터 자동 누적
   - earnings_catalyst를 단타(hold 7)가 아닌 대형주 스윙(hold 20)에 얹은 이유: 실적 카탈리스트는 대형주에서 데이터 풍부 + PEAD 드리프트가 수주 단위라 시간축 정합
   - 씨드: `scripts/seed_earnings_catalyst_strategy.py` (대형주 템플릿 우선 복제, 멱등)
+- **시장 축 변형 (2026-08-05)**: `[TEST] KOSDAQ150 대형주 스윙` — 대형주 스윙의 candidate_market만 KOSDAQ(150)으로 바꾼 관찰 전략(구독 없음). 배경: 8/5 점검에서 largecap×hold20×momentum 셀만 플러스(승률 41.7%, +0.75%) → KOSPI 특수인지 대형주 스윙 일반인지 검증. target/stop 8/4는 KOSDAQ 변동성(KOSPI200 대비 1.3~1.5배) 조정 — R/R 2 유지, 엣지 부재와 손절 과민을 구분하기 위함. 씨드: `scripts/seed_kosdaq_swing_strategy.py` (멱등)
 
 ## Circuit Breaker
 - 직전 4건 청산이 전부 손실이면 해당 유저 매수 자동 차단 (4건 미만은 체크 안 함)
