@@ -43,7 +43,8 @@ trading_system/
 │   │   ├── app_config.py        # AppConfig (key-value 설정 테이블)
 │   │   ├── news_event.py        # NewsEvent (뉴스 감시 + 시장 영향 누적)
 │   │   ├── watchlist.py         # WatchlistStock, StockAnalysis (중장기 수동매매 일지)
-│   │   └── investor_flow.py     # InvestorFlowDaily (관심종목 일별 수급 적재, 공용)
+│   │   ├── investor_flow.py     # InvestorFlowDaily (관심종목 일별 수급 적재, 공용)
+│   │   └── research.py          # ResearchNote (AI 리서치 탭 — 자유 질문 리서치 기록)
 │   ├── api/
 │   │   ├── users.py             # 회원가입, 로그인, 브로커계좌 CRUD (hts_id 수정 포함)
 │   │   ├── strategies.py        # 전략 CRUD, 구독 관리
@@ -55,6 +56,7 @@ trading_system/
 │   │   ├── stock_master.py      # 종목 풀 검색/통계
 │   │   ├── backtest.py          # 백테스트 실행/결과
 │   │   ├── watchlist.py         # 관심종목 CRUD + 분석 실행/이력 (중장기 탭)
+│   │   ├── research.py          # AI 리서치 — 자유 질문 종목 리서치 (식별→분석→이력)
 │   │   └── ws.py                # WebSocket /ws/prices (실시간 가격)
 │   ├── services/
 │   │   ├── kis/
@@ -73,6 +75,8 @@ trading_system/
 │   │   │   ├── flow_store.py    # 일별 수급 적재/60·120일 누적 (KIS 30거래일 한계 보완)
 │   │   │   ├── invalidation.py  # 무효화_조건 자동 판정 (결정론 체커 + 16:20 잡 + 전이 알림)
 │   │   │   └── events.py        # 이벤트 자동 감지 (DART 공시/수급·주가 급변/실적 캘린더 + 자동 분석, 16:30 잡)
+│   │   ├── research/
+│   │   │   └── analyst.py       # AI 리서치 (질문→종목 식별→관심종목 스냅샷 재사용→마크다운 답변)
 │   │   ├── dart/
 │   │   │   └── client.py        # DART OpenDART 공시 어댑터 (corp_code 매핑 캐시 + 최근 14일 공시)
 │   │   ├── naver/
@@ -92,7 +96,8 @@ trading_system/
 │       ├── user.py
 │       ├── strategy.py
 │       ├── recommendation.py    # PositionOut (target_price, trailing_stop_price 포함)
-│       └── watchlist.py
+│       ├── watchlist.py
+│       └── research.py
 ├── docs/
 │   ├── watchlist_spec.md        # 관심종목 분석 탭 스펙 (관련 작업 시 필독)
 │   └── setup.md                 # 설치/마이그레이션 가이드 (README에서 분리)
@@ -212,6 +217,13 @@ trading_system/
 - KIS FHKST01010900이 최근 30거래일만 반환 → 16:10 잡 + 분석 실행이 매일 upsert해 60/120일 누적 구축
 - **백필 불가** — 2026-07-02부터 축적, 커버리지 미달 구간은 부분합으로 위장하지 않고 None + 일수 명시
 
+### research_notes ← AI 리서치 탭 (자유 질문 종목 리서치, 2026-08-10)
+- research_id (PK, UUID), user_id (FK, CASCADE), stock_code (idx), stock_name
+- question, **answer_md** (마크다운 자유 서술 — 시나리오+확인 포인트, 방향 단언·목표주가 금지)
+- gemini_model, sources (JSONB — 출처 섹션 링크 추출), input_snapshot (JSONB — 관심종목과 동일 수집기), created_at
+- **stock_analyses와 별도 테이블** — 16:20 무효화 판정 잡이 종목별 최신 분석을 읽으므로 무효화_조건 없는 자유 서술이 섞이면 조건 감시가 깨짐
+- 참고용 프레이밍: 매매 시그널 아님 (UI 경고 배너), 자동매매 개입 없음
+
 ## 자동매매 흐름
 
 ### 분석 잡 (08:30 Mon/Wed/Fri)
@@ -298,6 +310,7 @@ trading_system/
 | 실적 카탈리스트 탐지 (earnings_catalyst 전략) | gemini-2.5-flash | - (검색 그라운딩, 실패 시 빈 결과) |
 | 뉴스 감시 (장중 2시간마다) | gemini-2.5-flash | - |
 | 관심종목 분석 (수동 트리거) | gemini-2.5-flash | - (검색 그라운딩, 파싱 실패 시 gemma 정제) |
+| AI 리서치 (수동 트리거) | gemini-2.5-flash | - (검색 그라운딩, 마크다운 출력). 종목 별칭 추출은 gemini-3.1-flash-lite |
 | 모닝 게이트 (08:00) | gemini-2.5-flash | - |
 | Thesis 재검증 (10:00, 14:00) | gemini-2.5-flash | - |
 | JSON 정제 | gemma-4-31b-it | - |
@@ -626,6 +639,14 @@ NAVER_CLIENT_SECRET=
 ### app/api/watchlist.py
 - 관심종목 CRUD + `POST /watchlist/analyze` + 이력/상세 조회, 전부 current_user 스코핑
 - 삭제 시 분석 일지는 보존 (FK 없음). 이력 집계는 stock_code 기준 별도 쿼리
+
+### app/services/research/analyst.py + app/api/research.py — AI 리서치 탭 (2026-08-10)
+- 자유 텍스트 질문 → 종목 리서치. **참고용 프레이밍** — 매매 시그널 아님 (AI 서술형 전망 예측력 미검증은 ai_probability 폐기와 동일 근거, UI 경고 배너 고정), 자동매매 개입 없음
+- `identify_stocks(db, question)`: 3단 식별 — ① 6자리 코드 → ② stock_master 이름 부분매칭 (**앞 경계 체크**: "하이닉스" 안의 "이닉스" 오매칭 방지. 뒷 경계는 조사("삼성전자를")가 붙어 미검사. 포함관계 매칭은 긴 이름 우선: 삼성전자우 > 삼성전자) → ③ Gemini 별칭 추출 (gemini-3.1-flash-lite, 삼전→삼성전자, 실패 시 no_match로만 처리). 국내(KOSPI/KOSDAQ)만 — 스냅샷 수집기가 국내 KIS 전용
+- `run_research(...)`: 관심종목 `collect_input_snapshot` **그대로 재사용**(수급 적재 기여 포함) → gemini-2.5-flash 검색 그라운딩 → 마크다운 자유 서술 → research_notes 저장. 프롬프트 규칙은 관심종목 탭 이식 (앱 파생지표 재계산 금지·PER 시점 구분·환율 공통팩터·14일 뉴스 창) + "리스크·확인 포인트"/"출처" 섹션 필수. sources는 출처 섹션 링크 정규식 추출 (실패 시 빈 배열, 치명 아님)
+- API: `POST /research/query` — 응답 status done/**ambiguous**(후보 복수 → 프론트 선택 후 stock_code 지정 재요청)/no_match. GET /research/history·/{id}, DELETE. 전부 유저 스코핑
+- 프론트: `app/research/page.tsx` + `components/Markdown.tsx` (의존성 없는 경량 렌더러 — 프롬프트가 출력 문법을 ##/굵게/목록/파이프 표로 제한)
+- GeminiAnalyzer 공용 헬퍼 추가: `grounded_text`(그라운딩 + 원문 텍스트 — 비JSON 출력용) / `plain_json`(비그라운딩 경량 추출)
 
 ### app/services/telegram/notifier.py
 - `TelegramNotifier`: 멀티유저 텔레그램 알림. chat_id별 개별 전송

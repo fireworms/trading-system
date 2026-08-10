@@ -155,6 +155,15 @@ class GeminiAnalyzer:
         text = self._call_model_with_search(prompt, model)
         return self._parse_json(text), text, model
 
+    def grounded_text(self, prompt: str, model: str = "gemini-2.5-flash") -> tuple[str, str]:
+        """검색 그라운딩 1회 호출 — 원문 텍스트 그대로 반환 (마크다운 등 비-JSON 출력용).
+        반환: (텍스트, 사용 모델명)."""
+        return self._call_model_with_search(prompt, model), model
+
+    def plain_json(self, prompt: str, model: str = "gemini-3.1-flash-lite") -> dict:
+        """그라운딩 없는 1회 호출 + JSON 파싱 (경량 추출 작업용)."""
+        return self._parse_json(self._call_model(prompt, model))
+
     # ------------------------------------------------------------------ #
     # 4단계 파이프라인
     # ------------------------------------------------------------------ #

@@ -10,6 +10,7 @@ const links = [
   { href: "/positions",  label: "포지션" },
   { href: "/stats",      label: "수익통계" },
   { href: "/watchlist",  label: "관심종목" },
+  { href: "/research",   label: "AI 리서치" },
   { href: "/news",       label: "뉴스감시" },
   { href: "/profile",    label: "프로필" },
 ];

@@ -442,6 +442,41 @@ export interface StockAnalysisDetail extends StockAnalysisSummary {
   input_snapshot: Record<string, any> | null;
 }
 
+// AI 리서치 탭 (자유 질문 종목 리서치 — 참고용, 매매 시그널 아님)
+export interface ResearchCandidate {
+  stock_code: string;
+  stock_name: string;
+  market: string;
+  sector: string | null;
+}
+
+export interface ResearchSource {
+  title: string;
+  url: string;
+}
+
+export interface ResearchNoteSummary {
+  research_id: string;
+  stock_code: string;
+  stock_name: string;
+  question: string;
+  gemini_model: string;
+  created_at: string;
+}
+
+export interface ResearchNoteDetail extends ResearchNoteSummary {
+  answer_md: string;
+  sources: ResearchSource[] | null;
+  input_snapshot: Record<string, any> | null;
+}
+
+export interface ResearchQueryResponse {
+  status: "done" | "ambiguous" | "no_match";
+  message: string | null;
+  candidates: ResearchCandidate[] | null;
+  note: ResearchNoteDetail | null;
+}
+
 // ------------------------------------------------------------------ //
 // API
 // ------------------------------------------------------------------ //
@@ -634,5 +669,19 @@ export const api = {
       authFetch<StockAnalysisSummary[]>(`/watchlist/analyses/${stockCode}`),
     analysisDetail: (analysisId: string) =>
       authFetch<StockAnalysisDetail>(`/watchlist/analysis/${analysisId}`),
+  },
+
+  research: {
+    query: (body: { question: string; stock_code?: string }) =>
+      authFetch<ResearchQueryResponse>("/research/query", {
+        method: "POST",
+        body: JSON.stringify(body),
+      }),
+    history: (limit = 30) =>
+      authFetch<ResearchNoteSummary[]>(`/research/history?limit=${limit}`),
+    detail: (researchId: string) =>
+      authFetch<ResearchNoteDetail>(`/research/${researchId}`),
+    remove: (researchId: string) =>
+      authFetch<void>(`/research/${researchId}`, { method: "DELETE" }),
   },
 };
