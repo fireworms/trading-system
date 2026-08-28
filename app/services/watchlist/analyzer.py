@@ -62,7 +62,7 @@ _ANALYSIS_PROMPT = """당신은 데이터를 구조화하는 애널리스트입�
 5. 앱이 계산해 넣은 파생 지표는 재계산하지 말고 그대로 인용할 것 — investor_flow의 frgn_pace/orgn_pace judgment 문자열, market의 상대수익률/relative_note, fx_usdkrw의 trend_note, per_ttm, pbr_band_5y 퍼센타일, valuation_scenarios의 함의주가. 직접 나눗셈/비율 계산 금지.
 6. PER 시점 구분: per_trailing은 직전 공시 실적 기준이라 실적 급변 구간에서 왜곡됨 — income_single_q 추세와 괴리가 크면 per_ttm(최근 4개 분기 합산)과 per_forward_consensus를 우선해 밸류를 평가할 것.
 7. 환율은 외국인 수급의 공통 팩터 — 외국인 순매도가 fx_usdkrw 추세와 동행하는 시장 공통 요인인지, market의 상대수익률상 종목 고유 요인인지 구분해 서술할 것.
-8. valuation_scenarios는 앱이 배수 밴드에서 역산한 산술값(현재가 × 목표배수 ÷ 현재배수)이다. 새 목표주가를 만들어내지 말고, 이 표에서 현재 논거와 정합적인 행을 고르고 그 행의 "전제"가 성립할 조건을 서술할 것. warnings에 담긴 경고(이익 피크 구간·영업외 요인·장부가 시점차)는 반드시 반영할 것 — 경고를 무시한 상단 인용 금지.
+8. valuation_scenarios는 앱이 배수 밴드에서 역산한 산술값(현재가 × 목표배수 ÷ 현재배수)이다. 새 목표주가를 만들어내지 말고, 이 표에서 현재 논거와 정합적인 행을 고르고 그 행의 "전제"가 성립할 조건을 서술할 것. warnings에 담긴 경고(이익 피크 구간·영업외 요인·장부가 시점차)는 반드시 반영할 것 — 경고를 무시한 상단 인용 금지. 행에 "신뢰도"가 붙어 있으면 그 행을 인용할 때 반드시 사유를 함께 밝히고, 신뢰도 낮은 행만 남아 있으면 "현재 국면에서는 밴드 회귀 역산이 유효하지 않다"고 명시할 것 — 근거 없는 숫자를 만들어 채우지 말 것.
 9. 날짜를 지어내지 말 것. 실적 발표일·공시일은 dart_disclosures의 rcept_dt에서, 기사 날짜는 news_recent에서만 인용한다. 정기보고서 법정 제출기한은 실제 실적 발표일이 아니다 — 둘을 혼동하지 말 것.
 10. 단기_촉매는 분석 기준일 이후에 발생할 이벤트만 쓸 것. 이미 발표·확정된 건은 논거의 배경으로 서술하고 촉매에 넣지 말 것. 예상_시점은 미래 날짜 또는 확정된 기한이어야 한다.
 11. 장기_논거에 인용한 이벤트가 단기 수급에 반대로 작용하는지 반드시 검토할 것 — 같은 사건이 장기적으로 긍정이면서 단기적으로는 물량 부담(신주 희석·보호예수 해제·차익거래 유인)일 수 있다. 한쪽 방향만 서술하지 말 것.
@@ -241,46 +241,93 @@ def _summarize_market(client: KISClient, price: dict) -> dict:
     return out
 
 
-def _pbr_band_5y(client: KISClient, stock_code: str, pbr_now: float | None) -> dict:
-    """5년 PBR 밴드 근사 — 월별 종가 ÷ 당시 최근 연간 BPS → 현재 PBR 퍼센타일.
+def _multiple_band(bars, by_period: list, cur_multiple: float | None,
+                   basis: str) -> dict:
+    """월별 종가 ÷ 당시 최근 연간 기준값(BPS/EPS) → 배수 시계열 + 현재 퍼센타일.
 
-    KIS가 PBR 이력을 직접 주지 않아 근사 계산. 자사주 소각/유상증자 구간은
-    왜곡될 수 있어 note로 명시 (LLM이 '역사상 최고' 류 과단정 못 하게).
+    과거 점과 현재 점이 동일하게 "직전 확정 연간 값" 기준이라 퍼센타일 자체는
+    내부 일관성이 있다. 다만 반기 이익이 기준값을 크게 바꾸는 구간에서는 그 시점차가
+    이례적으로 커지므로, 호출부가 최근 분기 기준 배수를 병기해 함께 읽게 한다.
     """
-    annual = client.get_financial_ratios(stock_code, quarterly=False)  # 최신순
-    bars = client.get_ohlcv_monthly(stock_code, months=60)
-    bps_by_period = [(r["period"], r["bps"]) for r in annual
-                     if r.get("period") and r.get("bps") and r["bps"] > 0]
-    if not bps_by_period or not bars:
+    if not by_period or not bars:
         return {"available": False}
     series = []
     for b in bars:
-        month = b.date[:6]
-        bps = next((v for p, v in bps_by_period if p <= month), None)
-        if bps:
-            series.append(round(float(b.close) / bps, 2))
+        base = next((v for prd, v in by_period if prd <= b.date[:6]), None)
+        if base:
+            series.append(round(float(b.close) / base, 2))
     if len(series) < 12:
         return {"available": False}
-    cur = pbr_now if pbr_now else series[0]
-    percentile = round(sum(1 for v in series if v <= cur) / len(series) * 100, 1)
-    highs = [float(b.high) for b in bars]
-    lows = [float(b.low) for b in bars]
+    cur = cur_multiple if cur_multiple else series[0]
+    ordered = sorted(series)
+
+    def _q(pct: float) -> float:
+        return round(ordered[min(len(ordered) - 1, int(len(ordered) * pct))], 2)
+
     return {
         "available": True,
         "months": len(series),
-        "pbr_current": cur,
-        "pbr_5y_min": min(series),
-        "pbr_5y_max": max(series),
-        "pbr_5y_median": round(sorted(series)[len(series) // 2], 2),
-        "pbr_percentile_5y": percentile,
-        # 과거 점과 현재 점이 동일하게 "직전 확정 연간 BPS" 기준이라 퍼센타일 자체는
-        # 내부 일관성이 있다. 다만 반기 이익이 자본의 상당분인 구간에서는 그 시점차가
-        # 이례적으로 커지므로 valuation_current.pbr_recent_q와 함께 읽어야 한다.
-        "basis": "직전 확정 연간 BPS (분기 실적 미반영)",
-        "price_high_5y": max(highs),
-        "price_low_5y": min(lows),
-        "note": "월별 종가 ÷ 당시 최근 연간 BPS 근사 — 자사주 소각/유상증자 구간 왜곡 가능",
+        "current": cur,
+        # min/max는 참고용 — 시나리오 역산에는 p20/p80을 쓴다.
+        # 사이클 종목의 PER 밴드 상단은 "이익 바닥" 시기에 만들어지므로(EPS가 0에 가까우면
+        # PER이 폭증) 그 배수를 피크 이익에 곱하면 이중 계상이 된다. 꼬리를 잘라야 한다.
+        "min": min(series),
+        "max": max(series),
+        "p20": _q(0.20),
+        "p80": _q(0.80),
+        "median": round(ordered[len(ordered) // 2], 2),
+        "percentile": round(sum(1 for v in series if v <= cur) / len(series) * 100, 1),
+        "basis": basis,
     }
+
+
+def _valuation_bands(client: KISClient, stock_code: str, pbr_now: float | None,
+                     per_now: float | None) -> tuple[dict, dict]:
+    """PBR·PER 5년 밴드를 한 번의 조회로 함께 산출 (연간 재무 1회 + 월봉 1회).
+
+    KIS estimate-perform의 per 행은 종목에 따라 통째로 비어 오는 경우가 있어
+    (2026-08-28 SK하이닉스 실측: per=None) 컨센서스 PER 밴드에 의존할 수 없다.
+    자체 계산 밴드가 1차, estimate의 per는 보조다.
+    """
+    annual = client.get_financial_ratios(stock_code, quarterly=False)  # 최신순
+    bars = client.get_ohlcv_monthly(stock_code, months=60)
+    bps_by = [(r["period"], r["bps"]) for r in annual
+              if r.get("period") and r.get("bps") and r["bps"] > 0]
+    # 적자 연도는 PER이 무의미 — 밴드에서 제외 (음수 PER로 밴드가 오염되면 역산이 깨진다)
+    eps_by = [(r["period"], r["eps"]) for r in annual
+              if r.get("period") and r.get("eps") and r["eps"] > 0]
+
+    pbr = _multiple_band(bars, bps_by, pbr_now, "직전 확정 연간 BPS (분기 실적 미반영)")
+    per = _multiple_band(bars, eps_by, per_now, "직전 확정 연간 EPS (적자 연도 제외)")
+
+    out_pbr = {"available": False}
+    if pbr.get("available"):
+        out_pbr = {
+            "available": True, "months": pbr["months"],
+            "pbr_current": pbr["current"], "pbr_5y_min": pbr["min"],
+            "pbr_5y_max": pbr["max"], "pbr_5y_median": pbr["median"],
+            "pbr_5y_p20": pbr["p20"], "pbr_5y_p80": pbr["p80"],
+            "pbr_percentile_5y": pbr["percentile"], "basis": pbr["basis"],
+            "price_high_5y": max(float(b.high) for b in bars),
+            "price_low_5y": min(float(b.low) for b in bars),
+            "note": "월별 종가 ÷ 당시 최근 연간 BPS 근사 — 자사주 소각/유상증자 구간 왜곡 가능",
+        }
+    out_per = {"available": False}
+    if per.get("available"):
+        out_per = {
+            "available": True, "months": per["months"],
+            "per_current": per["current"], "per_5y_min": per["min"],
+            "per_5y_max": per["max"], "per_5y_median": per["median"],
+            "per_5y_p20": per["p20"], "per_5y_p80": per["p80"],
+            "per_percentile_5y": per["percentile"], "basis": per["basis"],
+            "note": "월별 종가 ÷ 당시 최근 연간 EPS 근사 — 적자 연도는 밴드에서 제외됨",
+        }
+    return out_pbr, out_per
+
+
+def _pbr_band_5y(client: KISClient, stock_code: str, pbr_now: float | None) -> dict:
+    """PBR 밴드 단독 조회 (무효화_조건 valuation 체크용 — PER은 필요 없다)."""
+    return _valuation_bands(client, stock_code, pbr_now, None)[0]
 
 
 def _actual_band(periods: list | None, values: list | None) -> dict | None:
@@ -301,7 +348,8 @@ def _actual_band(periods: list | None, values: list | None) -> dict | None:
 def _valuation_scenarios(price_now: float | None, per_ttm: float | None,
                          per_forward: list | None, estimate: dict | None,
                          pbr_band: dict, ttm_ni: float | None,
-                         latest_q: dict | None, pbr_recent_q: float | None) -> dict:
+                         latest_q: dict | None, pbr_recent_q: float | None,
+                         per_band_5y: dict | None = None) -> dict:
     """멀티플 밴드 → 함의주가 역산. **예측이 아니라 산술**이다.
 
     "현재 이익 수준이 유지되고 멀티플이 자기 과거 밴드로 회귀하면 주가가 얼마인가"를
@@ -329,20 +377,56 @@ def _valuation_scenarios(price_now: float | None, per_ttm: float | None,
                 "전제": premise}
 
     rows = []
-    per_band = _actual_band((estimate or {}).get("periods"), (estimate or {}).get("per"))
+    # 자체 계산 5년 PER 밴드가 1차 — KIS estimate의 per 행은 통째로 비어 오는 종목이 있다
+    # (2026-08-28 SK하이닉스 실측: estimate.per = None → PER 시나리오가 전부 누락됐음)
+    per_band, yrs = None, ""
+    if (per_band_5y or {}).get("available"):
+        per_band = {k: per_band_5y[f"per_5y_{k}"] for k in ("p20", "median", "p80")}
+        yrs = f"5년 월봉 PER 밴드({per_band_5y['months']}개월, 꼬리 절사)"
+    else:
+        fallback = _actual_band((estimate or {}).get("periods"), (estimate or {}).get("per"))
+        if fallback:
+            per_band = {"p20": fallback["min"], "median": fallback["median"],
+                        "p80": fallback["max"]}
+            yrs = f"실적연도 {fallback['years'][0]}~{fallback['years'][-1]} PER"
+
+    # 이익 피크 구간에서는 과거 배수 자체가 다른 이익 국면의 산물 — 곱하면 이중 계상.
+    # 경고문만으로는 부족해 행마다 직접 표시한다 (PBR 장부가 시점차와 같은 처리).
+    ni_actual = _actual_band((estimate or {}).get("periods"),
+                             (estimate or {}).get("net_income"))
+    at_peak = bool(ttm_ni and ni_actual and ttm_ni > ni_actual["max"])
+
     if per_band and per_ttm:
-        yrs = f"실적연도 {per_band['years'][0]}~{per_band['years'][-1]}"
-        for key, label in (("max", "PER 밴드 상단"), ("median", "PER 밴드 중앙"),
-                           ("min", "PER 밴드 하단")):
-            rows.append(_row(label, f"{yrs} PER {key}", per_band[key], per_ttm,
-                             "최근 4개 분기(TTM) 이익 수준이 유지될 것"))
+        for key, label in (("p80", "PER 밴드 상단(80%)"), ("median", "PER 밴드 중앙"),
+                           ("p20", "PER 밴드 하단(20%)")):
+            row = _row(label, yrs, per_band[key], per_ttm,
+                       "최근 4개 분기(TTM) 이익 수준이 유지될 것")
+            if row and at_peak:
+                row["신뢰도"] = "낮음 (이익 피크 × 과거 이익국면 배수)"
+            rows.append(row)
 
     # 컨센서스 반영 — forward 이익이 실현되고 멀티플이 과거 중앙으로 회귀하는 경우
     fwd = next((x for x in (per_forward or []) if x.get("per")), None)
+
+    # 과거 배수를 전혀 쓰지 않는 행 — "멀티플은 지금 그대로, 이익만 컨센대로 실현되면".
+    # 이익 국면 불일치(피크 이익 × 바닥 시기 배수)도, 장부가 시점차도 타지 않아
+    # 사이클 정점 구간에서 유일하게 성립하는 역산이다. 사용자 질문("현재 상황 그대로
+    # 흘러갈 시 얼마까지")의 문자 그대로의 답이기도 하다.
+    # 추정 연도별로 각각 — 이익 실현 시점에 따른 함의주가 차이가 판단 재료다
+    for f in (per_forward or []):
+        if f.get("per") and per_ttm:
+            rows.append(_row(f"현재 배수 유지 × {f['period']} 컨센서스",
+                             f"현재 PER {per_ttm} 고정 · {f['period']} 컨센서스 이익",
+                             per_ttm, f["per"],
+                             f"시장이 현재 배수를 유지하고 {f['period']} 컨센서스 이익이 실현될 것"))
+
     if per_band and fwd:
-        rows.append(_row(f"PER 밴드 중앙 × {fwd['period']} 컨센서스",
-                         f"{fwd['period']} 컨센서스 이익", per_band["median"], fwd["per"],
-                         f"{fwd['period']} 컨센서스 이익이 실현될 것"))
+        row = _row(f"PER 밴드 중앙 × {fwd['period']} 컨센서스",
+                   f"{fwd['period']} 컨센서스 이익", per_band["median"], fwd["per"],
+                   f"{fwd['period']} 컨센서스 이익이 실현될 것")
+        if row and at_peak:
+            row["신뢰도"] = "낮음 (이익 피크 × 과거 이익국면 배수)"
+        rows.append(row)
 
     if pbr_band.get("available") and pbr_band.get("pbr_current"):
         basis = pbr_band.get("basis", "직전 확정 연간 BPS")
@@ -354,8 +438,9 @@ def _valuation_scenarios(price_now: float | None, per_ttm: float | None,
         premise = f"장부가 기준이 밴드와 동일({basis})할 것"
         if stale:
             premise += f" — 최근 분기 BPS 기준 PBR {pbr_recent_q:.2f}와 괴리 큼, 참고용"
-        for key, label in (("pbr_5y_max", "PBR 5년 상단"), ("pbr_5y_median", "PBR 5년 중앙"),
-                           ("pbr_5y_min", "PBR 5년 하단")):
+        for key, label in (("pbr_5y_p80", "PBR 밴드 상단(80%)"),
+                           ("pbr_5y_median", "PBR 밴드 중앙"),
+                           ("pbr_5y_p20", "PBR 밴드 하단(20%)")):
             row = _row(label, basis, pbr_band.get(key), pbr_band["pbr_current"], premise)
             if row and stale:
                 row["신뢰도"] = "낮음 (장부가 시점차)"
@@ -369,15 +454,15 @@ def _valuation_scenarios(price_now: float | None, per_ttm: float | None,
     }
 
     # --- 시나리오를 무력화하는 결정론 경고 (LLM 판단에 맡기지 않는다) ---
-    ni_actual = _actual_band((estimate or {}).get("periods"),
-                             (estimate or {}).get("net_income"))
-    if ttm_ni and ni_actual and ttm_ni > ni_actual["max"]:
+    if at_peak:
         out["peak_earnings"] = True
         out["warnings"].append(
             f"이익 피크 구간 — TTM 순이익 {ttm_ni:,.0f}억이 과거 실적연도 최고치 "
             f"{ni_actual['max']:,.0f}억을 상회. 사이클 종목은 이익 정점에서 멀티플이 "
             f"밴드 하단에 형성되는 것이 정상(peak earnings = trough multiple)이므로, "
-            f"PER 밴드 회귀 시나리오는 이익 지속성이 선행 조건이다")
+            f"PER 밴드 회귀 시나리오는 이익 지속성이 선행 조건이다. "
+            f"반대로 과거 밴드 상단은 이익 바닥 시기에 만들어진 배수라 지금 이익에 "
+            f"곱하면 이중 계상 — PER 행 전체를 신뢰도 낮음으로 본다")
     elif ttm_ni and ni_actual:
         out["peak_earnings"] = False
 
@@ -554,12 +639,20 @@ def collect_input_snapshot(client: KISClient, stock_code: str,
         per_forward = [{"period": p, "per": v}
                        for p, v in zip(estimate["periods"], estimate["per"])
                        if p and v and "E" in str(p).upper()] or None
+    if per_forward is None and estimate and estimate.get("eps") and price.get("current_price"):
+        # KIS가 per 행을 통째로 안 주는 종목이 있다 (2026-08-28 SK하이닉스 실측).
+        # 컨센서스 EPS는 오므로 현재가 ÷ 추정 EPS로 forward PER을 직접 만든다.
+        cur_px = price["current_price"]
+        per_forward = [{"period": p, "per": round(cur_px / v, 2), "source": "현재가 ÷ 컨센 EPS"}
+                       for p, v in zip(estimate["periods"], estimate["eps"])
+                       if p and v and v > 0 and "E" in str(p).upper()] or None
 
     # ---- PBR 기준 시점 보정 (KIS pbr은 직전 확정 장부가 — 분기 실적 미반영) ----
     # 밴드(pbr_band_5y)는 과거·현재 모두 연간 BPS 기준이라 내부 일관성이 있지만,
     # 반기 이익이 자본의 상당분인 구간에서는 시점차가 이례적으로 커진다.
     # PER 4종 병기와 같은 방식으로 최근 분기 BPS 기준 PBR을 병기해 판단 재료를 준다.
-    pbr_band = _pbr_band_5y(client, stock_code, holding.get("pbr") if holding else None)
+    pbr_band, per_band = _valuation_bands(
+        client, stock_code, holding.get("pbr") if holding else None, per_ttm)
     price_now = price.get("current_price")
     bps_q = next(((r.get("period"), r["bps"]) for r in ratios
                   if r.get("bps") and r["bps"] > 0), None)
@@ -568,7 +661,7 @@ def collect_input_snapshot(client: KISClient, stock_code: str,
 
     scenarios = _valuation_scenarios(
         price_now, per_ttm, per_forward, estimate, pbr_band, ttm_ni,
-        quarters[0] if quarters else None, pbr_recent_q)
+        quarters[0] if quarters else None, pbr_recent_q, per_band_5y=per_band)
 
     # ---- 외부 소스: DART 공시(확정) + 네이버 뉴스(최신순) — 실패 시 data_flags 폴백 ----
     from app.services.dart.client import fetch_recent_disclosures
@@ -616,8 +709,9 @@ def collect_input_snapshot(client: KISClient, stock_code: str,
                 "periods": estimate.get("periods"),
                 "per": estimate.get("per"),
             } if estimate else None,
-            # 자기 과거 5년 대비 PBR 위치 (근사)
+            # 자기 과거 5년 대비 PBR/PER 위치 (근사 — 월봉 ÷ 당시 확정 연간값)
             "pbr_band_5y": pbr_band,
+            "per_band_5y": per_band,
         },
         # 멀티플 밴드 회귀 가정하의 함의주가 — 앱이 역산한 산술값 (예측 아님)
         "valuation_scenarios": scenarios,
