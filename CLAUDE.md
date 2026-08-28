@@ -209,6 +209,7 @@ trading_system/
   - **condition_status** (JSONB, 2026-07-16): 무효화_조건 자동 체크 상태 — {checked_at, items:[{state, detail, check_type, triggered_at, notified_at}]}, items는 무효화_조건과 위치 정렬. 16:20 잡이 갱신
   - **watchlist_stocks에 FK 없음** — 관심종목 삭제해도 일지 영구 보존
 - 상세 설계·KIS 필드 디코딩 근거는 docs/watchlist_spec.md + 메모리 watchlist_tab.md 참조
+- **판단 구조 보강 (2026-08-28)**: `핵심_주장`(무효화_조건이 반증할 명제 — 매수/관망 결론·진입가 강제는 미채택, ai_probability 폐기 근거와 충돌) + `밸류_시나리오_코멘트` 필드 추가. 스냅샷에 `valuation_scenarios`(멀티플 밴드 역산 함의주가, 상단·하단 대칭 + peak_earnings/영업외요인/장부가시점차 경고) · `pbr_recent_q`(최근 분기 BPS 기준 PBR 병기) · `ni_margin_q_pct`+`ni_over_op_note`(순이익>영업이익 시 per_ttm 왜곡 플래그, YTD 차분 회귀 감시 겸용) 추가. 수급 일평균은 결측일 제외한 실제 거래일 수를 분모로 노출
 - **스냅샷 v2 (2026-07-02, 실검증 2026-07-03 완료)**: fx_usdkrw(USD/KRW 3개월 추세) / market(KOSPI 레벨·1/3개월 + 종목 상대수익률) / PER 4종 병기(trailing·TTM·최근분기 연환산·컨센서스 forward — trailing 왜곡 대응) / 수급 페이스 판정 문자열(5일 vs 30일 일평균, 앱이 확정 — LLM 재계산 금지) / 개인 순매수 5/20/30일 / PBR 5년 밴드 근사(월봉÷당시 연간 BPS, 근사 명시)
 
 ### investor_flow_daily ← 관심종목 수급 적재 (2026-07-02)
@@ -603,7 +604,9 @@ NAVER_CLIENT_SECRET=
 - 관심종목 분석 서비스 (스펙: docs/watchlist_spec.md). AI = 데이터 집계+구조화, 예측 금지
 - `collect_input_snapshot(client, code, name, sector, db=None)`: 6개월 일봉 요약 + 분기 재무(YTD→단일분기 차분) + 컨센서스 추정 + 수급 30거래일 + **환율 3개월 추세 + KOSPI 상대수익률 + PER 4종 병기 + 수급 페이스 판정 + PBR 5년 밴드** + data_flags(결측 명시) → 이 dict가 그대로 프롬프트 입력 + DB 저장 (사후 재구성 보장). db 넘기면 수급 적재 + 60/120일 누적 포함
 - `_pace_judgment(avg5, avg30)`: 수급 가속/둔화/전환 판정 문자열 생성 — LLM에 나눗셈 시키지 않기 위해 앱이 확정. 30일 평균 미미하면 중립 취급(비율 폭주 방지), ±20% 밴드 내 "페이스 유사", 부호 전환은 별도 라벨
+- `_valuation_scenarios(...)`: **밸류 시나리오 역산 (2026-08-28)** — `현재가 × 목표배수 ÷ 현재배수`로 PER/PBR 밴드 회귀 시 함의주가 산출(주식수 비경유). 상단만 내면 편향이라 하단 대칭 생성. **예측 아닌 산술** — LLM은 표에서 논거와 정합적인 행을 고르고 전제를 밝힐 뿐(목표주가 생성 금지, 프롬프트 규칙 8). 경고 3종을 앱이 결정론 판정: peak_earnings(TTM 이익 > 과거 실적연도 최고 → 사이클 종목은 이익 정점에서 멀티플 하단이 정상) / 영업외 요인 / 장부가 시점차(PBR 행에 `신뢰도: 낮음` 직접 표시)
 - `_pbr_band_5y()`: 월별 종가 ÷ 당시 최근 연간 BPS → 현재 PBR의 5년 퍼센타일 (자사주 소각/증자 왜곡 가능 — 근사 명시)
+- 프롬프트 규칙 8~11 (2026-08-28): valuation_scenarios는 인용만(warnings 무시한 상단 인용 금지) / 날짜는 dart_disclosures의 rcept_dt에서만 — **정기보고서 법정 제출기한 ≠ 실적 발표일**(16:30 캘린더 기한을 발표일로 착각한 사례) / 단기_촉매는 기준일 이후 이벤트만(발표 완료 건은 논거 배경) / 장기 논거 이벤트가 단기 수급에 반대로 작용하는지(희석·보호예수 해제) 검토 강제
 - 프롬프트 규칙: 앱 계산 파생지표(judgment/상대수익률/trend_note/per_ttm/퍼센타일) **재계산 금지, 그대로 인용** / per_trailing 왜곡 시 per_ttm·forward 우선 / 환율=외인 수급 공통 팩터로 종목 고유 요인과 구분
 - **뉴스 최신성 가드 (2026-07-03)**: 프롬프트에 14일 창 앵커 + 주가 변동 동인 필수 검색(앱이 1개월/당일 수치 확정 주입) / 파싱 후 14일 내 기사 0건이면 재검색 1회 → 그래도 없으면 `data_flags.news_recency` 명시 후 저장(억지 인용 강제 안 함). 배경: 그라운딩이 앵커 없이는 구 자료로 수렴 (7/2 분석 = 4월 기사 재탕)
 - **외부 데이터 어댑터 (2026-07-03)**: 스냅샷에 `dart_disclosures`(DART 공식 API 최근 14일 공시 — 확정 데이터) + `news_recent`(네이버 뉴스 최신순 10건, 제목 중복 제거) 주입. Gemini 검색은 "발견"이 아닌 해석·시장 반응·내용 보강 담당으로 역할 조정. 어댑터 실패 시 분석 안 죽고 data_flags 기록 (공시 "0건"은 실패가 아닌 확정 사실 — status 013은 available=True). DART는 티커가 아닌 8자리 corp_code 사용 — corpCode.xml 매핑을 `~/.dart_corp_code.json` 캐시(30일 TTL, 미매핑 시 강제갱신하되 24h 최소간격)
@@ -615,6 +618,7 @@ NAVER_CLIENT_SECRET=
 - `normalize_conditions(raw)`: LLM 출력 검증 — 문자열(구 포맷)/스펙 불완전 조건은 오판 대신 manual 강등 (spec_note 기록)
 - `evaluate_condition(...)`: 타입별 체크 → (state, detail). state: ok/triggered/**pending_data**(미공시 분기·수급 커버리지 부족 — 부분 데이터로 단정 금지)/manual/error
 - `check_analysis(...)`: 최신 분석 1건의 조건 전체 판정 → condition_status 갱신, **미충족→충족 전이만** 반환 (경계 왕복 노이즈 방지, 해제 후 재충족은 재알림)
+- `screen_conditions(db, code, snapshot, conditions)` / `downgrade_rejected(...)`: **조건 품질 게이트 (2026-08-28)** — 구조는 유효하나 감시 가치가 없는 조건을 결정론으로 탈락(추가 API·LLM 0회). ①이미 충족/임계 70% 도달(예정된 사건) ②earnings YoY 임계 |100%| 초과(기저효과 종속) ③valuation `below`(싸지는 건 강세 논거 반증 아님) ④fx 임계가 최근 3개월 밴드 안. 탈락분은 사유와 함께 1회 재요청 → 그래도 남으면 삭제 아닌 manual 강등
 - `check_all_watchlist_invalidations()`: 16:20 잡 진입점 — 관심종목 순회(삭제된 종목 자동 제외), 환율은 공통 팩터라 1회만 조회, 전이 시 소유 유저에게만 텔레그램. 수동 트리거: POST /admin/invalidation-check/trigger
 - `send_condition_notice(...)`: 분석 완료 시 자동 감시 대상/수동 확인 필요 조건 1회 안내
 - consensus 기준값은 input_snapshot.consensus_estimate (분석 시점) — 사후 재구성 데이터 재사용
@@ -629,7 +633,7 @@ NAVER_CLIENT_SECRET=
 
 ### app/services/watchlist/events.py
 - 이벤트 자동 감지 + 트리거급 자동 분석 (16:30 잡 `scan_watchlist_events`, 감지는 전부 결정론 — Gemini 0회, 휴장일 스킵)
-- `detect_disclosures`: DART 당일(3일 창) 신규 공시 — rcept_no 중복 방지(app_config `watchlist_seen_disclosures`, 30일 프루닝), 중요 유형 키워드 분류(실적/자본변동/구조개편/주요사항/대형계약/자사주/지배구조/리스크/조회공시), 미매칭 잡공시 무시. "영업(잠정)실적"처럼 괄호 낀 실전 표기 매칭 주의
+- `detect_disclosures`: DART 당일(3일 창) 신규 공시 — rcept_no 중복 방지(app_config `watchlist_seen_disclosures`, 30일 프루닝), 중요 유형 키워드 분류(실적/자본변동/구조개편/주요사항/대형계약/자사주/지배구조/리스크/조회공시 — 자본변동에 증권신고서·해외증권·예탁증서·신주발행 포함, ADR/해외DR 희석 누락 교정 2026-08-28), 미매칭 잡공시 무시. "영업(잠정)실적"처럼 괄호 낀 실전 표기 매칭 주의
 - `detect_flow_spike`: 당일 외인/기관 |순매수| ≥ 30일 평균의 3배 + 10억원 이상 (적재 20일 미만이면 침묵)
 - `detect_price_spike`: 당일 등락률 ±5% 이상
 - `earnings_calendar_notice`: 정기보고서 법정 제출기한(분기·반기 45일/사업보고서 90일) D-14/D-7 안내 — 한국은 발표일 사전 확정 공표가 드물어 법정 기한만 결정론 계산 가능, 잠정실적 조기 공시는 공시 감지가 담당. 주말 밀림 허용(스테이지 기록으로 중복 방지)

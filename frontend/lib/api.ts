@@ -416,13 +416,17 @@ export interface ConditionStatusItem {
   notified_at?: string | null;
 }
 
-// AI 구조화 출력 (docs/watchlist_spec.md — 5개 섹션 + 뉴스 출처)
+// AI 구조화 출력 (docs/watchlist_spec.md — 핵심 주장 + 5개 섹션 + 뉴스 출처)
 export interface WatchAnalysisResult {
+  // 무효화_조건이 반증할 대상 — 이 명제가 없으면 조건만 있고 판단이 없는 구조가 된다
+  "핵심_주장"?: string;
   "논거"?: string;
   "단기_촉매"?: { "이벤트"?: string; "예상_시점"?: string; "성격"?: string }[];
   "장기_논거"?: string;
   "무효화_조건"?: (string | WatchInvalidationCondition)[];
   "밸류_코멘트"?: string;
+  // 앱이 역산한 valuation_scenarios 표에 대한 해석 (새 목표주가 생성 아님)
+  "밸류_시나리오_코멘트"?: string;
   "뉴스_출처"?: { "제목"?: string; "매체"?: string; "날짜"?: string; url?: string }[];
 }
 

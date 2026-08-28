@@ -17,6 +17,9 @@ from app.services.kis.client import KISClient
 
 logger = logging.getLogger(__name__)
 
+_NI_OP_GAP_RATIO = 1.2   # 순이익/영업이익 이 배수 초과 시 영업외 요인 플래그
+_PBR_BASIS_GAP_PCT = 15  # 연간 BPS vs 최근 분기 BPS 기준 PBR 괴리 경고 임계 (%)
+
 WATCHLIST_MODEL = "gemini-2.5-flash"  # 검색 그라운딩 필요 (뉴스/공시/컨센서스 보강)
 
 _ANALYSIS_PROMPT = """당신은 데이터를 구조화하는 애널리스트입니다. 역할은 투자 판단 재료의 정리이며, 주가 방향 예측이 아닙니다.
@@ -51,17 +54,28 @@ _ANALYSIS_PROMPT = """당신은 데이터를 구조화하는 애널리스트입�
    - earnings (특정 분기 실적 — 공시 후 자동 판정): {{"period": "YYYYMM (대상 분기말, 예: 202606)", "metric": "op_margin_q_pct"|"op_yoy_pct"|"revenue_yoy_pct"|"ni_yoy_pct", "op": "below"|"above", "value": 숫자}}
    - consensus (연간 컨센서스 변화): {{"year": "YYYY", "metric": "operating_profit"|"eps"|"revenue", "drop_pct": 하향 임계 %}} — 이번 분석 시점 컨센서스 대비 drop_pct% 이상 하향되면 충족
    - manual (위 유형으로 표현 불가한 정성 신호 — 뉴스/공시/업황/경쟁구도): {{"확인_방법": "무엇으로 확인하는지"}} — 확인 시점이 확정 가능하면 명시(예: "2026년 2분기 실적 공시 시 확인"), 불확정이면 "상시 뉴스/공시 확인". 존재하지 않는 날짜를 지어내지 말 것.
-5. 앱이 계산해 넣은 파생 지표는 재계산하지 말고 그대로 인용할 것 — investor_flow의 frgn_pace/orgn_pace judgment 문자열, market의 상대수익률/relative_note, fx_usdkrw의 trend_note, per_ttm, pbr_band_5y 퍼센타일. 직접 나눗셈/비율 계산 금지.
+   ▸ 임계값 품질 기준 — 앱이 생성 직후 결정론으로 검사하고, 위반 조건은 자동 감시에서 제외한다:
+     · 이미 충족됐거나 임계의 70% 이상 도달한 조건 금지. 그건 조건이 아니라 예정된 사건이다 — 입력 데이터의 현재 수치(investor_flow 누적, pbr_percentile_5y, fx 현재값)를 먼저 확인하고 거기서 의미 있게 떨어진 지점을 잡을 것.
+     · earnings의 YoY 성장률(op_yoy_pct/revenue_yoy_pct/ni_yoy_pct) 임계는 전년 동기 수준에 종속돼 논거와 무관하게 충족/붕괴한다. op_margin_q_pct 같은 절대 수준 지표를 우선하고, YoY를 쓰더라도 임계 절대값 100%를 넘기지 말 것.
+     · valuation은 above(고평가 진입) 방향만 의미가 있다. 밸류가 싸지는 것(below)은 강세 논거의 반증이 아니다.
+     · fx 임계는 fx_usdkrw의 최근 3개월 밴드(low_3m~high_3m) 바깥이어야 이례 신호다. 밴드 안의 레벨은 평상시 변동이다.
+5. 앱이 계산해 넣은 파생 지표는 재계산하지 말고 그대로 인용할 것 — investor_flow의 frgn_pace/orgn_pace judgment 문자열, market의 상대수익률/relative_note, fx_usdkrw의 trend_note, per_ttm, pbr_band_5y 퍼센타일, valuation_scenarios의 함의주가. 직접 나눗셈/비율 계산 금지.
 6. PER 시점 구분: per_trailing은 직전 공시 실적 기준이라 실적 급변 구간에서 왜곡됨 — income_single_q 추세와 괴리가 크면 per_ttm(최근 4개 분기 합산)과 per_forward_consensus를 우선해 밸류를 평가할 것.
 7. 환율은 외국인 수급의 공통 팩터 — 외국인 순매도가 fx_usdkrw 추세와 동행하는 시장 공통 요인인지, market의 상대수익률상 종목 고유 요인인지 구분해 서술할 것.
-8. 출력은 아래 JSON 형식만. 백틱(```)이나 설명 문장 없이 JSON 객체 하나만 출력할 것.
+8. valuation_scenarios는 앱이 배수 밴드에서 역산한 산술값(현재가 × 목표배수 ÷ 현재배수)이다. 새 목표주가를 만들어내지 말고, 이 표에서 현재 논거와 정합적인 행을 고르고 그 행의 "전제"가 성립할 조건을 서술할 것. warnings에 담긴 경고(이익 피크 구간·영업외 요인·장부가 시점차)는 반드시 반영할 것 — 경고를 무시한 상단 인용 금지.
+9. 날짜를 지어내지 말 것. 실적 발표일·공시일은 dart_disclosures의 rcept_dt에서, 기사 날짜는 news_recent에서만 인용한다. 정기보고서 법정 제출기한은 실제 실적 발표일이 아니다 — 둘을 혼동하지 말 것.
+10. 단기_촉매는 분석 기준일 이후에 발생할 이벤트만 쓸 것. 이미 발표·확정된 건은 논거의 배경으로 서술하고 촉매에 넣지 말 것. 예상_시점은 미래 날짜 또는 확정된 기한이어야 한다.
+11. 장기_논거에 인용한 이벤트가 단기 수급에 반대로 작용하는지 반드시 검토할 것 — 같은 사건이 장기적으로 긍정이면서 단기적으로는 물량 부담(신주 희석·보호예수 해제·차익거래 유인)일 수 있다. 한쪽 방향만 서술하지 말 것.
+12. 출력은 아래 JSON 형식만. 백틱(```)이나 설명 문장 없이 JSON 객체 하나만 출력할 것.
 
 [출력 JSON 형식]
 {{
+  "핵심_주장": "이 분석이 성립하려면 참이어야 하는 명제 한 문장 — 검증 가능한 형태로 (예: '메모리 가격 결정력이 유지돼 분기 영업이익률 60% 이상이 지속된다'). 무효화_조건은 이 명제를 반증하는 신호여야 한다. 주가 방향·목표가 단언 금지.",
   "논거": "현재 상태 요약 — 입력 데이터 기반. 펀더멘털(분기 추세/수익성/재무구조) → 수급(페이스 판정·환율 컨텍스트 포함) → 밸류 순으로.",
   "단기_촉매": [{{"이벤트": "...", "예상_시점": "...", "성격": "노이즈|구조적"}}],
   "장기_논거": "중장기 투자 논거 — 구조적 변화 중심. 없으면 '뚜렷한 장기 논거 확인 불가'라고 쓸 것.",
   "무효화_조건": [{{"조건": "관측 가능한 신호 서술", "check_type": "flow|fx|valuation|earnings|consensus|manual", "params": {{...}}}}],
+  "밸류_시나리오_코멘트": "valuation_scenarios 표에서 현재 논거와 정합적인 행을 고르고, 그 행의 전제와 warnings를 함께 서술. 표의 함의주가를 그대로 인용하고 새 수치를 만들지 말 것. 시나리오 불가(available=false)면 '역산 불가'로 명시.",
   "밸류_코멘트": "현재 밸류에이션 평가 — 자기 과거 PER 밴드(per_band_annual)와 PBR 5년 퍼센타일(pbr_band_5y) 대비 위치 중심. per_ttm/per_trailing 괴리가 크면 그 이유를 명시. 업종 대비는 데이터 없으면 언급하지 말 것.",
   "뉴스_출처": [{{"제목": "...", "매체": "...", "날짜": "YYYY-MM-DD", "url": "..."}}]
 }}"""
@@ -71,6 +85,15 @@ _INVALIDATION_RETRY_SUFFIX = """
 [재요청] 직전 응답에 무효화_조건이 비어 있었습니다. 무효화_조건은 이 분석에서 가장 중요한 필드입니다.
 입력 데이터에서 현재 상태를 정의하는 핵심 수치(분기 영업이익률, 외국인 순매수 추세, PER 위치 등)를 골라,
 그것이 꺾이는 관측 가능한 임계 신호를 최소 2개 이상, 규칙 4의 구조({"조건", "check_type", "params"} 객체)로 반드시 작성하세요."""
+
+_CONDITION_QUALITY_RETRY_SUFFIX = """
+
+[재요청] 직전 응답의 무효화_조건 중 아래 항목이 규칙 4의 임계값 품질 기준에 걸렸습니다.
+{defects}
+
+해당 조건들을 규칙 4의 품질 기준에 맞게 다시 작성하세요. 임계값은 입력 데이터의 현재 수치를
+먼저 확인하고, 거기서 의미 있게 떨어진 — 아직 충족되지 않았고 임박하지도 않은 — 지점으로 잡으세요.
+문제 없던 조건은 그대로 유지하고, 전체 무효화_조건 배열을 다시 출력하세요."""
 
 _NEWS_RECENCY_RETRY_SUFFIX = """
 
@@ -82,6 +105,13 @@ _NEWS_RECENCY_RETRY_SUFFIX = """
 # ------------------------------------------------------------------ #
 # 입력 데이터 수집 → 스냅샷
 # ------------------------------------------------------------------ #
+
+def _f(v) -> float | None:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
 
 def _pct(cur: float | None, base: float | None) -> float | None:
     if cur is None or not base:
@@ -97,23 +127,31 @@ def _fmt_eok(v_million: float) -> str:
     return f"{eok:+,.0f}억"
 
 
-def _pace_judgment(avg5: float | None, avg30: float | None) -> dict | None:
-    """5일 vs 30일 일평균 순매수(백만원/일) → 가속/둔화/전환 판정.
+def _pace_judgment(recent: tuple[float, int] | None,
+                   base: tuple[float, int] | None) -> dict | None:
+    """최근 단기 vs 장기 일평균 순매수(백만원/일) → 가속/둔화/전환 판정.
 
     판정을 앱에서 확정해 문자열로 넣는 이유: LLM에 나눗셈/비교를 시키면
     산수 오류·자의적 해석 여지가 생김. 수치와 판정을 함께 담아 그대로 인용시킨다.
+
+    입력은 (일평균, 실제 거래일 수) 튜플 — 결측일이 섞이면 분모가 창 길이보다
+    작아지므로 라벨에 실제 일수를 그대로 노출한다. "5일 일평균"이라고 써놓고
+    4로 나눈 값을 넣으면 판정은 맞아도 수치가 거짓말이 된다.
     """
-    if avg5 is None or avg30 is None:
+    if recent is None or base is None:
         return None
+    avg5, n5 = recent
+    avg30, n30 = base
     # 30일 평균이 5일 평균 대비 무시할 수준이면 비율 판정이 폭주 — 중립 취급
     neutral30 = abs(avg30) < max(abs(avg5) * 0.05, 100)
     if neutral30 and abs(avg5) < 100:
         label = "뚜렷한 방향 없음"
     elif neutral30:
-        label = ("최근 5일 순매수 유입 (30일 평균은 중립)" if avg5 > 0
-                 else "최근 5일 순매도 출회 (30일 평균은 중립)")
+        label = (f"최근 {n5}거래일 순매수 유입 ({n30}거래일 평균은 중립)" if avg5 > 0
+                 else f"최근 {n5}거래일 순매도 출회 ({n30}거래일 평균은 중립)")
     elif avg5 * avg30 < 0:
-        label = "매도→매수 전환 (최근 5일)" if avg5 > 0 else "매수→매도 전환 (최근 5일)"
+        label = (f"매도→매수 전환 (최근 {n5}거래일)" if avg5 > 0
+                 else f"매수→매도 전환 (최근 {n5}거래일)")
     else:
         direction = "매수" if avg30 > 0 else "매도"
         ratio = abs(avg5) / abs(avg30)
@@ -124,9 +162,12 @@ def _pace_judgment(avg5: float | None, avg30: float | None) -> dict | None:
         else:
             label = f"{direction} 지속 (페이스 유사)"
     return {
-        "avg_5d": round(avg5, 0),
-        "avg_30d": round(avg30, 0),
-        "judgment": f"5일 일평균 {_fmt_eok(avg5)} vs 30일 일평균 {_fmt_eok(avg30)} → {label}",
+        "avg_recent_daily": round(avg5, 0),
+        "recent_days": n5,
+        "avg_base_daily": round(avg30, 0),
+        "base_days": n30,
+        "judgment": (f"최근 {n5}거래일 일평균 {_fmt_eok(avg5)} vs "
+                     f"{n30}거래일 일평균 {_fmt_eok(avg30)} → {label}"),
     }
 
 
@@ -222,6 +263,8 @@ def _pbr_band_5y(client: KISClient, stock_code: str, pbr_now: float | None) -> d
         return {"available": False}
     cur = pbr_now if pbr_now else series[0]
     percentile = round(sum(1 for v in series if v <= cur) / len(series) * 100, 1)
+    highs = [float(b.high) for b in bars]
+    lows = [float(b.low) for b in bars]
     return {
         "available": True,
         "months": len(series),
@@ -230,8 +273,127 @@ def _pbr_band_5y(client: KISClient, stock_code: str, pbr_now: float | None) -> d
         "pbr_5y_max": max(series),
         "pbr_5y_median": round(sorted(series)[len(series) // 2], 2),
         "pbr_percentile_5y": percentile,
+        # 과거 점과 현재 점이 동일하게 "직전 확정 연간 BPS" 기준이라 퍼센타일 자체는
+        # 내부 일관성이 있다. 다만 반기 이익이 자본의 상당분인 구간에서는 그 시점차가
+        # 이례적으로 커지므로 valuation_current.pbr_recent_q와 함께 읽어야 한다.
+        "basis": "직전 확정 연간 BPS (분기 실적 미반영)",
+        "price_high_5y": max(highs),
+        "price_low_5y": min(lows),
         "note": "월별 종가 ÷ 당시 최근 연간 BPS 근사 — 자사주 소각/유상증자 구간 왜곡 가능",
     }
+
+
+def _actual_band(periods: list | None, values: list | None) -> dict | None:
+    """연도별 배수 배열 → 실적연도(확정) 밴드 통계. 'E' 접미사 = 추정이라 제외."""
+    pairs = [(str(p), _f(v)) for p, v in zip(periods or [], values or [])
+             if p and _f(v) and _f(v) > 0 and "E" not in str(p).upper()]
+    if len(pairs) < 2:
+        return None
+    vals = sorted(v for _, v in pairs)
+    return {
+        "years": [p for p, _ in pairs],
+        "min": vals[0],
+        "median": vals[len(vals) // 2],
+        "max": vals[-1],
+    }
+
+
+def _valuation_scenarios(price_now: float | None, per_ttm: float | None,
+                         per_forward: list | None, estimate: dict | None,
+                         pbr_band: dict, ttm_ni: float | None,
+                         latest_q: dict | None, pbr_recent_q: float | None) -> dict:
+    """멀티플 밴드 → 함의주가 역산. **예측이 아니라 산술**이다.
+
+    "현재 이익 수준이 유지되고 멀티플이 자기 과거 밴드로 회귀하면 주가가 얼마인가"를
+    앱이 확정해 넣는다. LLM에 목표주가를 생각해내게 하지 않는 이유는 ai_probability
+    폐기 근거와 같다 — LLM이 만든 수치에는 예측력이 없다. 여기서 LLM의 역할은
+    이 표에서 어느 시나리오가 자기 논거와 정합적인지 고르고 그 전제를 밝히는 것뿐.
+
+    함의주가는 주식수를 거치지 않고 배수 비율로 환산한다 (현재가 × 목표배수 ÷ 현재배수).
+    상단만 내면 그 자체가 편향이라 밴드 하단도 같은 산식으로 대칭 생성한다.
+    """
+    out = {"available": False, "scenarios": [], "warnings": [],
+           "note": "멀티플 밴드 회귀를 가정한 산술 환산 — 주가 예측이 아님. "
+                   "각 행의 '전제'가 깨지면 그 행은 무효"}
+    if not price_now:
+        return out
+
+    def _row(label, basis, target, current, premise):
+        if not target or not current or current <= 0:
+            return None
+        implied = round(price_now * target / current, 0)
+        return {"기준": label, "배수_기준": basis,
+                "목표_배수": round(target, 2), "현재_배수": round(current, 2),
+                "함의주가": implied,
+                "현재가_대비_pct": round((implied / price_now - 1) * 100, 1),
+                "전제": premise}
+
+    rows = []
+    per_band = _actual_band((estimate or {}).get("periods"), (estimate or {}).get("per"))
+    if per_band and per_ttm:
+        yrs = f"실적연도 {per_band['years'][0]}~{per_band['years'][-1]}"
+        for key, label in (("max", "PER 밴드 상단"), ("median", "PER 밴드 중앙"),
+                           ("min", "PER 밴드 하단")):
+            rows.append(_row(label, f"{yrs} PER {key}", per_band[key], per_ttm,
+                             "최근 4개 분기(TTM) 이익 수준이 유지될 것"))
+
+    # 컨센서스 반영 — forward 이익이 실현되고 멀티플이 과거 중앙으로 회귀하는 경우
+    fwd = next((x for x in (per_forward or []) if x.get("per")), None)
+    if per_band and fwd:
+        rows.append(_row(f"PER 밴드 중앙 × {fwd['period']} 컨센서스",
+                         f"{fwd['period']} 컨센서스 이익", per_band["median"], fwd["per"],
+                         f"{fwd['period']} 컨센서스 이익이 실현될 것"))
+
+    if pbr_band.get("available") and pbr_band.get("pbr_current"):
+        basis = pbr_band.get("basis", "직전 확정 연간 BPS")
+        # 장부가 시점차가 크면(최근 분기 이익이 자본을 크게 늘린 구간) 밴드 기준 PBR과
+        # 실제 PBR이 벌어져 이 행들의 함의주가가 통째로 왜곡된다. 행에 직접 표시한다 —
+        # 표 밖 경고문만으로는 -85% 같은 숫자가 그대로 읽힌다.
+        stale = (pbr_recent_q and abs(pbr_recent_q / pbr_band["pbr_current"] - 1) * 100
+                 >= _PBR_BASIS_GAP_PCT)
+        premise = f"장부가 기준이 밴드와 동일({basis})할 것"
+        if stale:
+            premise += f" — 최근 분기 BPS 기준 PBR {pbr_recent_q:.2f}와 괴리 큼, 참고용"
+        for key, label in (("pbr_5y_max", "PBR 5년 상단"), ("pbr_5y_median", "PBR 5년 중앙"),
+                           ("pbr_5y_min", "PBR 5년 하단")):
+            row = _row(label, basis, pbr_band.get(key), pbr_band["pbr_current"], premise)
+            if row and stale:
+                row["신뢰도"] = "낮음 (장부가 시점차)"
+            rows.append(row)
+
+    out["scenarios"] = [r for r in rows if r]
+    out["available"] = bool(out["scenarios"])
+    out["reference_prices"] = {
+        "high_5y": pbr_band.get("price_high_5y"),
+        "low_5y": pbr_band.get("price_low_5y"),
+    }
+
+    # --- 시나리오를 무력화하는 결정론 경고 (LLM 판단에 맡기지 않는다) ---
+    ni_actual = _actual_band((estimate or {}).get("periods"),
+                             (estimate or {}).get("net_income"))
+    if ttm_ni and ni_actual and ttm_ni > ni_actual["max"]:
+        out["peak_earnings"] = True
+        out["warnings"].append(
+            f"이익 피크 구간 — TTM 순이익 {ttm_ni:,.0f}억이 과거 실적연도 최고치 "
+            f"{ni_actual['max']:,.0f}억을 상회. 사이클 종목은 이익 정점에서 멀티플이 "
+            f"밴드 하단에 형성되는 것이 정상(peak earnings = trough multiple)이므로, "
+            f"PER 밴드 회귀 시나리오는 이익 지속성이 선행 조건이다")
+    elif ttm_ni and ni_actual:
+        out["peak_earnings"] = False
+
+    if latest_q and latest_q.get("ni_over_op_note"):
+        out["warnings"].append(
+            "TTM 이익에 영업외 요인이 섞여 있음 — per_ttm 분모가 일회성으로 부풀려졌다면 "
+            "PER 기반 함의주가 전체가 과대. income_single_q.ni_over_op_note 참조")
+
+    if pbr_recent_q and pbr_band.get("available") and pbr_band.get("pbr_current"):
+        gap = abs(pbr_recent_q / pbr_band["pbr_current"] - 1) * 100
+        if gap >= _PBR_BASIS_GAP_PCT:
+            out["warnings"].append(
+                f"PBR 시나리오는 {pbr_band.get('basis')} 기준 — 최근 분기 BPS를 반영한 "
+                f"현재 PBR은 {pbr_recent_q:.2f}로 밴드 기준({pbr_band['pbr_current']:.2f})과 "
+                f"{gap:.0f}% 괴리. 장부가 갱신분만큼 PBR 상단 시나리오가 과대평가된다")
+    return out
 
 
 def _summarize_price(client: KISClient, stock_code: str, holding: dict | None) -> dict:
@@ -302,7 +464,20 @@ def _derive_quarters(income_rows: list[dict]) -> list[dict]:
             "net_income_q": cur["net_income"],
             "op_margin_q_pct": round(cur["operating_profit"] / cur["revenue"] * 100, 2)
                                if cur.get("operating_profit") is not None and cur.get("revenue") else None,
+            "ni_margin_q_pct": round(cur["net_income"] / cur["revenue"] * 100, 2)
+                               if cur.get("net_income") is not None and cur.get("revenue") else None,
         }
+        # 순이익 > 영업이익 = 영업외 요인(평가이익/이연법인세/지분법 등) 개입.
+        # per_ttm의 분모가 일회성으로 부풀려졌을 수 있어 앱이 플래그를 세운다.
+        # per_trailing 왜곡만 의심하고 per_ttm 왜곡은 검증하지 않던 비대칭 교정.
+        # YTD 차분이 깨져도 같은 신호가 뜨므로 차분 회귀 감시도 겸한다.
+        op_q, ni_q = cur.get("operating_profit"), cur.get("net_income")
+        if op_q is not None and ni_q is not None and op_q > 0 and ni_q > op_q * _NI_OP_GAP_RATIO:
+            entry["ni_over_op_note"] = (
+                f"순이익({ni_q:,.0f}억)이 영업이익({op_q:,.0f}억)을 "
+                f"{ni_q / op_q:.2f}배 초과 — 영업외 요인 개입. "
+                f"일회성이면 이 분기를 포함한 TTM 이익 기반 밸류(per_ttm)가 과소평가된다")
+
         for k, label in (("revenue", "revenue_yoy_pct"),
                          ("operating_profit", "op_yoy_pct"),
                          ("net_income", "ni_yoy_pct")):
@@ -320,9 +495,10 @@ def _summarize_flow(rows: list[dict], holding: dict | None) -> dict:
         vals = [r[key] for r in rows[:n] if r.get(key) is not None]
         return round(sum(vals), 0) if vals else None
 
-    def _avg(key: str, n: int) -> float | None:
+    def _avg(key: str, n: int) -> tuple[float, int] | None:
+        """(일평균, 실제 데이터가 있는 거래일 수) — 분모를 호출부에 그대로 넘긴다."""
         vals = [r[key] for r in rows[:n] if r.get(key) is not None]
-        return sum(vals) / len(vals) if vals else None
+        return (sum(vals) / len(vals), len(vals)) if vals else None
 
     return {
         "available": True,
@@ -379,6 +555,21 @@ def collect_input_snapshot(client: KISClient, stock_code: str,
                        for p, v in zip(estimate["periods"], estimate["per"])
                        if p and v and "E" in str(p).upper()] or None
 
+    # ---- PBR 기준 시점 보정 (KIS pbr은 직전 확정 장부가 — 분기 실적 미반영) ----
+    # 밴드(pbr_band_5y)는 과거·현재 모두 연간 BPS 기준이라 내부 일관성이 있지만,
+    # 반기 이익이 자본의 상당분인 구간에서는 시점차가 이례적으로 커진다.
+    # PER 4종 병기와 같은 방식으로 최근 분기 BPS 기준 PBR을 병기해 판단 재료를 준다.
+    pbr_band = _pbr_band_5y(client, stock_code, holding.get("pbr") if holding else None)
+    price_now = price.get("current_price")
+    bps_q = next(((r.get("period"), r["bps"]) for r in ratios
+                  if r.get("bps") and r["bps"] > 0), None)
+    pbr_recent_q = (round(price_now / bps_q[1], 2)
+                    if bps_q and price_now and bps_q[1] else None)
+
+    scenarios = _valuation_scenarios(
+        price_now, per_ttm, per_forward, estimate, pbr_band, ttm_ni,
+        quarters[0] if quarters else None, pbr_recent_q)
+
     # ---- 외부 소스: DART 공시(확정) + 네이버 뉴스(최신순) — 실패 시 data_flags 폴백 ----
     from app.services.dart.client import fetch_recent_disclosures
     from app.services.naver.news import fetch_recent_news
@@ -412,6 +603,11 @@ def collect_input_snapshot(client: KISClient, stock_code: str,
             "per_forward_consensus": per_forward,     # 컨센서스 추정연도 PER
             "per_note": "실적 급변 구간에서는 per_trailing이 왜곡됨 — per_ttm을 우선 사용",
             "pbr": holding.get("pbr") if holding else None,
+            "pbr_recent_q": pbr_recent_q,          # 최근 분기 BPS 기준 (장부가 갱신 반영)
+            "bps_recent_q": bps_q[1] if bps_q else None,
+            "bps_recent_q_period": bps_q[0] if bps_q else None,
+            "pbr_note": "pbr은 직전 확정 장부가 기준(KIS 제공) — 실적 급변 구간에서는 "
+                        "pbr_recent_q(최근 분기 BPS 기준)와 함께 읽을 것",
             "eps_trailing": holding.get("eps") if holding else None,
             "bps": holding.get("bps") if holding else None,
             "market_cap_eok": mcap,
@@ -421,9 +617,10 @@ def collect_input_snapshot(client: KISClient, stock_code: str,
                 "per": estimate.get("per"),
             } if estimate else None,
             # 자기 과거 5년 대비 PBR 위치 (근사)
-            "pbr_band_5y": _pbr_band_5y(client, stock_code,
-                                        holding.get("pbr") if holding else None),
+            "pbr_band_5y": pbr_band,
         },
+        # 멀티플 밴드 회귀 가정하의 함의주가 — 앱이 역산한 산술값 (예측 아님)
+        "valuation_scenarios": scenarios,
         "fundamentals_quarterly": {
             "ratios": ratios[:8],              # ROE/부채비율/EPS/BPS/성장률 (최근 8분기)
             "income_single_q": quarters,       # 단일분기 차분 + YoY + 영업이익률
@@ -450,6 +647,14 @@ def collect_input_snapshot(client: KISClient, stock_code: str,
         snapshot["data_flags"]["fx_usdkrw"] = "환율 조회 실패 — 이번 분석은 환율 컨텍스트 없이 수행됨"
     if not snapshot["valuation_current"]["pbr_band_5y"].get("available"):
         snapshot["data_flags"]["pbr_band"] = "PBR 5년 밴드 계산 불가 (BPS/월봉 데이터 부족)"
+    if not scenarios.get("available"):
+        snapshot["data_flags"]["valuation_scenarios"] = (
+            "밸류 시나리오 역산 불가 — 연도별 PER 밴드/PBR 밴드 데이터 부족")
+    for w in scenarios.get("warnings", []):
+        snapshot["data_flags"].setdefault("valuation_scenario_warnings", []).append(w)
+    latest_q_note = (quarters[0].get("ni_over_op_note") if quarters else None)
+    if latest_q_note:
+        snapshot["data_flags"]["net_income_quality"] = latest_q_note
     if not disclosures.get("available"):
         snapshot["data_flags"]["dart_disclosures"] = (
             f"DART 공시 조회 실패 — 공시는 Gemini 검색으로만 확인됨: {disclosures.get('note')}")
@@ -513,7 +718,8 @@ def run_analysis(db, user_id: uuid.UUID, stock_code: str, stock_name: str,
         snapshot_json=json.dumps(snapshot, ensure_ascii=False, indent=1),
     )
 
-    from app.services.watchlist.invalidation import normalize_conditions, send_condition_notice
+    from app.services.watchlist.invalidation import (
+        downgrade_rejected, normalize_conditions, screen_conditions, send_condition_notice)
 
     analyzer = GeminiAnalyzer()
     result, raw_text, model = analyzer.grounded_json(prompt, WATCHLIST_MODEL)
@@ -546,6 +752,28 @@ def run_analysis(db, user_id: uuid.UUID, stock_code: str, stock_name: str,
                 f"기준일 {analysis_date} 기준 14일 내 기사 확인 실패 — "
                 "뉴스_출처가 전부 이전 자료이거나 날짜 불명"
             )
+
+    # 무효화_조건 품질 스크리닝 — 구조는 유효하지만 감시 가치가 없는 조건(이미 충족/임박,
+    # 기저효과 종속 YoY, 방향 역전 밸류, 밴드 안 환율)을 앱이 결정론으로 골라 1회 재요청.
+    # 재요청 후에도 남으면 삭제하지 않고 manual 강등 — 서술은 보존하되 자동 감시에서만 뺀다.
+    kept, rejected = screen_conditions(db, stock_code, snapshot, result["무효화_조건"])
+    if rejected:
+        logger.warning("무효화_조건 품질 결함 %d건 (%s) — 재요청", len(rejected), stock_code)
+        defects = "\n".join(f'- "{c.get("조건", "")}" → {why}' for c, why in rejected)
+        try:
+            r3, t3, m3 = analyzer.grounded_json(
+                prompt + _CONDITION_QUALITY_RETRY_SUFFIX.format(defects=defects),
+                WATCHLIST_MODEL,
+            )
+            retry_conds = normalize_conditions(r3.get("무효화_조건"))
+            if retry_conds:
+                k3, rej3 = screen_conditions(db, stock_code, snapshot, retry_conds)
+                if len(k3) > len(kept):  # 자동 감시 가능 조건이 늘었을 때만 교체
+                    result, raw_text, model = r3, t3, m3
+                    kept, rejected = k3, rej3
+        except Exception as e:  # 재요청 실패가 분석을 죽이지 않는다
+            logger.warning("condition quality retry failed for %s: %s", stock_code, e)
+    result["무효화_조건"] = kept + downgrade_rejected(rejected)
 
     # 스펙: 사용된 뉴스 출처는 스냅샷에도 포함 (grounding URL은 유통기한이 짧아 제목/매체/날짜 필수)
     snapshot["news_sources"] = result.get("뉴스_출처", [])

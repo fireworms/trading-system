@@ -131,6 +131,150 @@ def normalize_conditions(raw) -> list[dict]:
 
 
 # ------------------------------------------------------------------ #
+# 조건 품질 스크리닝 — 생성 직후 1회 (결정론, 추가 API 0회)
+# ------------------------------------------------------------------ #
+#
+# 배경(2026-08-28): 구조가 유효해도 감시 가치가 없는 조건이 섞인다.
+#   ① 이미 충족/임박 — "조건"이 아니라 예정된 사건 (외인 누적 10조 기준인데 이미 6.7조)
+#   ② YoY 성장률 임계 — 기저효과에 종속돼 논거와 무관하게 자동 충족/붕괴
+#   ③ 밸류 하향 조건 — 싸지는 것은 강세 논거의 반증이 아님 (방향 역전)
+#   ④ 최근 밴드 안의 환율 레벨 — 이례 신호가 아님
+# 판정 재료가 전부 input_snapshot + 적재 수급이라 LLM에 되묻지 않고 앱이 거른다.
+# 결함 조건은 삭제가 아니라 manual 강등 — 서술은 남기되 자동 감시에서만 뺀다.
+
+_PROXIMITY_RATIO = 0.7      # 임계의 70% 이미 도달 → 사실상 예정된 사건
+_YOY_MAX_ABS = 100.0        # YoY 성장률 임계 상한 (%)
+_CONSENSUS_MIN_DROP = 2.0   # 컨센서스 통상 변동폭 — 이 미만 하향은 노이즈
+_YOY_METRICS = {"op_yoy_pct", "revenue_yoy_pct", "ni_yoy_pct"}
+
+
+def _flow_state(db, stock_code: str, investor: str, direction: str,
+                days: int) -> tuple[float | None, int, int]:
+    """(기간 누적 백만원, 현재 연속일, 적재 일수) — 스크리닝용 원시값."""
+    from app.models.investor_flow import InvestorFlowDaily
+    rows = db.execute(
+        select(InvestorFlowDaily)
+        .where(InvestorFlowDaily.stock_code == stock_code)
+        .order_by(InvestorFlowDaily.trade_date.desc())
+        .limit(130)
+    ).scalars().all()
+    if not rows:
+        return None, 0, 0
+    attr = f"{investor}_ntby_amt"
+    sign = -1 if direction == "sell" else 1
+    streak = 0
+    for r in rows:
+        v = getattr(r, attr)
+        if v is not None and sign * float(v) > 0:
+            streak += 1
+        else:
+            break
+    vals = [float(getattr(r, attr)) for r in rows[:days] if getattr(r, attr) is not None]
+    cum = sum(vals) if len(rows) >= days and vals else None
+    return cum, streak, len(rows)
+
+
+def _screen_reason(db, stock_code: str, snapshot: dict | None, cond: dict) -> str | None:
+    """조건 품질 결함 사유 (없으면 None). 스냅샷/적재 수급만 사용 — API 호출 없음."""
+    ct, p = cond.get("check_type"), cond.get("params") or {}
+    snap = snapshot or {}
+
+    if ct == "flow":
+        cum, streak, coverage = _flow_state(
+            db, stock_code, p["investor"], p["direction"], p["days"])
+        if p["metric"] == "cum_amount":
+            if cum is not None:
+                threshold = p["amount_eok"] * 100  # 억원 → 백만원
+                sign = -1 if p["direction"] == "sell" else 1
+                progress = (sign * cum) / threshold if threshold else 0
+                if progress >= 1:
+                    return f"분석 시점에 이미 충족 ({p['days']}거래일 누적 {_fmt_eok(cum)})"
+                if progress >= _PROXIMITY_RATIO:
+                    return (f"현재 누적이 임계의 {progress:.0%}에 도달 "
+                            f"({_fmt_eok(cum)} / 기준 {p['amount_eok']:,.0f}억) — "
+                            f"조건이 아니라 예정된 사건")
+        elif p["metric"] == "consecutive_days" and coverage:
+            if streak >= p["days"]:
+                return f"분석 시점에 이미 충족 (현재 연속 {streak}거래일)"
+            if streak >= p["days"] * _PROXIMITY_RATIO:
+                return (f"현재 연속 {streak}거래일 / 기준 {p['days']}거래일 — "
+                        f"임계 임박, 감시 가치 낮음")
+        return None
+
+    if ct == "fx":
+        fx = snap.get("fx_usdkrw") or {}
+        if not fx.get("available"):
+            return None
+        cur, lo, hi = fx.get("current"), fx.get("low_3m"), fx.get("high_3m")
+        if cur is not None:
+            if (p["op"] == "above" and cur >= p["level"]) or \
+               (p["op"] == "below" and cur <= p["level"]):
+                return f"분석 시점에 이미 충족 (현재 {cur:,.1f})"
+        if lo is not None and hi is not None and lo <= p["level"] <= hi:
+            return (f"기준 {p['level']:,.0f}원이 최근 3개월 밴드({lo:,.0f}~{hi:,.0f}) 안 — "
+                    f"이례 신호가 아님")
+        return None
+
+    if ct == "valuation":
+        if p["op"] == "below":
+            return ("밸류에이션 하락(저평가화)은 강세 논거의 반증이 아님 — 방향 역전. "
+                    "밸류 조건은 고평가 진입(above) 방향으로 쓸 것")
+        band = ((snap.get("valuation_current") or {}).get("pbr_band_5y") or {})
+        pct = band.get("pbr_percentile_5y") if band.get("available") else None
+        if pct is not None and pct >= p["value"]:
+            return f"분석 시점에 이미 충족 (현재 퍼센타일 {pct:.1f}%)"
+        return None
+
+    if ct == "earnings":
+        if p["metric"] in _YOY_METRICS and abs(p["value"]) > _YOY_MAX_ABS:
+            return (f"YoY 성장률 임계 {p['value']:+.0f}% — 기저효과 종속. "
+                    f"전년 동기 수준에 따라 논거와 무관하게 충족/붕괴한다. "
+                    f"마진(op_margin_q_pct) 등 절대 수준 지표를 쓸 것")
+        quarters = ((snap.get("fundamentals_quarterly") or {}).get("income_single_q")) or []
+        entry = next((q for q in quarters if q.get("period") == p["period"]), None)
+        val = entry.get(p["metric"]) if entry else None
+        if val is not None:
+            hit = val <= p["value"] if p["op"] == "below" else val >= p["value"]
+            if hit:
+                return f"대상 분기가 이미 공시됐고 분석 시점에 이미 충족 (실측 {val:+.2f})"
+        return None
+
+    if ct == "consensus":
+        if p["drop_pct"] < _CONSENSUS_MIN_DROP:
+            return (f"하향 임계 {p['drop_pct']:.1f}% — 컨센서스 통상 변동폭 이내로 노이즈에 반응")
+        return None
+
+    return None
+
+
+def screen_conditions(db, stock_code: str, snapshot: dict | None,
+                      conditions: list[dict]) -> tuple[list[dict], list[tuple[dict, str]]]:
+    """정규화된 조건을 품질 기준으로 분리. 반환: (통과, [(조건, 사유)])."""
+    kept, rejected = [], []
+    for cond in conditions:
+        if cond.get("check_type") == "manual":
+            kept.append(cond)
+            continue
+        try:
+            reason = _screen_reason(db, stock_code, snapshot, cond)
+        except Exception as e:  # 스크리닝 실패가 분석을 막지 않는다
+            logger.warning("condition screening failed (%s): %s", stock_code, e)
+            reason = None
+        (rejected.append((cond, reason)) if reason else kept.append(cond))
+    return kept, rejected
+
+
+def downgrade_rejected(rejected: list[tuple[dict, str]]) -> list[dict]:
+    """스크리닝 탈락 조건 → manual 강등 (서술은 보존, 자동 감시에서만 제외)."""
+    return [
+        {"조건": cond.get("조건", ""), "check_type": "manual",
+         "params": {"확인_방법": "상시 뉴스/공시 확인"},
+         "spec_note": f"조건 품질 결함 — {reason} (자동 감시 제외)"}
+        for cond, reason in rejected
+    ]
+
+
+# ------------------------------------------------------------------ #
 # 타입별 결정론 체크 — 반환 (state, detail)
 # ------------------------------------------------------------------ #
 

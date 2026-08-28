@@ -72,6 +72,8 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
   const fx = snap.fx_usdkrw ?? {};
   const market = snap.market ?? {};
   const pbrBand = val.pbr_band_5y ?? {};
+  const scen = snap.valuation_scenarios ?? {};
+  const scenRows: Record<string, any>[] = scen.scenarios ?? [];
   const latestRatio = snap.fundamentals_quarterly?.ratios?.[0] ?? {};
   const perForward = val.per_forward_consensus?.[0];
   const quarters: Record<string, unknown>[] = snap.fundamentals_quarterly?.income_single_q ?? [];
@@ -90,7 +92,13 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
 
   return (
     <div className="flex flex-col gap-4">
-      {/* AI 구조화 출력 5개 섹션 */}
+      {/* AI 구조화 출력 — 핵심 주장이 먼저 (무효화 조건이 반증할 대상) */}
+      {r["핵심_주장"] && (
+        <Section title="핵심 주장 — 이것이 참이어야 이 분석이 성립한다" tone="border-blue-700/60">
+          <p className="text-sm text-blue-100 leading-relaxed whitespace-pre-wrap">{r["핵심_주장"]}</p>
+        </Section>
+      )}
+
       <Section title="논거" tone="border-gray-600">
         <p className="text-sm text-gray-200 leading-relaxed whitespace-pre-wrap">{r["논거"] || "-"}</p>
       </Section>
@@ -154,6 +162,75 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
 
       <Section title="밸류 코멘트" tone="border-gray-600">
         <p className="text-sm text-gray-200 leading-relaxed whitespace-pre-wrap">{r["밸류_코멘트"] || "-"}</p>
+      </Section>
+
+      {/* 밸류 시나리오 — 앱이 배수 밴드에서 역산한 산술값 (예측 아님) */}
+      <Section title="밸류 시나리오 — 멀티플 밴드 회귀 가정하의 함의주가" tone="border-gray-600">
+        <p className="text-xs text-gray-500 mb-2">
+          앱이 <span className="text-gray-400">현재가 × 목표배수 ÷ 현재배수</span>로 역산한 산술값입니다.
+          주가 예측이 아니며, 각 행의 전제가 깨지면 그 행은 무효입니다.
+        </p>
+        {scenRows.length === 0 ? (
+          <p className="text-sm text-gray-500">역산 불가 — PER/PBR 밴드 데이터 부족</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[520px]">
+              <thead>
+                <tr className="text-xs text-gray-500 border-b border-gray-700">
+                  <th className="text-left py-1 font-normal">기준</th>
+                  <th className="text-right py-1 font-normal">목표배수</th>
+                  <th className="text-right py-1 font-normal">함의주가</th>
+                  <th className="text-right py-1 font-normal">현재가 대비</th>
+                </tr>
+              </thead>
+              <tbody>
+                {scenRows.map((row, i) => {
+                  const chg = row["현재가_대비_pct"] as number;
+                  return (
+                    <tr key={i} className="border-b border-gray-800/60 align-top">
+                      <td className="py-1.5 pr-2 text-gray-200">
+                        {row["기준"]}
+                        {row["신뢰도"] && (
+                          <span className="ml-1.5 text-xs px-1 py-0.5 rounded bg-amber-900/50 text-amber-400">
+                            {row["신뢰도"]}
+                          </span>
+                        )}
+                        <span className="block text-xs text-gray-600">{row["전제"]}</span>
+                      </td>
+                      <td className="py-1.5 text-right text-gray-400 tabular-nums">{row["목표_배수"]}</td>
+                      <td className="py-1.5 text-right text-gray-200 tabular-nums">
+                        {Number(row["함의주가"]).toLocaleString("ko-KR")}
+                      </td>
+                      <td className={`py-1.5 text-right tabular-nums ${
+                        chg > 0 ? "text-red-400" : chg < 0 ? "text-blue-400" : "text-gray-400"
+                      }`}>{chg > 0 ? "+" : ""}{chg}%</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        {(scen.reference_prices?.high_5y || scen.reference_prices?.low_5y) && (
+          <p className="text-xs text-gray-600 mt-2">
+            참조 — 5년 최고 {Number(scen.reference_prices.high_5y).toLocaleString("ko-KR")} /
+            최저 {Number(scen.reference_prices.low_5y).toLocaleString("ko-KR")}
+          </p>
+        )}
+        {(scen.warnings ?? []).length > 0 && (
+          <ul className="mt-3 flex flex-col gap-1.5">
+            {(scen.warnings as string[]).map((w, i) => (
+              <li key={i} className="text-xs text-amber-300/90 leading-relaxed flex gap-1.5">
+                <span className="shrink-0">⚠</span><span>{w}</span>
+              </li>
+            ))}
+          </ul>
+        )}
+        {r["밸류_시나리오_코멘트"] && (
+          <p className="text-sm text-gray-200 leading-relaxed whitespace-pre-wrap mt-3 pt-3 border-t border-gray-800">
+            {r["밸류_시나리오_코멘트"]}
+          </p>
+        )}
       </Section>
 
       {/* 입력 스냅샷 — 그날 AI가 실제로 본 데이터 */}
