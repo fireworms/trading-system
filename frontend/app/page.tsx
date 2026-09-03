@@ -395,6 +395,13 @@ export default function DashboardPage() {
                       <span className={`text-xs px-2 py-0.5 rounded-full ${MARKET_COLORS[strategy.candidate_market] ?? MARKET_COLORS.ALL}`}>
                         {MARKET_LABELS[strategy.candidate_market] ?? strategy.candidate_market}
                       </span>
+                      {/* 규칙 기반 전략 = AI 대조군 (Gemini 호출 없음) */}
+                      {strategy.selection_mode?.startsWith("rule_") && (
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-gray-700 text-gray-300 border border-gray-600"
+                              title="Gemini 호출 없이 결정론 규칙으로 선정 — AI 픽의 대조군">
+                          규칙 기반
+                        </span>
+                      )}
                       {strategy.use_trailing_stop && (
                         <span className="text-xs px-2 py-0.5 rounded-full bg-purple-900/60 text-purple-300 border border-purple-700">
                           트레일링

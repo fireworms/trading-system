@@ -351,10 +351,13 @@ def start_scheduler() -> None:
         replace_existing=True,
     )
 
-    # 분석 잡: 3일마다 (평일 08:30) — AI 분석 + recommendations 저장만
+    # 분석 잡: 평일 08:30 — AI 분석 + recommendations 저장만.
+    # 잡은 매 평일 뜨고, 전략별 실행 간격은 각 전략의 run_interval_days(_should_run)가 통제한다.
+    # (mon,wed,fri 고정이면 run_interval_days=1 전략도 주 3회가 상한이 되어
+    #  표본 축적 가속용 전략이 무력화됨 — 2026-09-03)
     _scheduler.add_job(
         job_run_strategies,
-        trigger=CronTrigger(day_of_week="mon,wed,fri", hour=8, minute=30),
+        trigger=CronTrigger(day_of_week="mon-fri", hour=8, minute=30),
         id="run_strategies",
         replace_existing=True,
     )

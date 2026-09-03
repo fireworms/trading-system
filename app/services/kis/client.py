@@ -86,6 +86,20 @@ class BalanceItem:
 # KISClient
 # ------------------------------------------------------------------ #
 
+def _turnover_ratio(latest, prev) -> float | None:
+    """최신봉 거래대금 ÷ 직전봉 거래대금. 거래대금 = 종가 × 거래량 (근사).
+
+    규칙 기반 전략의 "거래대금 급증" 판정용. 봉 정렬 방향은 호출부가 알고 넘긴다.
+    """
+    try:
+        prev_val = float(prev.close) * prev.volume
+        if prev_val <= 0:
+            return None
+        return round(float(latest.close) * latest.volume / prev_val, 4)
+    except Exception:
+        return None
+
+
 class KISClient:
     """KIS OpenAPI 클라이언트 (국내/해외 주식)."""
 
@@ -365,13 +379,18 @@ class KISClient:
             return {"level": 0.0, "change_pct": 0.0}
 
     def get_index_daily_closes(self, code: str = "0001", days: int = 6) -> list[float]:
+        """지수 일봉 종가만 (최신 → 오래된 순, 당일 미완성 봉 제외). A-gate 수치 판정용."""
+        return [c for _, c in self.get_index_daily_series(code, days)]
+
+    def get_index_daily_series(self, code: str = "0001", days: int = 6) -> list[tuple[str, float]]:
         """
-        지수 일봉 종가 조회 (최신 → 오래된 순, 당일 미완성 봉 제외).
+        지수 일봉 (날짜, 종가) 조회 (최신 → 오래된 순, 당일 미완성 봉 제외).
         FHKUP03500100 inquire-daily-indexchartprice. code: '0001'=KOSPI, '1001'=KOSDAQ
-        A-gate 수치 판정용 — 장 시작 전(08:30)에도 전일까지의 확정 종가만 반환.
+        장 시작 전(08:30)에도 전일까지의 확정 종가만 반환.
+        날짜가 필요한 쪽(시장 국면 소급 계산)은 이 함수를, 종가만 필요하면 위 래퍼를 쓴다.
         """
         today = date.today().strftime("%Y%m%d")
-        closes: list[float] = []
+        closes: list[tuple[str, float]] = []
         seen: set[str] = set()
         end = date.today()
         # 호출당 약 50행 제한 — days가 크면 날짜 구간을 나눠 연속 조회
@@ -396,7 +415,7 @@ class KISClient:
                 if not close or not bar_date or bar_date >= today or bar_date in seen:
                     continue  # 당일 봉은 미확정 — 제외
                 seen.add(bar_date)
-                closes.append(float(close))
+                closes.append((bar_date, float(close)))
                 got_new = True
                 oldest = bar_date if oldest is None or bar_date < oldest else oldest
                 if len(closes) >= days:
@@ -970,11 +989,18 @@ class KISClient:
 
         recent     = bars[:5] if bars else []
         avg_volume = int(sum(b.volume for b in bars[:20]) / min(20, len(bars))) if bars else 0
+        # 규칙 기반 전략용 파생값 — 이미 받아둔 일봉에서 계산, 추가 API 호출 없음.
+        # bars는 최신순이고 08:30 실행 시점엔 bars[0]이 전 거래일 → bars[1:21]이 "직전 20거래일"
+        prior20 = bars[1:21] if len(bars) > 1 else []
+        close_high_20d = int(max(b.close for b in prior20)) if prior20 else None
+        turnover_ratio = _turnover_ratio(bars[0], bars[1]) if len(bars) > 1 else None
 
         return {
             "stock_code":      stock_code,
             "currency":        "KRW",
             "current_price":   int(current_price),
+            "close_high_20d":  close_high_20d,   # 직전 20거래일 종가 최고 (신고가 판정용)
+            "turnover_ratio":  turnover_ratio,   # 최신봉 거래대금 ÷ 직전봉 거래대금
             "rsi_14":          float(rsi) if rsi else None,
             "ma5":             int(mas["ma5"])  if mas["ma5"]  else None,
             "ma20":            int(mas["ma20"]) if mas["ma20"] else None,
@@ -1024,11 +1050,18 @@ class KISClient:
             mas = self._compute_mas(hist_bars)
             avg_volume = int(sum(b.volume for b in hist_bars[-20:]) / min(20, len(hist_bars)))
             recent = hist_bars[-5:]      # 가장 최근 5개
+            prior20 = hist_bars[-21:-1]  # target_bar 직전 20거래일 (오래된 순 정렬)
+            close_high_20d = int(max(b.close for b in prior20)) if prior20 else None
+            turnover_ratio = (
+                _turnover_ratio(hist_bars[-1], hist_bars[-2]) if len(hist_bars) > 1 else None
+            )
 
             return {
                 "stock_code":      stock_code,
                 "currency":        "KRW",
                 "current_price":   int(target_bar.close),
+                "close_high_20d":  close_high_20d,
+                "turnover_ratio":  turnover_ratio,
                 "rsi_14":          float(rsi) if rsi else None,
                 "ma5":             int(mas["ma5"])  if mas["ma5"]  else None,
                 "ma20":            int(mas["ma20"]) if mas["ma20"] else None,

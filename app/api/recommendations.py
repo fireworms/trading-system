@@ -57,6 +57,15 @@ def get_recommendation(rec_id: uuid.UUID, db: Session = Depends(get_db), _: User
 # 전략 통계 (대시보드용)
 # ------------------------------------------------------------------ #
 
+class RegimeStats(BaseModel):
+    """시장 국면(KOSPI 20일선 위/아래)별 성과 분해."""
+    state: str            # above / below / unknown
+    verified: int
+    win_rate: float | None
+    avg_pnl_pct: float | None
+    random_avg_pnl: float | None
+
+
 class StrategyStats(BaseModel):
     strategy_id: uuid.UUID
     total_runs: int
@@ -70,6 +79,7 @@ class StrategyStats(BaseModel):
     fail_avg_pnl: float | None
     random_avg_pnl: float | None
     expected_value: float | None
+    regime_breakdown: list[RegimeStats] = []
 
 
 @router.get("/stats/{strategy_id}", response_model=StrategyStats)
@@ -125,6 +135,55 @@ def get_strategy_stats(
     ]
     random_avg_pnl = round(sum(random_pnls) / len(random_pnls), 4) if random_pnls else None
 
+    # 국면별 분해 — 표본이 쪼개지므로 verified 건수를 반드시 함께 노출한다
+    # (63건을 above/below로 나누면 각 30건, 승률 표준오차 ±9%p — 숫자만 보면 과신하기 쉽다)
+    regime_rows = db.execute(
+        select(
+            RecommendationRun.kospi_ma20_state,
+            Verification.result,
+            func.count().label("cnt"),
+            func.avg(Verification.pnl_pct).label("avg_pnl"),
+        )
+        .join(Recommendation, Recommendation.rec_id == Verification.rec_id)
+        .join(RecommendationRun, RecommendationRun.run_id == Recommendation.run_id)
+        .where(*live_filter)
+        .where(Verification.result != None)  # noqa: E711
+        .group_by(RecommendationRun.kospi_ma20_state, Verification.result)
+    ).all()
+
+    by_state: dict[str, dict] = {}
+    for r in regime_rows:
+        st = r.kospi_ma20_state or "unknown"
+        acc = by_state.setdefault(st, {"s": 0, "f": 0, "s_pnl": 0.0, "f_pnl": 0.0})
+        if r.result == VerificationResult.SUCCESS:
+            acc["s"], acc["s_pnl"] = r.cnt, float(r.avg_pnl or 0)
+        else:
+            acc["f"], acc["f_pnl"] = r.cnt, float(r.avg_pnl or 0)
+
+    # 국면별 랜덤 대조군 (run 단위 국면이라 run을 국면으로 갈라 평균)
+    rand_by_state: dict[str, list[float]] = {}
+    for r in runs_with_random:
+        v = (r.raw_response or {}).get("random_baseline", {}).get("avg_pnl") if r.raw_response else None
+        if v is not None:
+            rand_by_state.setdefault(r.kospi_ma20_state or "unknown", []).append(v)
+
+    regime_breakdown = []
+    for st in ("above", "below", "unknown"):
+        acc = by_state.get(st)
+        if not acc:
+            continue
+        n = acc["s"] + acc["f"]
+        if n == 0:
+            continue
+        rp = rand_by_state.get(st, [])
+        regime_breakdown.append(RegimeStats(
+            state=st,
+            verified=n,
+            win_rate=acc["s"] / n,
+            avg_pnl_pct=round((acc["s"] * acc["s_pnl"] + acc["f"] * acc["f_pnl"]) / n, 4),
+            random_avg_pnl=round(sum(rp) / len(rp), 4) if rp else None,
+        ))
+
     return StrategyStats(
         strategy_id=strategy_id,
         total_runs=total_runs,
@@ -138,4 +197,5 @@ def get_strategy_stats(
         fail_avg_pnl=round(f_pnl, 4) if f_cnt > 0 else None,
         random_avg_pnl=random_avg_pnl,
         expected_value=ev,
+        regime_breakdown=regime_breakdown,
     )

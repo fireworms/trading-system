@@ -45,6 +45,12 @@ class RecommendationRun(Base):
     kospi_change_1d:  Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)
     kosdaq_change_1d: Mapped[Decimal | None] = mapped_column(Numeric(8, 4), nullable=True)
     verified_1d_at:   Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # 시장 국면 (진입 시점 KOSPI의 20일선 위/아래). 성과를 국면별로 분리해 보기 위한 기록 필드.
+    # 기준을 나중에 바꿀 수 있도록 판정 결과와 원본값을 함께 저장한다.
+    # kospi_at_run(실행 시점 조회값)과 별도인 이유: MA20과 시점을 맞추려면 전일 종가 기준이어야 함
+    kospi_close:      Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    kospi_ma20:       Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
+    kospi_ma20_state: Mapped[str | None]     = mapped_column(String(10), nullable=True)  # above / below
     # Stage4 스킵 여부 (A-gate 발동 시 True)
     stage4_skipped: Mapped[bool] = mapped_column(Boolean, default=False, server_default="false", nullable=False)
 

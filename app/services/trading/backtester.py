@@ -14,6 +14,7 @@ from app.models.recommendation import RecommendationRun, Recommendation, Verific
 from app.models.stock_master import StockMaster
 from app.services.gemini.analyzer import GeminiAnalyzer
 from app.services.kis.client import get_kis_client
+from app.services.trading.verifier import simulate_exit_pnl
 
 logger = logging.getLogger(__name__)
 
@@ -242,42 +243,34 @@ class BacktestRunner:
     def _compute_random_baseline(
         self, stock_data: list[dict], target_date: date, strategy: Strategy, client
     ) -> float | None:
-        """AI와 동일한 종목 풀에서 랜덤 pick_count개 선택 후 평균 pnl 계산.
-        AI와 동일한 목표/손절 청산 규칙·클램프를 적용해 공정 비교."""
+        """AI와 동일한 종목 풀에서 랜덤 표본을 뽑아 평균 pnl 계산.
+
+        청산 규칙은 verifier.simulate_exit_pnl 공용 함수를 그대로 쓴다 —
+        AI 검증과 랜덤 대조군의 청산 모델이 갈라지지 않게 하는 것이 핵심.
+        """
         import random as _random
-        pick_count = strategy.pick_count
+        from app.services.trading.runner import _RANDOM_BASELINE_N
+
         hold_days = strategy.hold_days
-        tgt_mult  = 1.0 + float(strategy.target_pct) / 100.0
-        stop_mult = 1.0 - float(strategy.stop_loss_pct) / 100.0
+        # 기간 경계는 AI 픽 검증(_verify_pick)과 동일하게 target_date 당일 봉 포함
         period_start = target_date.strftime("%Y%m%d")
         period_end = (target_date + timedelta(days=hold_days)).strftime("%Y%m%d")
 
         candidates = [s for s in stock_data if s.get("current_price", 0) > 0]
-        if len(candidates) < pick_count:
+        if len(candidates) < strategy.pick_count:
             return None
 
-        sampled = _random.sample(candidates, pick_count)
+        sampled = _random.sample(candidates, min(_RANDOM_BASELINE_N, len(candidates)))
         pnls = []
         for s in sampled:
             try:
-                bars = client.get_ohlcv(s["stock_code"], days=100)
-                future = sorted([b for b in bars if period_start < b.date <= period_end], key=lambda b: b.date)
-                if not future:
-                    continue
-                entry = float(s["current_price"])
-                if entry <= 0:
-                    continue
-                target, stop = entry * tgt_mult, entry * stop_mult
-                exit_price = float(future[-1].close)
-                for b in future:                       # 손절-우선 청산
-                    if b.low <= stop:
-                        exit_price = stop
-                        break
-                    if b.high >= target:
-                        exit_price = target
-                        break
-                pnl = (exit_price - entry) / entry * 100
-                pnls.append(max(-100.0, min(200.0, pnl)))
+                pnl = simulate_exit_pnl(
+                    client.get_ohlcv(s["stock_code"], days=100), s["current_price"],
+                    strategy.target_pct, strategy.stop_loss_pct,
+                    period_start, period_end,
+                )
+                if pnl is not None:
+                    pnls.append(pnl)
             except Exception:
                 continue
 

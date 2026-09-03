@@ -16,6 +16,8 @@ from app.models.recommendation import (
 from app.models.stock_master import StockMaster
 from app.services.gemini.analyzer import GeminiAnalyzer, PickResult
 from app.services.kis.client import get_kis_client, get_kis_client_from_account
+from app.services.trading.market_regime import compute_regime
+from app.services.trading.rule_selector import is_rule_mode, select_by_rule
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +30,10 @@ _GATE_MIN_DATA = 20
 # 임계값은 표본 1(6/4-5) 기반 보수적 시작값 — 데이터 축적 후 조정)
 _NUMERIC_GATE_1D_PCT = -2.5
 _NUMERIC_GATE_3D_PCT = -4.0
+
+# 랜덤 대조군 표본 크기 (run당). 대조군은 실매매가 아니라 벤치마크이므로
+# pick_count(=3)에 맞출 이유가 없고, 표본이 작으면 벤치마크 오차가 AI 우위를 가린다.
+_RANDOM_BASELINE_N = 40
 
 
 def _is_market_unfavorable(market_theme: str) -> bool:
@@ -303,16 +309,20 @@ class StrategyRunner:
             raise RuntimeError("No stock data collected")
 
         # stock_name 주입: AI가 훈련 기억 대신 stock_master의 정확한 이름 사용
-        from sqlalchemy import select as _select
         codes_in_data = [s["stock_code"] for s in stock_data if s.get("stock_code")]
         sm_rows = self.db.scalars(
-            _select(StockMaster).where(StockMaster.stock_code.in_(codes_in_data))
+            select(StockMaster).where(StockMaster.stock_code.in_(codes_in_data))
         ).all()
         name_map_pre = {r.stock_code: r.stock_name for r in sm_rows}
         for s in stock_data:
             s["stock_name"] = name_map_pre.get(s.get("stock_code", ""), "")
 
-        # 2. AI 파이프라인: Stage 1-3 순차 실행
+        # 2. 선정 — 규칙 기반 전략은 AI 파이프라인 전체를 건너뛴다 (Gemini 호출 0회)
+        selection_mode = getattr(strategy, "selection_mode", "momentum")
+        if is_rule_mode(selection_mode):
+            return self._run_rule_strategy(strategy, run_date, stock_data, selection_mode)
+
+        # AI 파이프라인: Stage 1-3 순차 실행
         macro = self.analyzer.stage1_macro(run_date)
         logger.info("Stage1 done: theme=%s [%s]", macro.market_theme, macro.model_used)
         historical = self.analyzer.stage2_historical(macro)
@@ -362,6 +372,50 @@ class StrategyRunner:
         else:
             picks_result = self._run_stage4_grouped(macro, industry, stock_data, strategy)
 
+        return self._persist_and_notify(
+            strategy, run_date, stock_data, picks_result,
+            macro=macro, historical=historical, industry=industry,
+            stage4_skipped=stage4_skipped,
+        )
+
+    def _run_rule_strategy(
+        self, strategy: Strategy, run_date: date, stock_data: list[dict], selection_mode: str
+    ) -> RecommendationRun:
+        """규칙 기반 전략 실행 — Gemini 호출 없이 결정론 조건으로 선정.
+
+        AI 픽의 대조군이므로 유니버스·파라미터·저장·검증 경로는 AI 전략과 완전히 동일하고,
+        선정 방식만 다르다. 조건 충족이 pick_count에 못 미치면 모자란 채로 저장한다.
+        """
+        picks = select_by_rule(selection_mode, stock_data, strategy.pick_count)
+        picks_result = PickResult(
+            picks=picks,
+            excluded_reason="" if picks else f"규칙 조건 충족 종목 없음 ({selection_mode})",
+            model_used=f"rule:{selection_mode}",
+            raw={
+                "selection_mode": selection_mode,
+                "candidates": len(stock_data),
+                "matched": len(picks),
+            },
+        )
+        return self._persist_and_notify(strategy, run_date, stock_data, picks_result)
+
+    def _persist_and_notify(
+        self,
+        strategy: Strategy,
+        run_date: date,
+        stock_data: list[dict],
+        picks_result: PickResult,
+        *,
+        macro=None,
+        historical=None,
+        industry=None,
+        stage4_skipped: bool = False,
+    ) -> RecommendationRun:
+        """지수·국면·랜덤 대조군 기록 → run/추천 저장 → 텔레그램 알림.
+
+        AI 파이프라인 경로와 규칙 기반 경로가 공유한다.
+        macro/historical/industry가 None이면 규칙 기반 전략 (Gemini 산출물 없음).
+        """
         # 실행 시점 지수 레벨 수집 (Stage1 정확도 검증용)
         kospi_at_run = kosdaq_at_run = None
         try:
@@ -371,11 +425,20 @@ class StrategyRunner:
         except Exception as _e:
             logger.warning("Index level fetch failed at run time: %s", _e)
 
-        # 3. 랜덤 대조군 진입가 기록 (같은 종목 풀에서 pick_count개 무작위)
+        # 시장 국면 기록 (KOSPI 20일선 위/아래) — 성과를 국면별로 분리해 보기 위한 기록 전용.
+        # 매매 차단에는 관여하지 않는다. 실패해도 분석은 그대로 진행.
+        regime = compute_regime(get_kis_client(self.db), run_date)
+        if regime:
+            logger.info("Market regime: KOSPI %s MA20 (close=%s, ma20=%s)",
+                        regime["state"], regime["close"], regime["ma20"])
+
+        # 3. 랜덤 대조군 진입가 기록 (같은 종목 풀에서 무작위)
+        # 대조군은 실제 매매가 아니므로 표본을 pick_count로 줄일 이유가 없다.
+        # 3개만 뽑으면 벤치마크 자체의 표준오차가 AI만큼 커져 "AI 우위"의 오차가 부풀어난다.
         import random as _random
         random_entries: dict[str, float] = {}
         eligible = [s for s in stock_data if s.get("stock_code") and s.get("current_price", 0) > 0]
-        for s in _random.sample(eligible, min(strategy.pick_count, len(eligible))):
+        for s in _random.sample(eligible, min(_RANDOM_BASELINE_N, len(eligible))):
             random_entries[s["stock_code"]] = float(s["current_price"])
 
         # 4. DB 저장
@@ -383,18 +446,21 @@ class StrategyRunner:
             strategy_id=strategy.strategy_id,
             run_date=run_date,
             ai_model_used=picks_result.model_used or "gemini-3-flash-preview",
-            stage1_model=macro.model_used or None,
-            stage2_model=historical.model_used or None,
-            stage3_model=industry.model_used or None,
+            stage1_model=macro.model_used if macro else None,
+            stage2_model=historical.model_used if historical else None,
+            stage3_model=industry.model_used if industry else None,
             stage4_model=picks_result.model_used or None,
             prompt_version="v1.0",
             kospi_at_run=kospi_at_run,
             kosdaq_at_run=kosdaq_at_run,
             stage4_skipped=stage4_skipped,
+            kospi_close=Decimal(str(regime["close"])) if regime else None,
+            kospi_ma20=Decimal(str(regime["ma20"])) if regime else None,
+            kospi_ma20_state=regime["state"] if regime else None,
             raw_response={
-                "macro": macro.raw,
-                "historical": historical.raw,
-                "industry": industry.raw,
+                "macro": macro.raw if macro else None,
+                "historical": historical.raw if historical else None,
+                "industry": industry.raw if industry else None,
                 "picks": picks_result.raw,
                 "random_baseline": {"entries": random_entries},
                 # KIS 수집 시점 가격 감사 로그 (환각 검증용)
@@ -407,15 +473,15 @@ class StrategyRunner:
         self.db.add(run)
         self.db.flush()  # run_id 확보
 
-        # MacroAnalysis 저장
-        analysis = MacroAnalysis(
-            run_id=run.run_id,
-            current_situation=macro.macro_summary,
-            historical_matches=historical.raw,
-            industry_mapping=industry.raw,
-            expected_beneficiary=industry.expected_beneficiary,
-        )
-        self.db.add(analysis)
+        # MacroAnalysis 저장 (규칙 기반 전략은 매크로 분석 자체가 없으므로 생략)
+        if macro and historical and industry:
+            self.db.add(MacroAnalysis(
+                run_id=run.run_id,
+                current_situation=macro.macro_summary,
+                historical_matches=historical.raw,
+                industry_mapping=industry.raw,
+                expected_beneficiary=industry.expected_beneficiary,
+            ))
 
         # Recommendations 저장
         # KIS 실측 가격맵 (AI 반환값보다 항상 우선)
@@ -428,7 +494,7 @@ class StrategyRunner:
         name_map: dict[str, str] = {}
         if price_map:
             masters = self.db.scalars(
-                _select(StockMaster).where(StockMaster.stock_code.in_(price_map.keys()))
+                select(StockMaster).where(StockMaster.stock_code.in_(price_map.keys()))
             ).all()
             name_map = {m.stock_code: m.stock_name for m in masters}
 
@@ -491,7 +557,8 @@ class StrategyRunner:
                         chat_id=user.telegram_chat_id,
                         strategy_name=strategy.name,
                         run_date=run_date,
-                        market_theme=macro.market_theme,
+                        market_theme=(macro.market_theme if macro
+                                      else f"규칙 기반 ({strategy.selection_mode})"),
                         picks=picks_result.picks,
                     )
 

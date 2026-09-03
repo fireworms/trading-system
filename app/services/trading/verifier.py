@@ -20,6 +20,52 @@ from app.services.kis.client import get_kis_client
 logger = logging.getLogger(__name__)
 
 
+def simulate_exit_pnl(
+    bars,
+    entry,
+    target_pct: Decimal,
+    stop_loss_pct: Decimal,
+    period_start: str,
+    period_end: str,
+) -> float | None:
+    """전략 청산 규칙(목표/손절/만기)을 일봉에 적용해 pnl%를 계산한다.
+
+    AI 픽 검증과 랜덤 대조군이 **같은 청산 모델**을 쓰도록 하는 단일 진실 공급원.
+    - 손절-우선: 같은 날 목표·손절 둘 다 터치 시 손절 (보수적 convention)
+    - 어느 쪽도 미터치 시 기간 마지막 봉 종가로 청산
+    - 목표/손절가는 runner가 Recommendation에 박는 방식과 동일하게 정수 반올림
+    - 분할/상폐 등 데이터 오류 대비 ±클램프(-100~+200%)
+    반환값: pnl% (계산 불가 시 None)
+    """
+    if not bars or entry is None:
+        return None
+    entry_d = Decimal(str(entry))
+    if entry_d <= 0:
+        return None
+
+    relevant = sorted(
+        [b for b in bars if period_start <= b.date <= period_end],
+        key=lambda b: b.date,
+    )
+    if not relevant:
+        return None
+
+    target = (entry_d * (1 + Decimal(str(target_pct)) / 100)).quantize(Decimal("1"))
+    stop   = (entry_d * (1 - Decimal(str(stop_loss_pct)) / 100)).quantize(Decimal("1"))
+
+    exit_price = relevant[-1].close
+    for bar in relevant:
+        if bar.low <= stop:
+            exit_price = stop
+            break
+        if bar.high >= target:
+            exit_price = target
+            break
+
+    pnl = (float(exit_price) - float(entry_d)) / float(entry_d) * 100
+    return max(-100.0, min(200.0, pnl))
+
+
 def run_verifications(db: Session) -> int:
     """
     검증 대상 추천 종목을 찾아 결과를 기록하고 성과 점수를 갱신한다.
@@ -69,7 +115,12 @@ def run_verifications(db: Session) -> int:
 
 
 def _verify_random_baselines(db, client, today: date) -> None:
-    """raw_response.random_baseline.entries가 있는 run에 대해 랜덤 대조군 pnl 계산."""
+    """raw_response.random_baseline.entries가 있는 run에 대해 랜덤 대조군 pnl 계산.
+
+    AI 픽과 **완전히 동일한 청산 규칙**(simulate_exit_pnl)을 적용한다.
+    과거에는 목표/손절 없이 만기 종가만 썼는데, 그러면 AI 우위 지표가
+    종목 선정력이 아니라 손절 로직의 효과를 재게 된다.
+    """
     from sqlalchemy import select as sa_select
     runs = db.scalars(
         sa_select(RecommendationRun)
@@ -88,22 +139,32 @@ def _verify_random_baselines(db, client, today: date) -> None:
         if run.run_date + timedelta(days=strategy.hold_days) > today:
             continue  # hold_days 미경과
 
+        # 기간 경계는 AI 검증과 동일하게 run_date 당일 봉 포함
+        # (08:30 실행이라 진입가는 전일 종가 → 당일 봉은 전부 미래 구간)
         period_start = run.run_date.strftime("%Y%m%d")
         period_end   = (run.run_date + timedelta(days=strategy.hold_days)).strftime("%Y%m%d")
         pnls = []
         for code, entry_price in baseline["entries"].items():
             try:
-                bars = client.get_ohlcv(code)
-                future = sorted([b for b in bars if period_start < b.date <= period_end], key=lambda b: b.date)
-                if not future or entry_price == 0:
-                    continue
-                end_price = float(future[-1].close)
-                pnls.append((end_price - entry_price) / entry_price * 100)
+                pnl = simulate_exit_pnl(
+                    client.get_ohlcv(code), entry_price,
+                    strategy.target_pct, strategy.stop_loss_pct,
+                    period_start, period_end,
+                )
+                if pnl is not None:
+                    pnls.append(pnl)
             except Exception as e:
                 logger.warning("Random baseline verify failed for %s: %s", code, e)
 
         if pnls:
-            run.raw_response = {**raw, "random_baseline": {**baseline, "avg_pnl": round(sum(pnls) / len(pnls), 4)}}
+            run.raw_response = {
+                **raw,
+                "random_baseline": {
+                    **baseline,
+                    "avg_pnl": round(sum(pnls) / len(pnls), 4),
+                    "sample_n": len(pnls),
+                },
+            }
             updated += 1
 
     if updated:

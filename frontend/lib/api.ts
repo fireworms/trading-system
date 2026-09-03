@@ -81,6 +81,8 @@ export interface Strategy {
   run_interval_days: number;
   candidate_filter: CandidateFilter;
   candidate_market: CandidateMarket;
+  /** momentum / earnings_catalyst = AI 선정, rule_* = 규칙 기반 (Gemini 미사용) */
+  selection_mode: string;
   use_trailing_stop: boolean;
   is_active: boolean;
   created_by: string;
@@ -144,6 +146,16 @@ export interface StrategyStats {
   fail_avg_pnl: number | null;
   random_avg_pnl: number | null;
   expected_value: number | null;
+  regime_breakdown: RegimeStats[];
+}
+
+/** 시장 국면(KOSPI 20일선 위/아래)별 성과 분해 */
+export interface RegimeStats {
+  state: "above" | "below" | "unknown";
+  verified: number;
+  win_rate: number | null;
+  avg_pnl_pct: number | null;
+  random_avg_pnl: number | null;
 }
 
 export type PositionStatus =

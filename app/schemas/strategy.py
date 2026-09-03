@@ -50,6 +50,7 @@ class StrategyOut(BaseModel):
     run_interval_days: int
     candidate_filter: str
     candidate_market: str
+    selection_mode: str          # momentum / earnings_catalyst / rule_breakout / rule_oversold
     use_trailing_stop: bool
     is_active: bool
     created_at: datetime

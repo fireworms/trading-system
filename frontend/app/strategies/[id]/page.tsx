@@ -357,6 +357,65 @@ export default function StrategyDetailPage() {
               );
             })()}
 
+            {/* ── 시장 국면별 분해 ─────────────────────────────
+                성과가 종목 선정 탓인지 시장 국면 탓인지 분리해서 보기 위함.
+                표본이 쪼개지므로 건수를 반드시 병기하고, 30건 미만은 흐리게 처리한다. */}
+            {stats && stats.regime_breakdown?.length > 0 && (
+              <div className="bg-gray-800/50 rounded-lg p-5 mb-6">
+                <h3 className="text-sm font-semibold mb-1">시장 국면별 성과</h3>
+                <p className="text-xs text-gray-500 mb-4">
+                  진입일 KOSPI가 20일 이동평균 위(above) / 아래(below)인지로 분리
+                </p>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="text-xs text-gray-500 border-b border-gray-700">
+                      <tr>
+                        <th className="pb-2 text-left">국면</th>
+                        <th className="pb-2 text-right">검증</th>
+                        <th className="pb-2 text-right">승률</th>
+                        <th className="pb-2 text-right">AI 수익</th>
+                        <th className="pb-2 text-right">랜덤 수익</th>
+                        <th className="pb-2 text-right">AI 우위</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {stats.regime_breakdown.map((r) => {
+                        const thin = r.verified < 30;   // 표본 부족 → 숫자를 믿지 말 것
+                        const edge = r.avg_pnl_pct != null && r.random_avg_pnl != null
+                          ? r.avg_pnl_pct - r.random_avg_pnl : null;
+                        const label = r.state === "above" ? "20일선 위"
+                                    : r.state === "below" ? "20일선 아래" : "미기록";
+                        return (
+                          <tr key={r.state} className={`border-b border-gray-800 ${thin ? "opacity-50" : ""}`}>
+                            <td className="py-2">
+                              {label}
+                              {thin && <span className="ml-2 text-xs text-yellow-600">표본 부족</span>}
+                            </td>
+                            <td className="py-2 text-right text-gray-400">{r.verified}건</td>
+                            <td className="py-2 text-right">
+                              {r.win_rate != null ? `${(r.win_rate * 100).toFixed(1)}%` : "-"}
+                            </td>
+                            <td className={`py-2 text-right ${r.avg_pnl_pct == null ? "text-gray-500" : r.avg_pnl_pct >= 0 ? "text-green-400" : "text-red-400"}`}>
+                              {r.avg_pnl_pct != null ? `${r.avg_pnl_pct >= 0 ? "+" : ""}${r.avg_pnl_pct.toFixed(2)}%` : "-"}
+                            </td>
+                            <td className={`py-2 text-right ${r.random_avg_pnl == null ? "text-gray-500" : r.random_avg_pnl >= 0 ? "text-green-400" : "text-red-400"}`}>
+                              {r.random_avg_pnl != null ? `${r.random_avg_pnl >= 0 ? "+" : ""}${r.random_avg_pnl.toFixed(2)}%` : "-"}
+                            </td>
+                            <td className={`py-2 text-right ${edge == null ? "text-gray-500" : edge >= 0 ? "text-green-400" : "text-red-400"}`}>
+                              {edge != null ? `${edge >= 0 ? "+" : ""}${edge.toFixed(2)}%p` : "-"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <p className="text-xs text-gray-600 mt-3">
+                  30건 미만 구간은 흐리게 표시 — 승률 표준오차가 ±9%p 이상이라 국면 차이로 읽으면 안 된다.
+                </p>
+              </div>
+            )}
+
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               <div className="flex flex-col gap-4">
                 {stats && (

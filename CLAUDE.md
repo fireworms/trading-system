@@ -91,7 +91,9 @@ trading_system/
 │   │       ├── scheduler.py     # APScheduler 잡 정의
 │   │       ├── runner.py        # StrategyRunner (AI 파이프라인, 분석만)
 │   │       ├── executor.py      # TradeExecutor (매수/매도/모니터링)
-│   │       └── verifier.py      # 추천 결과 사후 검증
+│   │       ├── verifier.py      # 추천 결과 사후 검증 (simulate_exit_pnl = 청산 모델 단일 진실 공급원)
+│   │       ├── market_regime.py # 시장 국면 판정 (KOSPI 20일선 위/아래, 기록 전용)
+│   │       └── rule_selector.py # 규칙 기반 종목 선정 (Gemini 미사용, AI 대조군)
 │   └── schemas/
 │       ├── user.py
 │       ├── strategy.py
@@ -142,7 +144,8 @@ trading_system/
 - hold_days, target_pct, stop_loss_pct, min_probability, pick_count, run_interval_days
 - **candidate_filter**: volume / largecap / mixed (기본 mixed)
 - **candidate_market**: KOSPI / KOSDAQ / NAS / ALL (기본 ALL)
-- **selection_mode**: momentum(기본) / earnings_catalyst — Stage4 선정 프롬프트 변형 분기 (전략 단위)
+- **selection_mode**: momentum(기본) / earnings_catalyst / **rule_breakout** / **rule_oversold** — 전략 단위 선정 로직 분기.
+  `rule_*`는 규칙 기반으로 **Stage1~4 전체를 스킵**(Gemini 호출 0회), 나머지는 Stage4 프롬프트 변형
 - is_active, created_at
 
 ### user_strategies
@@ -156,6 +159,7 @@ trading_system/
 - **kospi_change_1d, kosdaq_change_1d**: 다음날 실제 등락률 (16:00 잡이 채움)
 - **verified_1d_at**: 검증 완료 시각
 - **stage4_skipped**: A-gate 발동으로 Stage4 스킵됐는지 여부
+- **kospi_close, kospi_ma20, kospi_ma20_state**: 진입 시점 시장 국면 (above/below). 성과를 국면별로 분리해 보기 위한 **기록 전용** — 매매 차단에 관여 안 함. 픽 단위가 아닌 run 단위인 이유: 같은 run의 픽들은 같은 날 같은 지수 상태라 픽마다 저장하면 중복. `kospi_at_run`(실행 시점 조회값)과 별도인 이유: MA20과 시점을 맞추려면 전일 종가 기준이어야 함
 
 ### recommendations
 - rec_id (PK, UUID), run_id (FK)
@@ -287,7 +291,7 @@ trading_system/
 | 잡 ID | 시각 | 역할 |
 |-------|------|------|
 | morning_gate | 08:00 평일 | 개장 전 야간 리스크 체크 (미국 선물/지정학), 이상 시 09:20 매수 차단 |
-| run_strategies | 08:30 Mon/Wed/Fri | AI 분석 (매수 없음, morning_gate와 무관하게 실행) |
+| run_strategies | 08:30 평일 | AI/규칙 분석 (매수 없음, morning_gate와 무관하게 실행). **잡은 매 평일 뜨고 전략별 간격은 각자의 run_interval_days가 통제** — mon,wed,fri 고정이면 run_interval_days=1 전략이 주 3회로 묶여 무력화됨 (2026-09-03 변경) |
 | execute_pending_buys | 09:20 평일 | 크로스 시그널 보너스 적용 후 매수 (morning_gate/news 차단 시 스킵) |
 | monitor_positions | 09:05~15:55 매 10분 평일 | 포지션 손절/익절 모니터링 |
 | thesis_check | 10:00, 14:00 평일 | 보유 포지션 thesis 재검증 (8개씩 그룹 grounding) |
@@ -360,6 +364,39 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
   - earnings_catalyst를 단타(hold 7)가 아닌 대형주 스윙(hold 20)에 얹은 이유: 실적 카탈리스트는 대형주에서 데이터 풍부 + PEAD 드리프트가 수주 단위라 시간축 정합
   - 씨드: `scripts/seed_earnings_catalyst_strategy.py` (대형주 템플릿 우선 복제, 멱등)
 - **시장 축 변형 (2026-08-05)**: `[TEST] KOSDAQ150 대형주 스윙` — 대형주 스윙의 candidate_market만 KOSDAQ(150)으로 바꾼 관찰 전략(구독 없음). 배경: 8/5 점검에서 largecap×hold20×momentum 셀만 플러스(승률 41.7%, +0.75%) → KOSPI 특수인지 대형주 스윙 일반인지 검증. target/stop 8/4는 KOSDAQ 변동성(KOSPI200 대비 1.3~1.5배) 조정 — R/R 2 유지, 엣지 부재와 손절 과민을 구분하기 위함. 씨드: `scripts/seed_kosdaq_swing_strategy.py` (멱등)
+- **규칙 기반 대조군 (2026-09-03)**: `rule_breakout` / `rule_oversold` — `services/trading/rule_selector.py`. **Gemini 호출 0회**, `run_strategy`가 데이터 수집 직후 `_run_rule_strategy`로 분기해 Stage1~4를 통째로 스킵. 조건 충족이 pick_count에 못 미치면 **모자란 채로 저장**(억지 선정 금지 — B-gate와 같은 철학, 실제로 rule_oversold는 0건이 흔함)
+  - **rule_breakout**: 종가가 직전 20거래일 종가 최고 갱신 + 종가 > MA5. 정렬은 돌파 폭 큰 순
+  - **rule_oversold**: RSI(14) ≤ 35 + 거래대금 전일 대비 ≥ 1.5배. 정렬은 RSI 낮은 순
+  - 입력은 `_collect_stock_data`가 이미 수집한 값만 사용 — **추가 API 호출 0회**. `close_high_20d` / `turnover_ratio`를 `_get_domestic_stock_info`가 이미 받아둔 일봉에서 계산해 동봉
+  - 지시서의 "거래대금 상위 100위" 조건은 **의도적으로 제외** — KOSPI200 유니버스에선 거의 항상 통과라 무효 필터(전체시장용 유동성 스크린)이고, 조건이 늘면 대조군의 변수만 늘어남
+
+## 관찰 전략 구성 (2026-09-03 개편)
+랜덤 벤치마크 버그를 고치자 AI 우위가 0으로 수렴(KOSPI 대형주 스윙 AI -0.29% vs 랜덤 -0.20% = **-0.09%p**). 랜덤은 너무 약한 대조군이라 판정 불가 → 대조군을 강화하고 표본 축적을 가속하는 방향으로 재편. 전부 **구독 없는 관찰 모드**(활성 전략 row만으로 verifier가 채점). 씨드: `scripts/seed_control_strategies.py` (멱등)
+- **`[TEST] 규칙 모멘텀 (AI 대조군)`**: `KOSPI 대형주 스윙` 파라미터·유니버스 **완전 복제** + `rule_breakout`. 변수는 "AI 사용 여부" 하나 → "Gemini가 단순 규칙 대비 값을 하는가"를 직접 겨냥. 현재 시스템에서 가장 중요한 미해결 질문
+- **`[TEST] KOSPI 대형주 스윙 (주기1일)`**: 원본 복제 + `run_interval_days=1`. **보유기간·목표·손절은 원본 유지** — 5일/3%/1.5%로 줄이는 안은 미채택: 왕복 비용(수수료+거래세 ~0.2~0.25%)이 고정이라 폭을 절반으로 줄이면 세후 본전 승률이 36%→39%로 올라가고, "5일 안에 +3%"는 "20일 안에 +6%"와 다른 능력이라 원 전략 검증이 아니라 별개 전략 측정이 됨. 주기만 줄이면 회전율·비용은 그대로고 측정 대상이 원 전략 그대로다
+  - 이 전략 때문에 `run_strategies` 잡을 mon,wed,fri → 평일로 변경 (잡이 주 3회면 interval=1이 무의미)
+  - **표본 겹침 주의**: 주기를 줄이면 연속 run이 같은 시장 구간을 공유 → 200건이 200개 독립 표본이 아님. 승률 표준오차를 √n으로 계산하면 과신
+- **`[TEST] 과매도 반등 (규칙)`**: `rule_oversold`, hold 10 / target 7 / stop 3.5 / pick 3 / KOSPI largecap. 기존 전략이 전부 모멘텀 방향이라 같은 국면에서 동시에 죽는 문제의 상관 분산용
+  - target 7%인 이유: `_validate_strategy`의 **일평균 0.7%/일 상한**에 걸려 hold 10일에서 가능한 최대치. 손절 3.5%는 3%보다 넓게 — 하락 추세 종목은 진입 직후 추가 하락이 흔해 좁은 손절이 구조적으로 불리
+  - RSI 35 / 거래대금 1.5배는 지시서 원안(30 / 2배) 완화 — 원안은 KOSPI200에서 몇 주씩 0건. 완화 후에도 발동이 드물어 **표본 축적은 느릴 것으로 전제**
+- **`[TEST] 실적 카탈리스트` 비활성화**: 관찰 슬롯·Gemini RPD가 유한한데 규칙 대조군이 더 나은 실험이라 교체. **삭제 금지** — `recommendation_runs.strategy_id`가 `ondelete=CASCADE`라 전략을 지우면 과거 run·추천·검증이 전부 소멸. `is_active=False`만
+
+## 랜덤 벤치마크 설계 원칙 (2026-09-03 교정)
+대시보드 `AI 우위 = AI 평균수익 − 랜덤 평균수익`. 이 지표가 **종목 선정력**을 재려면 랜덤 쪽이 AI와 청산 규칙까지 같아야 한다.
+- **버그**: `verifier._verify_random_baselines`가 목표/손절 없이 만기 종가만 썼음 → 랜덤만 단순 보유 수익률. KOSPI 대형주 스윙 랜덤이 **-4.05%**(손절 -3% 규칙에선 불가능한 값)로 나와 발각. 이 상태의 "AI 우위"는 선정력이 아니라 **손절 로직의 효과**를 재고 있었음. 소급 재계산 후 우위 +3.76%p → **-0.09%p**
+- **백테스터(`_compute_random_baseline`)는 원래 맞았고 라이브 경로만 틀렸다** — 청산 로직이 두 군데 복제돼 한쪽만 드리프트. 교정: `verifier.simulate_exit_pnl()`을 **단일 진실 공급원**으로 두고 AI 검증·랜덤 대조군·백테스터가 전부 이 함수를 호출. 청산 모델을 새로 짜지 말 것
+- **표본 크기**: 랜덤은 실매매가 아니라 벤치마크이므로 pick_count(=3)에 맞출 이유가 없다. 3개면 벤치마크 자체의 표준오차가 AI만큼 커져 우위의 오차가 √2배로 부풀어남 → `_RANDOM_BASELINE_N = 40`
+- **유니버스**: 랜덤은 prefilter **이전** 풀(~75개)에서 추출. prefilter도 우리가 만든 로직이라 파이프라인 전체의 엣지를 재는 게 맞음 (의도적 선택)
+- **기간 경계**: `period_start <= b.date <= period_end` — 진입 당일 봉 **포함**. 08:30 실행이라 진입가는 전일 종가이고 당일 봉은 전부 미래 구간. 랜덤만 `<`로 당일을 버리던 것도 교정
+- 소급 재계산: `scripts/recompute_random_baseline.py` (run_id 시드로 재현 가능, `--dry-run` 지원). 검증 기준 = 평균이 `[-손절%, +목표%]` 안에 드는가 (정수 반올림 여유 0.5%p)
+
+## 시장 국면 기록 (2026-09-03)
+전략 성과가 종목 선정 탓인지 시장 국면 탓인지 분리해 보기 위한 **기록 전용** 레이어. `services/trading/market_regime.py`
+- 판정: 진입일(run_date) 기준 **직전 거래일 종가 vs 20일 이동평균** → `above` / `below`. run_date 당일 봉은 제외(08:30 실행 시점 미확정 = 미래 정보 유입 방지)
+- 저장 위치는 `recommendation_runs` (픽 단위 아님). 기준을 나중에 바꿀 수 있게 판정 결과와 원본값(close/ma20)을 함께 저장
+- 소급: `scripts/backfill_market_regime.py` — KIS 지수 일봉을 **1회만** 조회해 date→close 맵으로 캐시하고 run별 로컬 계산 (run마다 다시 긁으면 rate limit 낭비). KRX API 불필요
+- 표시: 전략 상세 화면 국면별 승률/평균수익/랜덤 대비. **건수 병기 + 30건 미만은 흐리게** — 63건을 above/below로 쪼개면 각 30건, 승률 표준오차 ±9%p라 숫자만 보면 국면 차이로 오독하기 쉬움
+- **매매 차단에 쓰지 말 것** — 하방 방어는 A-gate / morning_gate / 뉴스 듀얼시그널 / 손절 담당
 
 ## Circuit Breaker
 - 직전 4건 청산이 전부 손실이면 해당 유저 매수 자동 차단 (4건 미만은 체크 안 함)
@@ -513,7 +550,8 @@ NAVER_CLIENT_SECRET=
 - `get_intraday_status(code)`: 시가/고가/체결강도/거래량 (09:20 장중 체크용)
 - `get_index_change_pct()`: KOSPI(0001)/KOSDAQ(1001) 등락률 — 매수 전 -2% 체크. **휴장일엔 직전 거래일 값을 그대로 반환하므로 시장 조치 전 is_market_open_now() 필수**
 - `is_market_open_day(date)` / `is_market_open_now()`: CTCA0903R 휴장일 조회(날짜별 캐시) + KST 평일 09:00~15:30. 조회 실패 시 개장 간주 (보호 조치를 막지 않는 fail-safe)
-- `_get_domestic_stock_info(code)`: 현재가+RSI+이평선+외국인/기관 순매수+**per/eps** 통합 (runner 종목 데이터 수집용). inquire-price 1회 호출로 price+per+eps 동시 추출 (get_current_price 중복 호출 제거). per/eps는 **trailing(직전 공시 실적) 기준** — forward 추정 서사와 다른 값. 적자기업·데이터없음은 None(0/음수 위장 금지). eps는 KIS가 "6564.00" 문자열 반환 → int(float()) 파싱
+- `_get_domestic_stock_info(code)`: 현재가+RSI+이평선+외국인/기관 순매수+**per/eps**+**close_high_20d/turnover_ratio**(규칙 전략용, 이미 받은 일봉에서 계산 — 추가 호출 없음) 통합 (runner 종목 데이터 수집용). inquire-price 1회 호출로 price+per+eps 동시 추출 (get_current_price 중복 호출 제거). per/eps는 **trailing(직전 공시 실적) 기준** — forward 추정 서사와 다른 값. 적자기업·데이터없음은 None(0/음수 위장 금지). eps는 KIS가 "6564.00" 문자열 반환 → int(float()) 파싱
+- `get_index_daily_series(code, days)`: 지수 일봉 **(날짜, 종가)** 최신순 — 국면 소급 계산용. `get_index_daily_closes`는 종가만 뽑는 얇은 래퍼
 - `get_stock_basic_info(code)`: CTPF1002R 섹터 조회 (매수 직전 MAX_PER_SECTOR 체크용)
 - `get_fx_daily_closes(symbol='FX@KRW', days)`: USD/KRW 환율 일봉 (FHKST03030100, mrkt div 'X')
 - `get_ohlcv_monthly(code, months)`: 월봉 — 1회 호출로 60개월 (PBR 5년 밴드 근사용)
@@ -551,6 +589,20 @@ NAVER_CLIENT_SECRET=
 - `_prefilter_stocks(stock_data, n=20)`: 추세정배열·RSI(~60)·수급·거래량 점수로 75개→20개 압축 (모멘텀 리더 보존 + Stage4 컨텍스트 축소)
 - `_run_stage4_grouped(...)`: 20개를 10개씩 2그룹 분할 → 각 그룹 Stage4 독립 실행 → 확률순 집계. selection_mode=earnings_catalyst면 사전필터 직후 `detect_earnings_catalysts` 1회 호출 → stock_data에 earnings_catalyst 주입 후 stage4_picks에 mode 전달
 - `_is_market_unfavorable(market_theme)`: `_BEAR_KEYWORDS` 감지 → Stage4 스킵 여부 (A-gate, 검증 20건+ 시 활성화)
+- `_run_rule_strategy(strategy, run_date, stock_data, selection_mode)`: 규칙 기반 경로. `run_strategy`가 데이터 수집 직후 `is_rule_mode()`로 분기 → Stage1~4 전체 스킵 → `select_by_rule` → 공용 저장
+- `_persist_and_notify(strategy, run_date, stock_data, picks_result, *, macro/historical/industry/stage4_skipped)`: **AI·규칙 경로 공용** — 지수 레벨 + 시장 국면 + 랜덤 대조군 기록 → run/추천 저장 → 텔레그램. macro 등이 None이면 규칙 전략(MacroAnalysis 저장 생략)
+- `_RANDOM_BASELINE_N = 40`: 랜덤 대조군 표본 크기. pick_count와 무관 (벤치마크는 실매매가 아님)
+
+### app/services/trading/market_regime.py
+- `fetch_kospi_history(client, days)`: KOSPI 일봉 (날짜, 종가) 최신순. **소급 계산 시 1회만 호출해 재사용할 것**
+- `regime_from_history(history, as_of, ma_period=20)`: as_of 당일 봉 제외(미래 정보 차단) → `{close, ma20, state}`
+- `compute_regime(client, as_of)`: 라이브 경로. 실패 시 None 반환 — 국면 기록 실패가 분석을 막지 않는다
+
+### app/services/trading/rule_selector.py
+- `is_rule_mode(selection_mode)` / `select_by_rule(mode, stock_data, pick_count)`: 규칙 선정 진입점
+- `select_breakout`: 20일 신고가 갱신 + 종가>MA5, 돌파 폭 순 / `select_oversold`: RSI≤35 + 거래대금 전일 1.5배, RSI 낮은 순
+- 조건 미충족이면 **빈 목록 반환이 정상** — pick_count 채우려 기준을 낮추지 말 것
+- 임계값(`_OVERSOLD_RSI_MAX`, `_OVERSOLD_TURNOVER_MIN`)은 발동 빈도 확보용 완화값. 데이터 쌓이면 조인다
 
 ### app/services/trading/executor.py
 - `TradeExecutor.execute_pending_buys()`: 09:20 잡 진입점. 플래그 체크(morning_gate/news/cb) → 지수 -2% 체크 → 크로스 시그널 계산 → 전략별 매수
@@ -588,6 +640,8 @@ NAVER_CLIENT_SECRET=
 - `_should_run(db, strategy)`: run_interval_days 경과 여부 체크
 
 ### app/services/trading/verifier.py
+- `simulate_exit_pnl(bars, entry, target_pct, stop_loss_pct, period_start, period_end)`: **청산 모델 단일 진실 공급원**. 손절-우선 + 만기 종가 + 목표/손절가 정수 반올림 + ±클램프. AI 검증·랜덤 대조군·백테스터가 전부 이 함수를 쓴다 — 청산 로직을 다른 곳에 새로 짜면 예전처럼 한쪽만 드리프트한다
+- `_verify_random_baselines(db, client, today)`: 랜덤 대조군 pnl 계산. AI와 **동일 청산 규칙**(위 함수) 적용. 표본은 run 저장 시 기록된 entries(40개)
 - `run_verifications(db)`: 검증 대상(verification 없음 + run_date+hold_days ≤ today) 순회 → `_verify_recommendation()`
 - `_verify_recommendation(rec, run, strategy, client, today)`: 일봉 날짜순 순회 → 손절/목표가 중 먼저 터치되는 쪽 판정 (같은 날이면 손절 우선). pnl_pct는 실제 exit_price 기준. period_start/end는 반드시 strftime("%Y%m%d") — get_ohlcv() bar.date가 YYYYMMDD 포맷이므로 ISO 포맷과 혼용 금지
 - `_update_performance_score(db, version_no)`: 검증 완료 후 prompt_version.performance_score 갱신
@@ -597,7 +651,7 @@ NAVER_CLIENT_SECRET=
 - `run_backtest(strategy, base_date)`: base_date ±12일/3일간격 최대 9개 날짜 실행 → 집계
 - `_run_single_date()`: 과거데이터 수집 → **`StrategyRunner._prefilter_stocks` 적용(라이브 경로 일치)** → `stage4_picks_backtest` → 저장 → 검증. target_price/stop_loss_price는 picks에 없으므로 진입가×전략 파라미터로 산출(확률·목표가 폐기 이후 필수)
 - `_verify_pick()`: 일봉 날짜순 손절-우선 청산 모델(verifier.py와 동일 convention). pnl 비현실값(분할/상폐) ±클램프(-100~+200%)
-- `_compute_random_baseline(stock_data, target_date, strategy, client)`: 동일 풀 랜덤 픽 + **AI와 동일 목표/손절 청산·클램프** 적용(공정 비교)
+- `_compute_random_baseline(stock_data, target_date, strategy, client)`: 동일 풀 랜덤 표본(`_RANDOM_BASELINE_N`) + `verifier.simulate_exit_pnl` 공용 청산 적용(공정 비교)
 - **구조적 한계**: 매크로를 스텁(`market_theme="백테스트"`)함 — Stage1 그라운딩은 현재시점이라 과거날짜 lookahead 방지. 따라서 **매크로 정합 효과는 백테스트로 측정 불가, 기술기준만 평가**됨
 
 ### app/services/watchlist/analyzer.py
