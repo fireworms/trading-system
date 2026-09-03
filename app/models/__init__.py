@@ -7,6 +7,7 @@ from app.models.recommendation import (
 from app.models.position import Position, PositionStatus
 from app.models.stock_master import StockMaster
 from app.models.app_config import AppConfig
+from app.models.daily_price import DailyPrice
 
 __all__ = [
     "User", "Permission", "BrokerAccount", "UserRole", "BrokerType", "AccountType",
@@ -16,4 +17,5 @@ __all__ = [
     "Position", "PositionStatus",
     "StockMaster",
     "AppConfig",
+    "DailyPrice",
 ]

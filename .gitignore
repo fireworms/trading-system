@@ -43,3 +43,6 @@ frontend/.env*.local
 Thumbs.db
 .claude/
 backups/
+
+# KRX 스펙 문서 (KRX 배포물 — 공개 레포에 싣지 않음)
+docs/krx/

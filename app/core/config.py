@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     naver_client_id: str | None = Field(None, alias="NAVER_CLIENT_ID")
     naver_client_secret: str | None = Field(None, alias="NAVER_CLIENT_SECRET")
 
+    # KRX 오픈API (일별 전종목 시세 벌크 적재) — 미설정 시 어댑터가 available=False 반환
+    krx_api_key: str | None = Field(None, alias="KRX_API_KEY")
+
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24
 

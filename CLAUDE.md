@@ -44,6 +44,7 @@ trading_system/
 │   │   ├── news_event.py        # NewsEvent (뉴스 감시 + 시장 영향 누적)
 │   │   ├── watchlist.py         # WatchlistStock, StockAnalysis (중장기 수동매매 일지)
 │   │   ├── investor_flow.py     # InvestorFlowDaily (관심종목 일별 수급 적재, 공용)
+│   │   ├── daily_price.py       # DailyPrice (KRX 일별 전종목 시세, 공용 — 백테스트 튜닝용)
 │   │   └── research.py          # ResearchNote (AI 리서치 탭 — 자유 질문 리서치 기록)
 │   ├── api/
 │   │   ├── users.py             # 회원가입, 로그인, 브로커계좌 CRUD (hts_id 수정 포함)
@@ -77,6 +78,8 @@ trading_system/
 │   │   │   └── events.py        # 이벤트 자동 감지 (DART 공시/수급·주가 급변/실적 캘린더 + 자동 분석, 16:30 잡)
 │   │   ├── research/
 │   │   │   └── analyst.py       # AI 리서치 (질문→종목 식별→관심종목 스냅샷 재사용→마크다운 답변)
+│   │   ├── krx/
+│   │   │   └── client.py        # KRX 오픈API 어댑터 (일별 전종목 벌크 — 호스트 data-dbg.krx.co.kr)
 │   │   ├── dart/
 │   │   │   └── client.py        # DART OpenDART 공시 어댑터 (corp_code 매핑 캐시 + 최근 14일 공시)
 │   │   ├── naver/
@@ -221,6 +224,13 @@ trading_system/
 - UNIQUE(stock_code, trade_date), 유저 스코핑 없음 (공용 시장 데이터)
 - KIS FHKST01010900이 최근 30거래일만 반환 → 16:10 잡 + 분석 실행이 매일 upsert해 60/120일 누적 구축
 - **백필 불가** — 2026-07-02부터 축적, 커버리지 미달 구간은 부분합으로 위장하지 않고 None + 일수 명시
+
+### daily_price ← KRX 일별 전종목 시세 (2026-09-03)
+- 복합 PK (stock_code, trade_date), upsert. stock_name/market/sector_type/OHLC/change/change_pct/volume/trade_value/market_cap/listed_shares
+- 인덱스: trade_date, (trade_date, trade_value) — 거래대금 순위 조회용
+- KIS는 종목당 1회 호출이라 전종목 히스토리가 비현실적인데 **KRX는 하루치 전종목(2765행)을 1회 호출**로 준다
+- 용도: 규칙 전략 파라미터(신고가 기간·거래대금 컷) 백테스트 튜닝. **라이브 전략은 KRX 없이 KIS만으로 동작** — 전제조건 아님
+- 금액 단위 원 (명세서에 단위 미기재, 실측 대조로 확정 — SK하이닉스 시총 1,178조)
 
 ### research_notes ← AI 리서치 탭 (자유 질문 종목 리서치, 2026-08-10)
 - research_id (PK, UUID), user_id (FK, CASCADE), stock_code (idx), stock_name
@@ -398,6 +408,26 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 - 표시: 전략 상세 화면 국면별 승률/평균수익/랜덤 대비. **건수 병기 + 30건 미만은 흐리게** — 63건을 above/below로 쪼개면 각 30건, 승률 표준오차 ±9%p라 숫자만 보면 국면 차이로 오독하기 쉬움
 - **매매 차단에 쓰지 말 것** — 하방 방어는 A-gate / morning_gate / 뉴스 듀얼시그널 / 손절 담당
 
+## KRX 오픈API (2026-09-03 실검증)
+전종목 히스토리 벌크 수집용. `app/services/krx/client.py` + `scripts/load_krx_daily.py`
+
+**실검증에서 문서·통념과 달랐던 것 (재삽질 방지)**
+- **호스트는 `data-dbg.krx.co.kr`** — `openapi.krx.co.kr`은 포털(로그인 UI) 전용이라 모든 API 경로가 404다. 404가 HTML 에러페이지로 오기 때문에 인증 문제로 오인하기 쉽다
+- **401 = 해당 서비스 미이용신청 / 404 = 경로 오류**로 구분된다. 서비스별 개별 신청 필요 (2026-09-03 기준 `idx/kosdaq_dd_trd`만 미신청)
+- **`ISU_CD`의 의미가 엔드포인트마다 다르다**: 일별매매=6자리 단축코드, 종목기본정보=12자리 ISIN(단축코드는 `ISU_SRT_CD`). 조인 시 주의
+- **`idx/krx_dd_trd`에 코스피 지수가 없다** — KRX 시리즈 40종(밸류업·KRX 300 등)만. 코스피는 `idx/kospi_dd_trd` 별도. 시장 국면 소급은 KIS `get_index_daily_series`로 이미 해결돼 KRX 불필요
+- **파라미터는 `basDd` 하나뿐** — 기간 조회가 없어 하루씩 호출해야 한다 (명세서 확인)
+- 주말·공휴일·미래 날짜는 에러가 아니라 **`200 + 빈 배열`**
+- **당일 데이터 공표는 20:23 이후** (당일 20:23 조회 시 0행). 스케줄 잡을 붙이면 밤늦게 돌릴 것
+- **호출 제한은 명세서에 없음** — sleep 0.5초로 44회 연속 호출 시 실패 0. 로더가 실패 누적 시 자동 백오프(최대 8초, 5회 연속 실패면 중단)
+- 응답 래퍼는 항상 `OutBlock_1`, 모든 값이 문자열. 데이터 제공 시작 2010-01-04
+
+**적재 운영**
+- 진행 지점을 app_config(`krx_load_last_date`)에 저장 → `--resume`으로 이어받기
+- `--status`로 적재 현황, `--dry-run`으로 DB 미반영 조회
+- 첫 실행 완료(2026-09-03): 2026-08-04~09-02, 21거래일 58,045행
+- 스펙 문서(docx)는 `docs/krx/`에 있으나 **git 미추적** (KRX 배포 문서라 공개 레포에 싣지 않음)
+
 ## Circuit Breaker
 - 직전 4건 청산이 전부 손실이면 해당 유저 매수 자동 차단 (4건 미만은 체크 안 함)
 - app_config: `cb_paused_{user_id}`, `cb_reason_{user_id}`
@@ -469,6 +499,7 @@ TELEGRAM_BOT_TOKEN=      # 선택
 DART_API_KEY=            # 선택 — 관심종목 공시 어댑터 (미설정 시 data_flags 폴백)
 NAVER_CLIENT_ID=         # 선택 — 관심종목 뉴스 어댑터
 NAVER_CLIENT_SECRET=
+KRX_API_KEY=             # 선택 — KRX 오픈API (일별 전종목 벌크 적재)
 ```
 - KIS API 키/계좌번호는 .env 사용 안 함 → DB broker_accounts에 Fernet 암호화 저장
 - HTS 아이디는 DB broker_accounts.hts_id (프론트 포지션 페이지 > 계좌 설정에서 입력)
