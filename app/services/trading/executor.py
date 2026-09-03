@@ -15,6 +15,7 @@ from app.models.strategy import Strategy, UserStrategy
 from app.models.recommendation import Recommendation, RecommendationRun
 from app.models.user import AccountType, BrokerAccount
 from app.services.trading.virtual_broker import get_trading_client
+from app.services.trading.market_keywords import is_cautious
 
 logger = logging.getLogger(__name__)
 
@@ -341,8 +342,6 @@ class TradeExecutor:
         if cross_signal:
             logger.info("Cross signal map: %s", {k: v for k, v in cross_signal.items() if v > 0})
 
-        bearish_keywords = ["하락", "위험", "침체", "약세", "bear", "bearish"]
-
         for sub in subs:
             strategy: Strategy = sub.strategy
 
@@ -379,7 +378,8 @@ class TradeExecutor:
             market_theme = ""
             if run.raw_response and isinstance(run.raw_response.get("macro"), dict):
                 market_theme = (run.raw_response["macro"].get("market_theme") or "").lower()
-            is_bearish = any(kw in market_theme for kw in bearish_keywords)
+            # 감액 판정 — A-gate(Stage4 스킵)보다 약한 신호를 잡는다. market_keywords 참조
+            is_bearish = is_cautious(market_theme)
 
             try:
                 invest_override = None
@@ -571,10 +571,20 @@ class TradeExecutor:
         new_status: PositionStatus,
         client,
     ) -> None:
+        # 실시간 모니터가 이미 같은 포지션을 청산 중이면 양보한다 (이중 매도 방지).
+        # 폴링(10분)과 실시간 틱이 동시에 조건을 만족시키는 창이 실제로 존재한다.
+        from app.services.trading.realtime_monitor import get_monitor
+        monitor = get_monitor()
+        if not monitor.try_claim(str(pos.position_id)):
+            logger.info("Close skipped — already closing elsewhere: %s %s",
+                        pos.position_id, pos.stock_code)
+            return
+
         try:
             client.sell_market_order(pos.stock_code, pos.quantity)
         except Exception as e:
             logger.error("Sell order failed for %s: %s", pos.stock_code, e)
+            monitor.release(str(pos.position_id))   # 청산 미성립 → 선점 해제
             return
 
         import time as _time
@@ -595,9 +605,8 @@ class TradeExecutor:
             pos.entry_price, exit_price, float(pnl),
         )
 
-        # 실시간 모니터에서 제거 (이미 없으면 무시)
-        from app.services.trading.realtime_monitor import get_monitor
-        get_monitor().remove(str(pos.position_id), pos.stock_code)
+        # 실시간 모니터에서 제거 (선점 플래그도 함께 해제됨)
+        monitor.remove(str(pos.position_id), pos.stock_code)
 
         from app.services.telegram.notifier import get_notifier
         from app.models.user import User

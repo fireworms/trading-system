@@ -641,6 +641,7 @@ KRX_API_KEY=             # 선택 — KRX 오픈API (일별 전종목 벌크 적
 - `monitor_positions()`: HOLDING 포지션 순회 → 만료/time-based stop 처리 (손절/익절은 realtime_monitor가 우선)
 - `_check_position(pos)`: 목표가/손절가 계산 + trailing 모드 체크 + 타임아웃(+1거래일 신고점 없으면 TARGET_HIT) 처리
 - `_close_position(pos, status, price)`: 시장가 매도 → 1초 대기 → `get_today_fill_price(side="01")`로 실 체결가 → exit_price 저장 → 모니터 제거
+- `_close_position(pos, ...)`: **매도 전 `monitor.try_claim()`으로 선점** — 폴링 청산과 실시간 청산이 동시에 매도 주문을 내던 레이스 차단. 주문 실패 시 `release()`로 해제 (2026-09-03)
 - `_check_circuit_breaker(user_id)`: 직전 4건 청산 전부 손실 시 cb_paused 플래그 설정
 - `emergency_close_all_positions(reason)`: 전략 HOLDING 포지션 즉시 청산 (뉴스 CRITICAL+KOSPI -2% 시). 무전략 수동매수는 제외 + 소유자 알림만 (`_notify_manual_positions_excluded`)
 - `tighten_stop_losses(reason)`: 수익 중 전략 포지션 현재가 기준 trailing 전환 (뉴스 WARNING+KOSPI -1% 시). 무전략 포지션 제외 (strategy 없인 손절선 계산 불가)
@@ -653,7 +654,15 @@ KRX_API_KEY=             # 선택 — KRX 오픈API (일별 전종목 벌크 적
 - `on_price(code, price_data)`: 매 틱 bid_price 기준 `_should_close()` → 조건 충족 시 `asyncio.create_task`로 즉시 청산
 - `_should_close(watch, price)`: 손절가 이탈 → "stop_loss", 목표가 도달(trailing OFF) → "target_hit", trailing ON → peak 갱신 또는 trailing 손절
 - `force_trailing(position_id, peak_price)`: DB + 인메모리 동시 trailing 전환 (뉴스 조치 시 사용)
-- `add(watch)` / `remove(position_id, code)`: 매수/청산 시 executor가 호출해 동기화
+- `try_claim(position_id)` / `release(position_id)`: 청산 선점/해제. **executor 폴링 청산도 반드시 이걸 거쳐야 한다** — 증권사 잔고 거절이 2차 방어지만 가상계좌엔 그 방어가 없다
+- `add(watch)` / `remove(position_id, code)`: 매수/청산 시 executor가 호출해 동기화 (remove는 선점 플래그도 정리)
+
+### app/services/trading/market_keywords.py (2026-09-03)
+매크로 서술 기반 판단 키워드의 단일 관리 지점. 예전엔 runner와 executor에 따로 박혀 조용히 드리프트했다.
+- `BEAR_KEYWORDS` / `is_bearish()`: A-gate — "너무 나빠서 분석조차 안 함" → Stage4 스킵
+- `CAUTION_KEYWORDS` / `is_cautious()`: 매수 감액 — "분석은 했지만 조심" → 매수금 50%
+- **두 리스트를 같게 만들지 말 것**: A-gate가 먼저 같은 market_theme로 Stage4를 스킵하면 추천이 0개라 감액 로직이 도달 불가능한 죽은 코드가 된다. 감액은 A-gate가 안 잡는 약한 신호를 잡아야 의미가 있다
+- executor 구 리스트의 **"위험"·"하락"은 제거** — "위험선호 회복", "위험자산 선호 개선", "하락 압력 완화"는 한국 시장에서 **강세** 표현이라 강세 국면에 매수금을 반토막 내는 오탐. 부분 문자열 매칭이라 더 위험했다
 
 ### app/services/news/watcher.py
 - `check_news(db)`: gemini-2.5-flash + google_search → severity 판정. 실패 시 20초 후 1회 재시도, 최종 실패 시 `check_failed` 마커 반환 (NORMAL로 위장 금지)

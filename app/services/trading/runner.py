@@ -18,11 +18,13 @@ from app.services.gemini.analyzer import GeminiAnalyzer, PickResult
 from app.services.kis.client import get_kis_client, get_kis_client_from_account
 from app.services.trading.market_regime import compute_regime
 from app.services.trading.rule_selector import is_rule_mode, select_by_rule
+from app.services.trading.market_keywords import BEAR_KEYWORDS
 
 logger = logging.getLogger(__name__)
 
 # Stage4 A-gate: 이 키워드가 market_theme에 있으면 하락장 신호
-_BEAR_KEYWORDS = ["하락장", "폭락", "급락", "약세", "하락세", "조정장", "침체", "위기", "crash", "bear", "매도세"]
+# 실제 정의는 market_keywords.py — executor의 감액 키워드와 한곳에서 관리 (드리프트 방지)
+_BEAR_KEYWORDS = BEAR_KEYWORDS
 # 데이터가 이 건수 이상 쌓여야 키워드 A-gate 활성화 (충분한 calibration 전 오작동 방지)
 _GATE_MIN_DATA = 20
 # 수치 A-gate 임계값: 전일 KOSPI 등락률 / 최근 3거래일 누적 (2026-06-10 도입.

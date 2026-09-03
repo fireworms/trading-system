@@ -52,6 +52,23 @@ class RealtimePositionMonitor:
     def add(self, watch: PositionWatch) -> None:
         self._by_code.setdefault(watch.stock_code, {})[watch.position_id] = watch
 
+    def try_claim(self, position_id: str) -> bool:
+        """청산 시도를 선점한다. 이미 다른 경로가 청산 중이면 False.
+
+        폴링 청산(executor.monitor_positions)과 실시간 청산(on_price)이 같은
+        포지션에 동시에 매도 주문을 내는 레이스를 막는다. 증권사 잔고 거절이
+        2차 방어로 있지만, 가상계좌는 자체 시뮬이라 그 방어가 없다.
+        단일 이벤트루프/GIL 기준으로 이 체크-후-등록은 원자적이다.
+        """
+        if position_id in self._closing:
+            return False
+        self._closing.add(position_id)
+        return True
+
+    def release(self, position_id: str) -> None:
+        """선점 해제 — 매도 주문이 실패해 청산이 성립하지 않았을 때."""
+        self._closing.discard(position_id)
+
     def remove(self, position_id: str, stock_code: str) -> None:
         bucket = self._by_code.get(stock_code, {})
         bucket.pop(position_id, None)
