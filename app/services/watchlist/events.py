@@ -52,6 +52,11 @@ _FLOW_MIN_COVERAGE = 20         # 배수 판정에 필요한 최소 적재 일�
 _PRICE_SPIKE_PCT = 5.0
 
 _SEEN_DISCLOSURES_KEY = "watchlist_seen_disclosures"   # {rcept_no: rcept_dt}
+# 미확정 공시(조회공시 답변·공정공시 등)는 후속 확정이 뜨기 전까지 미해결 상태로 남는다.
+# 무효화_조건에서 "수동 확인"으로 방치되던 항목 중 유일하게 자동 확인이 가능한 유형이라
+# 별도 추적한다 (2026-09-07). {rcept_no: {code, title, base, date}}
+_PENDING_DISCLOSURES_KEY = "watchlist_pending_disclosures"
+_PENDING_TTL_DAYS = 60
 _EARNINGS_NOTICE_KEY = "watchlist_earnings_notice"     # {deadline_iso: [14, 7]}
 _LAST_SCAN_KEY = "watchlist_events_last_scan"          # KST 날짜
 
@@ -82,8 +87,43 @@ def _classify_disclosure(title: str) -> str | None:
     return None
 
 
+def _disclosure_base(title: str) -> str:
+    """괄호 수식어를 뗀 공시 제목 — "해명(미확정)"과 "해명(확정)"을 같은 건으로 잇는다."""
+    base = title.split("(")[0].strip()
+    return base or title.strip()
+
+
+def _resolve_pending(pending: dict, stock_code: str, title: str,
+                     rcept_no: str, rcept_dt: str, url: str | None) -> list[dict]:
+    """이번 공시가 기존 미확정 건의 후속인지 판정 → 후속 이벤트 생성 + pending에서 제거."""
+    if "미확정" in title:
+        return []
+    base = _disclosure_base(title)
+    out = []
+    for no, info in list(pending.items()):
+        if info.get("code") != stock_code:
+            continue
+        if info.get("base") != base:
+            continue
+        pending.pop(no, None)
+        out.append({
+            "kind": "disclosure",
+            "category": "후속확정",
+            "analyze": True,   # 미확정이 확정되는 순간이 판단 재료가 바뀌는 지점
+            "trigger_type": "disclosure",
+            "line": (f"공시[후속확정] {title} ({rcept_dt}) — "
+                     f"{info.get('date')} 미확정 건 '{info.get('title')}'의 후속"),
+            "url": url,
+        })
+    return out
+
+
 def detect_disclosures(db, stock_code: str, today: date) -> list[dict]:
-    """당일(주말 경과분 포함 최근 3일) 신규 중요 공시. rcept_no로 중복 억제."""
+    """당일(주말 경과분 포함 최근 3일) 신규 중요 공시. rcept_no로 중복 억제.
+
+    미확정 공시는 pending에 적재하고, 같은 건의 후속 확정 공시가 뜨면 자동 분석까지
+    트리거한다 — 사람이 손으로 확인하라고 남겨두던 유일한 자동화 가능 항목이다.
+    """
     from app.services.dart.client import fetch_recent_disclosures
 
     result = fetch_recent_disclosures(stock_code, end_date=today, days=3)
@@ -93,28 +133,43 @@ def detect_disclosures(db, stock_code: str, today: date) -> list[dict]:
         return []
 
     seen = _load_json_config(db, _SEEN_DISCLOSURES_KEY)
+    pending = _load_json_config(db, _PENDING_DISCLOSURES_KEY)
     events = []
     for it in result.get("items", []):
         rcept_no = it.get("rcept_no")
         if not rcept_no or rcept_no in seen:
             continue
-        seen[rcept_no] = it.get("date") or today.strftime("%Y%m%d")
-        category = _classify_disclosure(it.get("title", ""))
+        title = it.get("title", "")
+        rcept_dt = it.get("date") or today.strftime("%Y%m%d")
+        seen[rcept_no] = rcept_dt
+
+        # 미해결 건의 후속인지 먼저 판정 (분류와 무관 — 후속은 그 자체로 트리거급)
+        events.extend(_resolve_pending(pending, stock_code, title,
+                                       rcept_no, rcept_dt, it.get("url")))
+
+        category = _classify_disclosure(title)
         if category is None:
             continue  # seen에는 기록 (재분류 목적 재알림 없음), 알림은 중요 유형만
+        if "미확정" in title:
+            pending[rcept_no] = {"code": stock_code, "title": title,
+                                 "base": _disclosure_base(title), "date": rcept_dt}
         events.append({
             "kind": "disclosure",
             "category": category,
             "analyze": category in _ANALYZE_CATEGORIES,
             "trigger_type": "earnings" if category == "실적" else "disclosure",
-            "line": f"공시[{category}] {it.get('title')} ({it.get('date')})",
+            "line": (f"공시[{category}] {title} ({rcept_dt})"
+                     + (" — 미확정, 후속 공시 자동 추적 중" if "미확정" in title else "")),
             "url": it.get("url"),
         })
 
-    # 30일 경과분 정리 후 저장
+    # 30일 경과분 정리 후 저장 (pending은 후속이 늦게 오므로 60일 보관)
     cutoff = (today - timedelta(days=30)).strftime("%Y%m%d")
     seen = {k: v for k, v in seen.items() if (v or "") >= cutoff}
     set_config(db, _SEEN_DISCLOSURES_KEY, json.dumps(seen))
+    p_cutoff = (today - timedelta(days=_PENDING_TTL_DAYS)).strftime("%Y%m%d")
+    pending = {k: v for k, v in pending.items() if (v.get("date") or "") >= p_cutoff}
+    set_config(db, _PENDING_DISCLOSURES_KEY, json.dumps(pending))
     return events
 
 

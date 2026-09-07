@@ -141,37 +141,44 @@ def normalize_conditions(raw) -> list[dict]:
 #   ④ 최근 밴드 안의 환율 레벨 — 이례 신호가 아님
 # 판정 재료가 전부 input_snapshot + 적재 수급이라 LLM에 되묻지 않고 앱이 거른다.
 # 결함 조건은 삭제가 아니라 manual 강등 — 서술은 남기되 자동 감시에서만 뺀다.
+#
+# 양쪽 꼬리 보강 (2026-09-07): 위 ①~④는 전부 "너무 쉬운 조건"만 본다. 실측에서
+# 드러난 반대편 결함 — 현재 수준에서 너무 멀어 **사실상 절대 발동하지 않는 조건**
+# (환율 1560원 vs 현재 1346 / 영업이익률 50% vs 현재 76%) — 은 전부 통과했다.
+# 항상 초록이거나 항상 노랑인 신호등은 신호등이 아니다. ⑤~⑧이 그 반대편을 막는다:
+#   ⑤ 과거 창 발동률이 FIRE_RATE_MAX 초과 (평상시 수준) 또는 0 (도달 불가)
+#   ⑥ 환율 임계가 지평 대비 _FX_SIGMA_MAX σ 밖
+#   ⑦ 분기 마진 임계가 최근 마진 대비 _MARGIN_SIGMA_MAX σ 밖
+#   ⑧ 컨센서스 하향폭이 실적 붕괴 수준 (_CONSENSUS_MAX_DROP 초과)
 
 _PROXIMITY_RATIO = 0.7      # 임계의 70% 이미 도달 → 사실상 예정된 사건
 _YOY_MAX_ABS = 100.0        # YoY 성장률 임계 상한 (%)
 _CONSENSUS_MIN_DROP = 2.0   # 컨센서스 통상 변동폭 — 이 미만 하향은 노이즈
+_CONSENSUS_MAX_DROP = 25.0  # 이 이상 하향은 실적 붕괴 — 논거 반증 신호로는 늦다
 _YOY_METRICS = {"op_yoy_pct", "revenue_yoy_pct", "ni_yoy_pct"}
 
 
 def _flow_state(db, stock_code: str, investor: str, direction: str,
                 days: int) -> tuple[float | None, int, int]:
-    """(기간 누적 백만원, 현재 연속일, 적재 일수) — 스크리닝용 원시값."""
-    from app.models.investor_flow import InvestorFlowDaily
-    rows = db.execute(
-        select(InvestorFlowDaily)
-        .where(InvestorFlowDaily.stock_code == stock_code)
-        .order_by(InvestorFlowDaily.trade_date.desc())
-        .limit(130)
-    ).scalars().all()
-    if not rows:
+    """(기간 누적 백만원, 현재 연속일, 확정 적재 일수) — 스크리닝용 원시값.
+
+    창은 확정 데이터만으로 채운다 — 미확정 당일 행(NULL)이 자리를 차지하면
+    "5거래일 누적"이 4일치로 계산돼 게이트가 헐거워진다 (2026-09-07 교정).
+    """
+    from app.services.watchlist.calibration import flow_series
+
+    vals = flow_series(db, stock_code, investor)
+    if not vals:
         return None, 0, 0
-    attr = f"{investor}_ntby_amt"
     sign = -1 if direction == "sell" else 1
     streak = 0
-    for r in rows:
-        v = getattr(r, attr)
-        if v is not None and sign * float(v) > 0:
+    for v in vals:
+        if sign * v > 0:
             streak += 1
         else:
             break
-    vals = [float(getattr(r, attr)) for r in rows[:days] if getattr(r, attr) is not None]
-    cum = sum(vals) if len(rows) >= days and vals else None
-    return cum, streak, len(rows)
+    cum = sum(vals[:days]) if len(vals) >= days else None
+    return cum, streak, len(vals)
 
 
 def _screen_reason(db, stock_code: str, snapshot: dict | None, cond: dict) -> str | None:
@@ -180,6 +187,9 @@ def _screen_reason(db, stock_code: str, snapshot: dict | None, cond: dict) -> st
     snap = snapshot or {}
 
     if ct == "flow":
+        from app.services.watchlist.calibration import (
+            FIRE_RATE_MAX, MIN_WINDOWS, flow_series, fire_rate, rolling_sums, streak_rate)
+
         cum, streak, coverage = _flow_state(
             db, stock_code, p["investor"], p["direction"], p["days"])
         if p["metric"] == "cum_amount":
@@ -193,26 +203,59 @@ def _screen_reason(db, stock_code: str, snapshot: dict | None, cond: dict) -> st
                     return (f"현재 누적이 임계의 {progress:.0%}에 도달 "
                             f"({_fmt_eok(cum)} / 기준 {p['amount_eok']:,.0f}억) — "
                             f"조건이 아니라 예정된 사건")
-        elif p["metric"] == "consecutive_days" and coverage:
-            if streak >= p["days"]:
-                return f"분석 시점에 이미 충족 (현재 연속 {streak}거래일)"
-            if streak >= p["days"] * _PROXIMITY_RATIO:
-                return (f"현재 연속 {streak}거래일 / 기준 {p['days']}거래일 — "
-                        f"임계 임박, 감시 가치 낮음")
+            # 발동률 — 현재값 근접만으로는 "평상시 수준"인 임계를 못 잡는다
+            sums = rolling_sums(flow_series(db, stock_code, p["investor"]), p["days"])
+            if len(sums) >= MIN_WINDOWS:
+                rate = fire_rate(sums, p["amount_eok"] * 100, p["direction"])
+                if rate > FIRE_RATE_MAX:
+                    return (f"과거 {len(sums)}개 {p['days']}일 창 중 {rate:.0%}에서 충족 — "
+                            f"평상시 수준이라 무효화 신호가 아님")
+                if rate == 0:
+                    return (f"과거 {len(sums)}개 {p['days']}일 창에서 한 번도 충족된 적 없음 — "
+                            f"사실상 발동 불가")
+        elif p["metric"] == "consecutive_days":
+            if coverage:
+                if streak >= p["days"]:
+                    return f"분석 시점에 이미 충족 (현재 연속 {streak}거래일)"
+                if streak >= p["days"] * _PROXIMITY_RATIO:
+                    return (f"현재 연속 {streak}거래일 / 기준 {p['days']}거래일 — "
+                            f"임계 임박, 감시 가치 낮음")
+            vals = flow_series(db, stock_code, p["investor"])
+            if len(vals) >= MIN_WINDOWS:
+                rate = streak_rate(vals, p["days"], p["direction"])
+                if rate > FIRE_RATE_MAX:
+                    return (f"적재 {len(vals)}거래일 중 {rate:.0%} 구간에서 "
+                            f"{p['days']}일 연속이 관측됨 — 평상시 수준")
+                if rate == 0 and p["days"] > len(vals) / 4:
+                    return (f"적재 {len(vals)}거래일에서 {p['days']}일 연속이 "
+                            f"한 번도 관측된 적 없음 — 사실상 발동 불가")
         return None
 
     if ct == "fx":
         fx = snap.get("fx_usdkrw") or {}
         if not fx.get("available"):
             return None
-        cur, lo, hi = fx.get("current"), fx.get("low_3m"), fx.get("high_3m")
+        cur = fx.get("current")
+        # 기준 진폭은 1개월 — 3개월 밴드는 추세 이동을 담아 "밴드 밖"이 곧 도달 불가가
+        # 되는 구간이 있다 (2026-09-07 교정). 구 스냅샷은 3개월로 폴백.
+        lo = fx.get("low_1m", fx.get("low_3m"))
+        hi = fx.get("high_1m", fx.get("high_3m"))
+        window = "1개월" if fx.get("high_1m") is not None else "3개월"
         if cur is not None:
             if (p["op"] == "above" and cur >= p["level"]) or \
                (p["op"] == "below" and cur <= p["level"]):
                 return f"분석 시점에 이미 충족 (현재 {cur:,.1f})"
         if lo is not None and hi is not None and lo <= p["level"] <= hi:
-            return (f"기준 {p['level']:,.0f}원이 최근 3개월 밴드({lo:,.0f}~{hi:,.0f}) 안 — "
+            return (f"기준 {p['level']:,.0f}원이 최근 {window} 진폭({lo:,.0f}~{hi:,.0f}) 안 — "
                     f"이례 신호가 아님")
+        # 반대편 꼬리 — 밴드 밖이기만 하면 되는 게 아니라 도달 가능해야 한다
+        from app.services.watchlist.calibration import _FX_SIGMA_MAX, _fx_sigma_move
+        sigma = _fx_sigma_move(fx)
+        if sigma and cur is not None:
+            dist = abs(p["level"] - cur) / sigma
+            if dist > _FX_SIGMA_MAX:
+                return (f"기준 {p['level']:,.0f}원은 현재 {cur:,.0f}원에서 {dist:.1f}σ "
+                        f"(1개월 1σ ≈ {sigma:,.0f}원) — 사실상 발동 불가")
         return None
 
     if ct == "valuation":
@@ -223,6 +266,9 @@ def _screen_reason(db, stock_code: str, snapshot: dict | None, cond: dict) -> st
         pct = band.get("pbr_percentile_5y") if band.get("available") else None
         if pct is not None and pct >= p["value"]:
             return f"분석 시점에 이미 충족 (현재 퍼센타일 {pct:.1f}%)"
+        if p["value"] >= 98:
+            return (f"기준 퍼센타일 {p['value']:.0f}% — 5년 최고 밸류 구간이라 "
+                    f"사실상 발동 불가")
         return None
 
     if ct == "earnings":
@@ -237,11 +283,24 @@ def _screen_reason(db, stock_code: str, snapshot: dict | None, cond: dict) -> st
             hit = val <= p["value"] if p["op"] == "below" else val >= p["value"]
             if hit:
                 return f"대상 분기가 이미 공시됐고 분석 시점에 이미 충족 (실측 {val:+.2f})"
+        # 반대편 꼬리 — 최근 마진에서 너무 멀면 실적이 무너져도 안 켜진다
+        if p["metric"] == "op_margin_q_pct":
+            from app.services.watchlist.calibration import _MARGIN_SIGMA_MAX, margin_sigma
+            ms = margin_sigma(snap)
+            if ms:
+                latest, sd = ms
+                dist = abs(latest - p["value"]) / sd
+                if dist > _MARGIN_SIGMA_MAX:
+                    return (f"기준 {p['value']:.1f}%는 최근 분기 영업이익률 {latest:.1f}%에서 "
+                            f"{dist:.1f}σ (분기 변화폭 σ {sd:.1f}%p) — 사실상 발동 불가")
         return None
 
     if ct == "consensus":
         if p["drop_pct"] < _CONSENSUS_MIN_DROP:
             return (f"하향 임계 {p['drop_pct']:.1f}% — 컨센서스 통상 변동폭 이내로 노이즈에 반응")
+        if p["drop_pct"] > _CONSENSUS_MAX_DROP:
+            return (f"하향 임계 {p['drop_pct']:.0f}% — 실적 붕괴 수준이라 "
+                    f"논거 반증 신호로는 너무 늦다")
         return None
 
     return None
@@ -286,17 +345,13 @@ def _fmt_eok(v_million: float) -> str:
 
 
 def _check_flow(db, stock_code: str, p: dict) -> tuple[str, str]:
-    from app.models.investor_flow import InvestorFlowDaily
-    rows = db.execute(
-        select(InvestorFlowDaily)
-        .where(InvestorFlowDaily.stock_code == stock_code)
-        .order_by(InvestorFlowDaily.trade_date.desc())
-        .limit(130)
-    ).scalars().all()
-    if not rows:
+    """수급 조건 판정. 창은 확정 데이터만으로 채운다 (미확정 당일 행 제외)."""
+    from app.services.watchlist.calibration import flow_series
+
+    vals = flow_series(db, stock_code, p["investor"])
+    if not vals:
         return "pending_data", "수급 적재 이력 없음 — 16:10 잡 축적 후 판정 가능"
 
-    attr = f"{p['investor']}_ntby_amt"
     sign = -1 if p["direction"] == "sell" else 1
     label = ("외국인" if p["investor"] == "frgn" else "기관") + \
             (" 순매도" if p["direction"] == "sell" else " 순매수")
@@ -304,26 +359,22 @@ def _check_flow(db, stock_code: str, p: dict) -> tuple[str, str]:
 
     if p["metric"] == "consecutive_days":
         streak = 0
-        for r in rows:
-            v = getattr(r, attr)
-            if v is not None and sign * float(v) > 0:
+        for v in vals:
+            if sign * v > 0:
                 streak += 1
             else:
                 break
         if streak >= days:
             return "triggered", f"{label} 연속 {streak}거래일 (기준 {days}거래일)"
-        if streak == len(rows) and len(rows) < days:
+        if streak == len(vals) and len(vals) < days:
             # 적재분 전체가 한 방향 — 그 이전이 확인 불가라 판정 보류 (부분 데이터로 단정 금지)
-            return "pending_data", f"적재 {len(rows)}거래일 전부 {label} — {days}거래일 판정엔 커버리지 부족"
+            return "pending_data", f"적재 {len(vals)}거래일 전부 {label} — {days}거래일 판정엔 커버리지 부족"
         return "ok", f"현재 {label} 연속 {streak}거래일 — 기준 {days}거래일 미달"
 
     # cum_amount
-    if len(rows) < days:
-        return "pending_data", f"적재 {len(rows)}거래일 — {days}거래일 누적 판정은 커버리지 도달 후"
-    vals = [float(getattr(r, attr)) for r in rows[:days] if getattr(r, attr) is not None]
-    if not vals:
-        return "pending_data", "수급 금액 데이터 결측"
-    cum = sum(vals)
+    if len(vals) < days:
+        return "pending_data", f"확정 적재 {len(vals)}거래일 — {days}거래일 누적 판정은 커버리지 도달 후"
+    cum = sum(vals[:days])
     threshold = p["amount_eok"] * 100  # 억원 → 백만원
     hit = cum <= -threshold if p["direction"] == "sell" else cum >= threshold
     state = "triggered" if hit else "ok"

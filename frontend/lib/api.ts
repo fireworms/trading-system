@@ -417,6 +417,10 @@ export interface WatchInvalidationCondition {
   check_type?: "flow" | "fx" | "valuation" | "earnings" | "consensus" | "manual" | string;
   params?: Record<string, any>;
   spec_note?: string;
+  // 앱이 분포에서 임계를 재계산했을 때의 원안 + 근거 (2026-09-07)
+  calibration?: { "원안"?: Record<string, any>; "근거"?: string };
+  // "반증" 이면 반증 전용 패스에서 나온 조건 (강세 논거를 감춘 별도 호출)
+  origin?: string;
 }
 
 // 16:20 잡이 갱신하는 조건별 자동 체크 상태 (items는 무효화_조건과 위치 정렬)
@@ -435,6 +439,8 @@ export interface WatchAnalysisResult {
   "논거"?: string;
   "단기_촉매"?: { "이벤트"?: string; "예상_시점"?: string; "성격"?: string }[];
   "장기_논거"?: string;
+  // 강세 논거를 감춘 별도 호출로 생성된 반대편 관점 (확증 편향 차단, 2026-09-07)
+  "반증_관점"?: { model?: string; "항목"?: { "관측"?: string; "근거"?: string; "약세_해석"?: string }[] };
   "무효화_조건"?: (string | WatchInvalidationCondition)[];
   "밸류_코멘트"?: string;
   // 앱이 역산한 valuation_scenarios 표에 대한 해석 (새 목표주가 생성 아님)

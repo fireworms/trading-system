@@ -124,12 +124,34 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
         <p className="text-sm text-gray-200 leading-relaxed whitespace-pre-wrap">{r["장기_논거"] || "-"}</p>
       </Section>
 
+      {/* 반증 관점 — 강세 논거를 감춘 별도 호출로 생성 (확증 편향 차단) */}
+      {(r["반증_관점"]?.["항목"] ?? []).length > 0 && (
+        <Section title="반증 관점 — 같은 데이터를 반대로 읽으면" tone="border-rose-800/60">
+          <p className="text-xs text-gray-500 mb-2">
+            핵심 주장만 넘기고 <span className="text-gray-400">위 논거는 감춘 채</span> 별도로 생성했습니다.
+            근거를 인용하지 못한 일반론은 앱이 제거합니다.
+          </p>
+          <ul className="flex flex-col gap-2.5">
+            {(r["반증_관점"]?.["항목"] ?? []).map((c, i) => (
+              <li key={i} className="text-sm text-rose-100/90 leading-relaxed">
+                {c["약세_해석"]}
+                <span className="block text-xs text-gray-500 mt-0.5">
+                  관측: {c["관측"]} · 근거: {c["근거"]}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
+
       <Section title="무효화 조건 — 이 신호가 뜨면 이 판단은 틀린 것" tone="border-amber-700/60">
         <ul className="flex flex-col gap-2">
           {(r["무효화_조건"] ?? []).map((c, i) => {
             const text = typeof c === "string" ? c : c["조건"] ?? "";
             const checkType = typeof c === "string" ? "manual" : c.check_type ?? "manual";
             const method = typeof c === "string" ? undefined : c.params?.["확인_방법"];
+            const calib = typeof c === "string" ? undefined : c.calibration?.["근거"];
+            const fromBear = typeof c === "string" ? false : c.origin === "반증";
             const st = detail.condition_status?.items?.[i];
             const badge = st
               ? COND_BADGE[st.state] ?? COND_BADGE.error
@@ -142,10 +164,20 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
                   {badge.label}
                 </span>
                 <span>
+                  {fromBear && (
+                    <span className="mr-1.5 text-xs px-1 py-0.5 rounded bg-rose-900/50 text-rose-300">
+                      반증
+                    </span>
+                  )}
                   {text}
                   {(st?.detail || method) && (
                     <span className="block text-xs text-gray-500 mt-0.5">
                       {st?.detail ?? `확인: ${method}`}
+                    </span>
+                  )}
+                  {calib && (
+                    <span className="block text-xs text-gray-600 mt-0.5">
+                      임계 산정: {calib}
                     </span>
                   )}
                 </span>

@@ -75,6 +75,7 @@ trading_system/
 │   │   │   ├── analyzer.py      # 관심종목 분석 (수집→스냅샷→Gemini 구조화→저장)
 │   │   │   ├── flow_store.py    # 일별 수급 적재/60·120일 누적 (KIS 30거래일 한계 보완)
 │   │   │   ├── invalidation.py  # 무효화_조건 자동 판정 (결정론 체커 + 16:20 잡 + 전이 알림)
+│   │   │   ├── calibration.py   # 무효화_조건 임계 캘리브레이션 (분포 기반 — 임계는 LLM이 아닌 앱이 정함)
 │   │   │   └── events.py        # 이벤트 자동 감지 (DART 공시/수급·주가 급변/실적 캘린더 + 자동 분석, 16:30 잡)
 │   │   ├── research/
 │   │   │   └── analyst.py       # AI 리서치 (질문→종목 식별→관심종목 스냅샷 재사용→마크다운 답변)
@@ -216,6 +217,7 @@ trading_system/
   - **condition_status** (JSONB, 2026-07-16): 무효화_조건 자동 체크 상태 — {checked_at, items:[{state, detail, check_type, triggered_at, notified_at}]}, items는 무효화_조건과 위치 정렬. 16:20 잡이 갱신
   - **watchlist_stocks에 FK 없음** — 관심종목 삭제해도 일지 영구 보존
 - 상세 설계·KIS 필드 디코딩 근거는 docs/watchlist_spec.md + 메모리 watchlist_tab.md 참조
+- **임계 캘리브레이션 + 반증 패스 (2026-09-07)**: 무효화_조건 params의 수치 임계를 앱이 분포에서 재계산해 덮어씀(`calibration` 필드에 원안+근거 보존). `반증_관점`(강세 논거를 감춘 별도 호출의 반대 해석 목록) 필드 추가, 반증 패스가 낸 조건은 `origin: "반증"`. 스냅샷 fx에 `high_1m`/`low_1m`/`daily_vol_pct` 추가
 - **판단 구조 보강 (2026-08-28)**: `핵심_주장`(무효화_조건이 반증할 명제 — 매수/관망 결론·진입가 강제는 미채택, ai_probability 폐기 근거와 충돌) + `밸류_시나리오_코멘트` 필드 추가. 스냅샷에 `valuation_scenarios`(멀티플 밴드 역산 함의주가, 상단·하단 대칭 + peak_earnings/영업외요인/장부가시점차 경고) · `pbr_recent_q`(최근 분기 BPS 기준 PBR 병기) · `ni_margin_q_pct`+`ni_over_op_note`(순이익>영업이익 시 per_ttm 왜곡 플래그, YTD 차분 회귀 감시 겸용) 추가. 수급 일평균은 결측일 제외한 실제 거래일 수를 분모로 노출
 - **스냅샷 v2 (2026-07-02, 실검증 2026-07-03 완료)**: fx_usdkrw(USD/KRW 3개월 추세) / market(KOSPI 레벨·1/3개월 + 종목 상대수익률) / PER 4종 병기(trailing·TTM·최근분기 연환산·컨센서스 forward — trailing 왜곡 대응) / 수급 페이스 판정 문자열(5일 vs 30일 일평균, 앱이 확정 — LLM 재계산 금지) / 개인 순매수 5/20/30일 / PBR 5년 밴드 근사(월봉÷당시 연간 BPS, 근사 명시)
 
@@ -427,6 +429,23 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 - `--status`로 적재 현황, `--dry-run`으로 DB 미반영 조회
 - 첫 실행 완료(2026-09-03): 2026-08-04~09-02, 21거래일 58,045행
 - 스펙 문서(docx)는 `docs/krx/`에 있으나 **git 미추적** (KRX 배포 문서라 공개 레포에 싣지 않음)
+
+## 무효화_조건 임계 설계 원칙 (2026-09-07)
+관심종목 탭의 무효화_조건이 **형식만 갖추고 기능은 없던** 상태를 교정. 적재 수급 64거래일 롤링 검증에서 LLM이 낸 "외인 5거래일 순매도 1.5조"가 60개 창 중 **35개(58%)**에서 충족됐다 — 5일 누적 중앙값이 -1.93조라 평상시보다 나은 상태를 무효화 신호로 부르고 있었다. 반대로 "환율 1560원"(현재 1346 대비 7.9σ)·"영업이익률 50%"(현재 76.3% 대비 5.3σ)는 도달 불가. **항상 켜져 있거나 절대 안 켜지는 조건은 둘 다 신호가 아니다.**
+- **역할 분리**: LLM은 *무엇을 감시할지*(투자자/방향/지표/기간 — 논거에서 나오는 정성 판단), 앱은 *얼마에서 켤지*(임계 수치). LLM은 입력의 숫자를 읽지만 서로 곱하고 나누지 않는다 — 분포 계산은 애초에 앱 일이다. `services/watchlist/calibration.py`가 목표 발동률 10% 지점을 계산해 params를 덮어쓰고, **조건 서술도 `condition_text`로 재생성**한다 (임계만 바꾸면 텍스트가 거짓말을 한다). 근거는 `cond["calibration"]`에 보존 → 프론트 노출 + 사후 검증
+- **양쪽 꼬리 게이트**: `invalidation._screen_reason`의 기존 ①~④(너무 쉬운 조건)에 ⑤~⑧ 추가 — 과거 창 발동률 `FIRE_RATE_MAX`(30%) 초과 또는 0%, 환율 3.5σ 밖, 분기 마진 3σ 밖, 컨센 하향 25% 초과. 캘리브레이션이 못 미치는 경로(표본 부족·미지원 지표)의 백스톱
+- **환율 기준은 1개월 진폭** (`high_1m`/`low_1m`) — 3개월 밴드는 추세 이동을 담고 있어 "밴드 밖"이 곧 도달 불가가 되는 구간이 있다 (2026-09-07 실측: 밴드 폭 205원 = 월 변동성의 7.6σ). 구 스냅샷은 3개월 폴백
+- **null 창 금지**: 수급 창은 `calibration.flow_series`(확정 데이터만)로 채운다. 미확정 당일 행이 자리를 차지하면 "5거래일 누적"이 4일치로 판정되고 연속일 카운트는 0으로 리셋된다
+- **레짐 종속 한계**: 외인이 3개월 내내 판 구간에선 p10 자체가 커져 임계가 느슨해진다("절대적 이례"가 아니라 "최근 N거래일 대비 이례" — 근거 문구에 명시). 창 30개 미만이면 **캘리브레이션을 포기**한다 (임계를 지어내지 않음 — flow_store의 부분합 위장 금지와 같은 철학)
+- **자동 청산에 쓰지 말 것** — 감시는 기계, 매매 판단은 사람 (중장기 수동매매 탭 성격 유지)
+
+## 반증 전용 패스 (2026-09-07)
+같은 컨텍스트에서 강세 논거를 쓴 뒤 무효화_조건을 이어 쓰면 **방금 세운 논리를 진지하게 공격하지 못한다**. 실사례: 증권사 리포트에서 "HBM4 판가 +70%"는 인용하고 같은 문단의 "경쟁사 대비 제한적 상승률 우려"는 버렸다 — 같은 숫자를 반대 프레임으로 읽은 것.
+- `analyzer._run_falsification_pass`: 핵심_주장 + 스냅샷 + 공시/뉴스만 넘기고 **논거/장기_논거/밸류_코멘트는 감춘다**. 주장은 봐야 정밀하게 반박하고, 지지 논거 체인을 보면 거기에 끌려간다
+- **근거 인용 강제**: 각 항목은 스냅샷 필드명 또는 dart_disclosures/news_recent의 실제 항목을 인용해야 한다. 인용 없는 일반론("경쟁 심화 가능성")은 앱이 제거 — 안 그러면 반증 섹션이 장식이 된다
+- 결과 조건은 정규화→캘리브레이션→스크리닝을 거쳐 본 분석 조건에 병합(`origin: "반증"`, 총 `_MAX_CONDITIONS=8` 상한, `_cond_key`로 중복 제거). 실패해도 분석은 유효
+- 비용은 분석당 Gemini +1회 — 수동/이벤트 트리거라 RPD 영향 없음
+- **인용 문단 보존은 미채택**: 그라운딩 검색 원문을 통제할 수 없고 네이버 어댑터는 제목만 준다. 반증 패스가 같은 문제를 실질적으로 해결
 
 ## Circuit Breaker
 - 직전 4건 청산이 전부 손실이면 해당 유저 매수 자동 차단 (4건 미만은 체크 안 함)
@@ -705,7 +724,8 @@ KRX_API_KEY=             # 선택 — KRX 오픈API (일별 전종목 벌크 적
 - 프롬프트 규칙: 앱 계산 파생지표(judgment/상대수익률/trend_note/per_ttm/퍼센타일) **재계산 금지, 그대로 인용** / per_trailing 왜곡 시 per_ttm·forward 우선 / 환율=외인 수급 공통 팩터로 종목 고유 요인과 구분
 - **뉴스 최신성 가드 (2026-07-03)**: 프롬프트에 14일 창 앵커 + 주가 변동 동인 필수 검색(앱이 1개월/당일 수치 확정 주입) / 파싱 후 14일 내 기사 0건이면 재검색 1회 → 그래도 없으면 `data_flags.news_recency` 명시 후 저장(억지 인용 강제 안 함). 배경: 그라운딩이 앵커 없이는 구 자료로 수렴 (7/2 분석 = 4월 기사 재탕)
 - **외부 데이터 어댑터 (2026-07-03)**: 스냅샷에 `dart_disclosures`(DART 공식 API 최근 14일 공시 — 확정 데이터) + `news_recent`(네이버 뉴스 최신순 10건, 제목 중복 제거) 주입. Gemini 검색은 "발견"이 아닌 해석·시장 반응·내용 보강 담당으로 역할 조정. 어댑터 실패 시 분석 안 죽고 data_flags 기록 (공시 "0건"은 실패가 아닌 확정 사실 — status 013은 available=True). DART는 티커가 아닌 8자리 corp_code 사용 — corpCode.xml 매핑을 `~/.dart_corp_code.json` 캐시(30일 TTL, 미매핑 시 강제갱신하되 24h 최소간격)
-- `run_analysis(db, user_id, ...)`: 수집 → gemini-2.5-flash 검색 그라운딩 → JSON 파싱 → StockAnalysis 저장. **무효화_조건 비면 1회 강제 재요청** 후 실패 시 ValueError. 무효화_조건은 `normalize_conditions`로 구조 검증 후 저장, 완료 시 조건 감시 안내 텔레그램 (best-effort)
+- `run_analysis(db, user_id, ...)`: 수집 → gemini-2.5-flash 검색 그라운딩 → JSON 파싱 → StockAnalysis 저장. **무효화_조건 비면 1회 강제 재요청** 후 실패 시 ValueError. 조건 파이프라인 순서 = `normalize_conditions`(구조 검증) → `calibrate_conditions`(임계 재계산) → `screen_conditions`(품질 게이트, 결함 시 1회 재요청 — 재요청분도 캘리브레이션 통과) → `_run_falsification_pass`(반증 병합). 완료 시 조건 감시 안내 텔레그램 (best-effort)
+- `_run_falsification_pass(db, analyzer, result, snapshot, ...)`: 핵심_주장만 넘긴 반증 전용 호출 → `result["반증_관점"]` 저장 + 무효화_조건 병합. 근거 미인용 항목 제거, `_cond_key`로 중복 제거. result를 제자리에서 갱신
 - **무효화_조건 구조화 (2026-07-16)**: `{조건, check_type, params}` 객체 배열 — flow(수급 연속일/누적액)/fx(환율 레벨)/valuation(PBR 5년 퍼센타일)/earnings(대상 분기 실적, 공시 후 판정)/consensus(분석 시점 컨센 대비 하향%)/manual(정성, 확인_방법 명시). params 임계값은 입력 데이터에서 도출 강제, manual에 날짜 지어내기 금지
 
 ### app/services/watchlist/invalidation.py
@@ -713,13 +733,21 @@ KRX_API_KEY=             # 선택 — KRX 오픈API (일별 전종목 벌크 적
 - `normalize_conditions(raw)`: LLM 출력 검증 — 문자열(구 포맷)/스펙 불완전 조건은 오판 대신 manual 강등 (spec_note 기록)
 - `evaluate_condition(...)`: 타입별 체크 → (state, detail). state: ok/triggered/**pending_data**(미공시 분기·수급 커버리지 부족 — 부분 데이터로 단정 금지)/manual/error
 - `check_analysis(...)`: 최신 분석 1건의 조건 전체 판정 → condition_status 갱신, **미충족→충족 전이만** 반환 (경계 왕복 노이즈 방지, 해제 후 재충족은 재알림)
-- `screen_conditions(db, code, snapshot, conditions)` / `downgrade_rejected(...)`: **조건 품질 게이트 (2026-08-28)** — 구조는 유효하나 감시 가치가 없는 조건을 결정론으로 탈락(추가 API·LLM 0회). ①이미 충족/임계 70% 도달(예정된 사건) ②earnings YoY 임계 |100%| 초과(기저효과 종속) ③valuation `below`(싸지는 건 강세 논거 반증 아님) ④fx 임계가 최근 3개월 밴드 안. 탈락분은 사유와 함께 1회 재요청 → 그래도 남으면 삭제 아닌 manual 강등
+- `screen_conditions(db, code, snapshot, conditions)` / `downgrade_rejected(...)`: **조건 품질 게이트 (2026-08-28)** — 구조는 유효하나 감시 가치가 없는 조건을 결정론으로 탈락(추가 API·LLM 0회). ①이미 충족/임계 70% 도달(예정된 사건) ②earnings YoY 임계 |100%| 초과(기저효과 종속) ③valuation `below`(싸지는 건 강세 논거 반증 아님) ④fx 임계가 최근 1개월 진폭 안 ⑤과거 창 발동률 30% 초과/0% ⑥fx 3.5σ 밖 ⑦분기 마진 3σ 밖 ⑧컨센 하향 25% 초과 (⑤~⑧은 "절대 안 켜지는 조건"을 막는 반대편 꼬리, 2026-09-07). 탈락분은 사유와 함께 1회 재요청 → 그래도 남으면 삭제 아닌 manual 강등
 - `check_all_watchlist_invalidations()`: 16:20 잡 진입점 — 관심종목 순회(삭제된 종목 자동 제외), 환율은 공통 팩터라 1회만 조회, 전이 시 소유 유저에게만 텔레그램. 수동 트리거: POST /admin/invalidation-check/trigger
 - `send_condition_notice(...)`: 분석 완료 시 자동 감시 대상/수동 확인 필요 조건 1회 안내
 - consensus 기준값은 input_snapshot.consensus_estimate (분석 시점) — 사후 재구성 데이터 재사용
 - **자동 청산 없음** — 감시는 기계, 매매 판단은 사람 (중장기 수동매매 탭 성격 유지)
 - analysis_date는 라벨 — KIS 입력은 항상 수집 시점 (snapshot.collected_at 기록)
 - 1차 범위: 수동 트리거만. 이벤트 자동 감지(실적/공시/수급·주가 급변)는 후속. 공매도 잔고는 미구현(KIS 일별추이 API 있어 후속 가능), 대차잔고는 KIS 미제공
+
+### app/services/watchlist/calibration.py
+- 무효화_조건 임계 캘리브레이션 — **임계는 LLM이 아니라 앱이 정한다** (설계 배경은 위 "무효화_조건 임계 설계 원칙")
+- `calibrate_conditions(db, code, snapshot, conditions)`: 타입별 임계 재계산 → params 교체 + `조건` 텍스트 재생성 + `calibration` 근거 기록. 표본 부족·데이터 결측이면 **손대지 않는다**
+- `flow_series(db, code, investor)`: 확정 수급만 최신순 반환 — **모든 수급 창 계산의 단일 진입점**. NULL 행이 창을 먹지 않게 하는 것이 요점
+- `rolling_sums` / `fire_rate` / `streak_rate`: 발동률 계산 — 캘리브레이션과 품질 게이트가 공유
+- `condition_text(check_type, params)`: params에서 조건 서술 결정론 재생성 (임계-텍스트 불일치 방지)
+- 상수: `TARGET_FIRE_RATE=0.10` / `FIRE_RATE_MAX=0.30` / `MIN_WINDOWS=30`. 꼬리가 조건 방향과 반대면(순매도 조건인데 p10조차 순매수) 캘리브레이션 포기 — abs()로 뒤집으면 상시 발동 임계가 나온다
 
 ### app/services/watchlist/flow_store.py
 - `upsert_investor_flows(db, code, rows)`: KIS 일별 수급 → investor_flow_daily upsert (**중복 일자는 최신 응답으로 갱신** — 장중 분석이 미확정 0 행을 먼저 넣으면 16:10 잡 확정값이 영영 못 덮던 동결 버그를 2026-07-20 do_update로 교정)
@@ -728,7 +756,7 @@ KRX_API_KEY=             # 선택 — KRX 오픈API (일별 전종목 벌크 적
 
 ### app/services/watchlist/events.py
 - 이벤트 자동 감지 + 트리거급 자동 분석 (16:30 잡 `scan_watchlist_events`, 감지는 전부 결정론 — Gemini 0회, 휴장일 스킵)
-- `detect_disclosures`: DART 당일(3일 창) 신규 공시 — rcept_no 중복 방지(app_config `watchlist_seen_disclosures`, 30일 프루닝), 중요 유형 키워드 분류(실적/자본변동/구조개편/주요사항/대형계약/자사주/지배구조/리스크/조회공시 — 자본변동에 증권신고서·해외증권·예탁증서·신주발행 포함, ADR/해외DR 희석 누락 교정 2026-08-28), 미매칭 잡공시 무시. "영업(잠정)실적"처럼 괄호 낀 실전 표기 매칭 주의
+- `detect_disclosures`: DART 당일(3일 창) 신규 공시 — rcept_no 중복 방지(app_config `watchlist_seen_disclosures`, 30일 프루닝) + **미확정 공시 후속 추적**(`watchlist_pending_disclosures`, 60일 — "(미확정)" 건을 적재해두고 같은 base 제목의 확정 공시가 뜨면 `후속확정` 이벤트 + 자동 분석. 무효화_조건에서 "수동 확인"으로 방치되던 항목 중 유일하게 자동화 가능한 유형. DART 제목엔 공백이 없어 base는 첫 "(" 앞까지. 도입 이전 건 시드: `scripts/backfill_pending_disclosures.py`), 중요 유형 키워드 분류(실적/자본변동/구조개편/주요사항/대형계약/자사주/지배구조/리스크/조회공시 — 자본변동에 증권신고서·해외증권·예탁증서·신주발행 포함, ADR/해외DR 희석 누락 교정 2026-08-28), 미매칭 잡공시 무시. "영업(잠정)실적"처럼 괄호 낀 실전 표기 매칭 주의
 - `detect_flow_spike`: 당일 외인/기관 |순매수| ≥ 30일 평균의 3배 + 10억원 이상 (적재 20일 미만이면 침묵)
 - `detect_price_spike`: 당일 등락률 ±5% 이상
 - `earnings_calendar_notice`: 정기보고서 법정 제출기한(분기·반기 45일/사업보고서 90일) D-14/D-7 안내 — 한국은 발표일 사전 확정 공표가 드물어 법정 기한만 결정론 계산 가능, 잠정실적 조기 공시는 공시 감지가 담당. 주말 밀림 허용(스테이지 기록으로 중복 방지)

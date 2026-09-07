@@ -58,7 +58,9 @@ _ANALYSIS_PROMPT = """당신은 데이터를 구조화하는 애널리스트입�
      · 이미 충족됐거나 임계의 70% 이상 도달한 조건 금지. 그건 조건이 아니라 예정된 사건이다 — 입력 데이터의 현재 수치(investor_flow 누적, pbr_percentile_5y, fx 현재값)를 먼저 확인하고 거기서 의미 있게 떨어진 지점을 잡을 것.
      · earnings의 YoY 성장률(op_yoy_pct/revenue_yoy_pct/ni_yoy_pct) 임계는 전년 동기 수준에 종속돼 논거와 무관하게 충족/붕괴한다. op_margin_q_pct 같은 절대 수준 지표를 우선하고, YoY를 쓰더라도 임계 절대값 100%를 넘기지 말 것.
      · valuation은 above(고평가 진입) 방향만 의미가 있다. 밸류가 싸지는 것(below)은 강세 논거의 반증이 아니다.
-     · fx 임계는 fx_usdkrw의 최근 3개월 밴드(low_3m~high_3m) 바깥이어야 이례 신호다. 밴드 안의 레벨은 평상시 변동이다.
+     · fx 임계는 fx_usdkrw의 최근 1개월 진폭(low_1m~high_1m) 바깥이어야 이례 신호다. 그 안의 레벨은 평상시 변동이다. 단 너무 멀면(1개월 지평 변동성 대비 3.5σ 초과) 영원히 발동하지 않으니 도달 가능한 범위로 잡을 것 — high_3m/low_3m은 추세 이동을 담고 있어 그 바깥을 요구하면 도달 불가 임계가 되기 쉽다.
+     · 반대편도 같은 결함이다 — 현재 수준에서 지나치게 먼 임계(예: 현재 영업이익률 76%인데 기준 50%)는 실적이 무너져도 켜지지 않는다. 항상 켜져 있거나 절대 안 켜지는 조건은 둘 다 신호가 아니다.
+   ▸ 임계값의 최종 결정은 앱이 한다: 앱이 적재 수급 분포·환율 변동성·분기 마진 변동폭에서 "과거 10%에서만 발동하는 지점"을 계산해 params의 수치를 덮어쓴다. 당신이 정할 것은 **무엇을 감시할지**(투자자/방향/지표/대상 기간)이고, 수치는 입력 데이터에서 도출한 합리적 초기값이면 된다. 숫자를 정교하게 맞추려 애쓰기보다 감시 대상 선택이 논거와 정합적인지에 집중할 것.
 5. 앱이 계산해 넣은 파생 지표는 재계산하지 말고 그대로 인용할 것 — investor_flow의 frgn_pace/orgn_pace judgment 문자열, market의 상대수익률/relative_note, fx_usdkrw의 trend_note, per_ttm, pbr_band_5y 퍼센타일, valuation_scenarios의 함의주가. 직접 나눗셈/비율 계산 금지.
 6. PER 시점 구분: per_trailing은 직전 공시 실적 기준이라 실적 급변 구간에서 왜곡됨 — income_single_q 추세와 괴리가 크면 per_ttm(최근 4개 분기 합산)과 per_forward_consensus를 우선해 밸류를 평가할 것.
 7. 환율은 외국인 수급의 공통 팩터 — 외국인 순매도가 fx_usdkrw 추세와 동행하는 시장 공통 요인인지, market의 상대수익률상 종목 고유 요인인지 구분해 서술할 것.
@@ -79,6 +81,44 @@ _ANALYSIS_PROMPT = """당신은 데이터를 구조화하는 애널리스트입�
   "밸류_코멘트": "현재 밸류에이션 평가 — 자기 과거 PER 밴드(per_band_annual)와 PBR 5년 퍼센타일(pbr_band_5y) 대비 위치 중심. per_ttm/per_trailing 괴리가 크면 그 이유를 명시. 업종 대비는 데이터 없으면 언급하지 말 것.",
   "뉴스_출처": [{{"제목": "...", "매체": "...", "날짜": "YYYY-MM-DD", "url": "..."}}]
 }}"""
+
+_FALSIFICATION_PROMPT = """당신은 아래 명제를 **반증하는 것만**이 임무인 검증 담당자입니다. 이 명제를 지지하는 논거는 의도적으로 제공되지 않습니다.
+
+[종목] {stock_name}({stock_code}) — 섹터: {sector}
+[분석 기준일] {analysis_date}
+
+[검증 대상 명제]
+{claim}
+
+[입력 데이터 — KIS 실측 + 확정 공시/뉴스]
+{snapshot_json}
+
+[임무]
+위 명제가 **틀렸을 경우 지금 데이터에 이미 나타나 있을 흔적**을 찾으세요. 같은 수치를 약세로 읽는 방법, 낙관 서사가 빠뜨리기 쉬운 항목(경쟁 구도, 이익의 질, 수급 주체 이탈, 밸류 기저, 희석 요인)을 우선 보세요.
+
+[규칙]
+1. 모든 항목은 입력 데이터의 **구체적 근거를 인용**해야 합니다 — 스냅샷 필드명(예: investor_flow.frgn_ntby_30d, income_single_q, per_band_annual) 또는 dart_disclosures/news_recent의 실제 항목(제목+날짜). 인용할 근거가 없으면 그 항목은 쓰지 마세요.
+2. 근거 없는 일반론 금지 — "경쟁 심화 가능성", "업황 둔화 우려" 같은 어디에나 붙는 서술은 그 자체로 무효입니다. 이 종목 이 시점의 데이터에서만 나올 수 있는 관찰이어야 합니다.
+3. 검색은 명제에 불리한 사실 확인에만 쓰세요. 확인된 사실만 인용하고 날짜를 명시하세요. 반증 재료가 실제로 빈약하면 억지로 채우지 말고 적은 수만 쓰세요 (빈 배열도 허용).
+4. 주가 방향 단언·목표가 생성 금지. 당신은 "이 명제가 깨지는 경로"를 서술할 뿐입니다.
+5. 앱이 계산해 넣은 파생 지표(judgment 문자열, 상대수익률, per_ttm, 퍼센타일, valuation_scenarios)는 재계산하지 말고 그대로 인용하세요.
+6. 무효화_조건의 params 수치 임계는 앱이 분포에서 재계산해 덮어씁니다. 무엇을 감시할지에 집중하세요.
+7. 출력은 아래 JSON 형식만. 백틱이나 설명 문장 없이 JSON 객체 하나만.
+
+[출력 JSON 형식]
+{{
+  "반대_해석": [{{"관측": "데이터에서 확인되는 사실", "근거": "스냅샷 필드명 또는 공시/기사 제목+날짜", "약세_해석": "이 사실이 명제를 어떻게 위협하는가"}}],
+  "무효화_조건": [{{"조건": "관측 가능한 신호 서술", "check_type": "flow|fx|valuation|earnings|consensus|manual", "params": {{...}}}}]
+}}
+
+[무효화_조건 params 구조 — 위 형식과 동일하게 쓸 것]
+- flow: {{"investor": "frgn"|"orgn", "direction": "sell"|"buy", "metric": "consecutive_days"|"cum_amount", "days": 거래일수, "amount_eok": 억원 (cum_amount일 때만)}}
+- fx: {{"op": "above"|"below", "level": 원 단위 숫자}}
+- valuation: {{"metric": "pbr_percentile_5y", "op": "above", "value": 0~100}}
+- earnings: {{"period": "YYYYMM", "metric": "op_margin_q_pct"|"op_yoy_pct"|"revenue_yoy_pct"|"ni_yoy_pct", "op": "below"|"above", "value": 숫자}}
+- consensus: {{"year": "YYYY", "metric": "operating_profit"|"eps"|"revenue", "drop_pct": 하향 임계 %}}
+- manual: {{"확인_방법": "무엇으로 확인하는지"}}"""
+
 
 _INVALIDATION_RETRY_SUFFIX = """
 
@@ -193,6 +233,15 @@ def _summarize_fx(client: KISClient) -> dict:
         trend = "원/달러 하락 추세 — 원화 강세 진행 (외인 원화자산에 환차익 방향)"
     else:
         trend = "원/달러 횡보"
+    # 일간 변동성 — 환율 무효화_조건 임계를 σ 기준으로 잡기 위한 앱 파생값
+    # (레벨만 있으면 "밴드 밖"이라는 이유로 도달 불가능한 임계가 통과한다)
+    daily_rets = [(closes[i] / closes[i + 1] - 1) * 100
+                  for i in range(len(closes) - 1) if closes[i + 1]]
+    daily_vol = None
+    if len(daily_rets) >= 20:
+        mean = sum(daily_rets) / len(daily_rets)
+        daily_vol = round(
+            (sum((r - mean) ** 2 for r in daily_rets) / (len(daily_rets) - 1)) ** 0.5, 3)
     return {
         "available": True,
         "pair": "USD/KRW",
@@ -204,6 +253,11 @@ def _summarize_fx(client: KISClient) -> dict:
         "change_3m_pct": chg_3m,
         "high_3m": max(closes),
         "low_3m": min(closes),
+        # 1개월 진폭 — 무효화 임계의 "평상시 변동" 기준. 3개월 밴드는 추세 이동을
+        # 담고 있어(예: 1551→1346) 밴드 밖을 요구하면 도달 불가 임계가 된다.
+        "high_1m": max(closes[:21]),
+        "low_1m": min(closes[:21]),
+        "daily_vol_pct": daily_vol,
         "trend_note": (f"3개월 전 {rate_3m} → 1개월 전 {rate_1m} → 현재 {cur} ({trend})"
                        if rate_3m and rate_1m else trend),
     }
@@ -785,6 +839,85 @@ def _price_move_note(price: dict) -> str:
 
 
 # ------------------------------------------------------------------ #
+# 반증 전용 패스 — 강세 논거를 감춘 채 핵심_주장만 반박시킨다
+# ------------------------------------------------------------------ #
+
+_MAX_CONDITIONS = 8   # 조건이 많아지면 감시가 아니라 목록이 된다
+
+
+def _cond_key(c: dict):
+    """중복 판정 키 — 같은 대상을 두 번 감시하지 않도록."""
+    ct, p = c.get("check_type"), c.get("params") or {}
+    if ct == "flow":
+        return (ct, p.get("investor"), p.get("direction"), p.get("metric"))
+    if ct == "fx":
+        return (ct, p.get("op"))
+    if ct == "valuation":
+        return (ct,)
+    if ct == "earnings":
+        return (ct, p.get("period"), p.get("metric"))
+    if ct == "consensus":
+        return (ct, p.get("year"), p.get("metric"))
+    return (ct, str(c.get("조건", ""))[:40])
+
+
+def _run_falsification_pass(db, analyzer, result: dict, snapshot: dict, stock_code: str,
+                            stock_name: str, sector: str | None, analysis_date: date) -> None:
+    """핵심_주장만 넘겨 반증 관점을 별도 생성 → 반대_해석 저장 + 무효화_조건 병합.
+
+    논거/장기_논거/밸류_코멘트는 **의도적으로 넘기지 않는다** — 주장은 봐야 정밀하게
+    반박하고, 지지 논거 체인을 보면 거기에 끌려간다. result를 제자리에서 갱신한다.
+    """
+    from app.services.watchlist.calibration import calibrate_conditions
+    from app.services.watchlist.invalidation import (
+        downgrade_rejected, normalize_conditions, screen_conditions)
+
+    claim = (result.get("핵심_주장") or "").strip()
+    if not claim:
+        logger.info("핵심_주장 없음 (%s) — 반증 패스 스킵", stock_code)
+        return
+
+    prompt = _FALSIFICATION_PROMPT.format(
+        stock_name=stock_name,
+        stock_code=stock_code,
+        sector=sector or "미분류",
+        analysis_date=str(analysis_date),
+        claim=claim,
+        snapshot_json=json.dumps(snapshot, ensure_ascii=False, indent=1),
+    )
+    bear, _, bear_model = analyzer.grounded_json(prompt, WATCHLIST_MODEL)
+
+    # 근거 인용이 없는 항목은 버린다 — 일반론을 남기면 반증 섹션이 장식이 된다
+    counters = [
+        c for c in (bear.get("반대_해석") or [])
+        if isinstance(c, dict) and str(c.get("근거") or "").strip()
+        and str(c.get("관측") or "").strip()
+    ]
+    result["반증_관점"] = {"model": bear_model, "항목": counters}
+
+    conds, _ = calibrate_conditions(
+        db, stock_code, snapshot, normalize_conditions(bear.get("무효화_조건")))
+    if not conds:
+        return
+    kept, rejected = screen_conditions(db, stock_code, snapshot, conds)
+    merged = list(result.get("무효화_조건") or [])
+    seen = {_cond_key(c) for c in merged}
+    added = 0
+    for c in kept + downgrade_rejected(rejected):
+        if len(merged) >= _MAX_CONDITIONS:
+            break
+        key = _cond_key(c)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(dict(c, origin="반증"))
+        added += 1
+    result["무효화_조건"] = merged
+    logger.info("반증 패스 (%s): 반대_해석 %d건, 무효화_조건 %d건 추가",
+                stock_code, len(counters), added)
+
+
+# ------------------------------------------------------------------ #
 # 분석 실행
 # ------------------------------------------------------------------ #
 
@@ -812,6 +945,7 @@ def run_analysis(db, user_id: uuid.UUID, stock_code: str, stock_name: str,
         snapshot_json=json.dumps(snapshot, ensure_ascii=False, indent=1),
     )
 
+    from app.services.watchlist.calibration import calibrate_conditions
     from app.services.watchlist.invalidation import (
         downgrade_rejected, normalize_conditions, screen_conditions, send_condition_notice)
 
@@ -847,9 +981,19 @@ def run_analysis(db, user_id: uuid.UUID, stock_code: str, stock_name: str,
                 "뉴스_출처가 전부 이전 자료이거나 날짜 불명"
             )
 
+    # 임계값 캘리브레이션 — 감시 대상은 LLM 판단, 임계 수치는 앱이 분포에서 재계산.
+    # LLM은 입력의 숫자를 읽지만 서로 곱하고 나누지 않는다 (2026-09-07 실측: "외인 5일
+    # 순매도 1.5조"가 과거 5일 창의 58%에서 발동). 임계 산정은 애초에 앱의 일이다.
+    result["무효화_조건"], calib_notes = calibrate_conditions(
+        db, stock_code, snapshot, result["무효화_조건"])
+    if calib_notes:
+        logger.info("무효화_조건 임계 재조정 %d건 (%s): %s",
+                    len(calib_notes), stock_code, " | ".join(calib_notes))
+
     # 무효화_조건 품질 스크리닝 — 구조는 유효하지만 감시 가치가 없는 조건(이미 충족/임박,
-    # 기저효과 종속 YoY, 방향 역전 밸류, 밴드 안 환율)을 앱이 결정론으로 골라 1회 재요청.
-    # 재요청 후에도 남으면 삭제하지 않고 manual 강등 — 서술은 보존하되 자동 감시에서만 뺀다.
+    # 평상시 발동률, 도달 불가 임계, 기저효과 종속 YoY, 방향 역전 밸류)을 앱이 결정론으로
+    # 골라 1회 재요청. 재요청 후에도 남으면 삭제하지 않고 manual 강등 — 서술은 보존하되
+    # 자동 감시에서만 뺀다.
     kept, rejected = screen_conditions(db, stock_code, snapshot, result["무효화_조건"])
     if rejected:
         logger.warning("무효화_조건 품질 결함 %d건 (%s) — 재요청", len(rejected), stock_code)
@@ -859,7 +1003,8 @@ def run_analysis(db, user_id: uuid.UUID, stock_code: str, stock_name: str,
                 prompt + _CONDITION_QUALITY_RETRY_SUFFIX.format(defects=defects),
                 WATCHLIST_MODEL,
             )
-            retry_conds = normalize_conditions(r3.get("무효화_조건"))
+            retry_conds, _ = calibrate_conditions(
+                db, stock_code, snapshot, normalize_conditions(r3.get("무효화_조건")))
             if retry_conds:
                 k3, rej3 = screen_conditions(db, stock_code, snapshot, retry_conds)
                 if len(k3) > len(kept):  # 자동 감시 가능 조건이 늘었을 때만 교체
@@ -868,6 +1013,16 @@ def run_analysis(db, user_id: uuid.UUID, stock_code: str, stock_name: str,
         except Exception as e:  # 재요청 실패가 분석을 죽이지 않는다
             logger.warning("condition quality retry failed for %s: %s", stock_code, e)
     result["무효화_조건"] = kept + downgrade_rejected(rejected)
+
+    # 반증 전용 패스 — 강세 논거를 감춘 채 핵심_주장만 주고 반대편을 따로 생성.
+    # 같은 컨텍스트에서 논거를 쓴 뒤 무효화_조건을 이어 쓰면 방금 세운 논리를 진지하게
+    # 공격하지 못한다 (2026-09-07: DB증권 리포트에서 "HBM4 판가 +70%"는 인용하고 같은
+    # 문단의 "경쟁사 대비 제한적 상승률 우려"는 버린 사례). 실패해도 분석은 유효.
+    try:
+        _run_falsification_pass(db, analyzer, result, snapshot, stock_code,
+                                stock_name, sector, analysis_date)
+    except Exception as e:
+        logger.warning("falsification pass failed for %s: %s", stock_code, e)
 
     # 스펙: 사용된 뉴스 출처는 스냅샷에도 포함 (grounding URL은 유통기한이 짧아 제목/매체/날짜 필수)
     snapshot["news_sources"] = result.get("뉴스_출처", [])
