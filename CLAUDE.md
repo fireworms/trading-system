@@ -439,13 +439,16 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 - **환율 기준은 1개월 진폭** (`high_1m`/`low_1m`) — 3개월 밴드는 추세 이동을 담고 있어 "밴드 밖"이 곧 도달 불가가 되는 구간이 있다 (2026-09-07 실측: 밴드 폭 205원 = 월 변동성의 7.6σ). 구 스냅샷은 3개월 폴백
 - **null 창 금지**: 수급 창은 `calibration.flow_series`(확정 데이터만)로 채운다. 미확정 당일 행이 자리를 차지하면 "5거래일 누적"이 4일치로 판정되고 연속일 카운트는 0으로 리셋된다
 - **레짐 종속 한계**: 외인이 3개월 내내 판 구간에선 p10 자체가 커져 임계가 느슨해진다("절대적 이례"가 아니라 "최근 N거래일 대비 이례" — 근거 문구에 명시). 창 30개 미만이면 **캘리브레이션을 포기**한다 (임계를 지어내지 않음 — flow_store의 부분합 위장 금지와 같은 철학)
+- **실검증 (2026-09-10, SK하이닉스)**: 캘리브레이션이 LLM 원안 "외인 5일 순매도 1,000억"(발동률 65%)을 8.2조(11%)로, 환율 1,360원(0.6σ)을 1,430원(2σ)으로, 분기 마진 70%(1.3σ)를 68.9%(1.5σ)로 교체. 반증 패스는 반대_해석 7건 + 조건 3건 추가. 설계대로 동작 확인. 같은 검증에서 결함 2건도 드러나 교정:
+  - **임계 없는 flow 조건이 manual로 강등되던 문제**: 반증 패스가 낸 "외인/기관 5거래일 누적 순매도 전환"이 `amount_eok` 없다는 이유로 자동 감시에서 빠졌다. 임계는 앱이 정하는 게 원칙이므로 이건 스펙 결함이 아니다 → `normalize_conditions`가 통과시키고 캘리브레이션이 채운다(외인 8.2조/기관 2.5조, 각 발동률 11%). 못 채우면 `finalize_conditions`가 그때 강등
+  - **환율 조건 양방향 공존**: 1,430원 상회와 1,265원 하회가 한 분석에 동시 등록됐다. 어느 쪽으로 움직여도 무효화면 반증이 아니라 상시 경보다 → `cond_key`에서 fx의 op을 빼 분석당 1개로 수렴
 - **자동 청산에 쓰지 말 것** — 감시는 기계, 매매 판단은 사람 (중장기 수동매매 탭 성격 유지)
 
 ## 반증 전용 패스 (2026-09-07)
 같은 컨텍스트에서 강세 논거를 쓴 뒤 무효화_조건을 이어 쓰면 **방금 세운 논리를 진지하게 공격하지 못한다**. 실사례: 증권사 리포트에서 "HBM4 판가 +70%"는 인용하고 같은 문단의 "경쟁사 대비 제한적 상승률 우려"는 버렸다 — 같은 숫자를 반대 프레임으로 읽은 것.
 - `analyzer._run_falsification_pass`: 핵심_주장 + 스냅샷 + 공시/뉴스만 넘기고 **논거/장기_논거/밸류_코멘트는 감춘다**. 주장은 봐야 정밀하게 반박하고, 지지 논거 체인을 보면 거기에 끌려간다
 - **근거 인용 강제**: 각 항목은 스냅샷 필드명 또는 dart_disclosures/news_recent의 실제 항목을 인용해야 한다. 인용 없는 일반론("경쟁 심화 가능성")은 앱이 제거 — 안 그러면 반증 섹션이 장식이 된다
-- 결과 조건은 정규화→캘리브레이션→스크리닝을 거쳐 본 분석 조건에 병합(`origin: "반증"`, 총 `_MAX_CONDITIONS=8` 상한, `_cond_key`로 중복 제거). 실패해도 분석은 유효
+- 결과 조건은 정규화→캘리브레이션→스크리닝을 거쳐 본 분석 조건에 병합(`origin: "반증"`, 총 `_MAX_CONDITIONS=8` 상한, `cond_key`로 중복 제거). 실패해도 분석은 유효
 - 비용은 분석당 Gemini +1회 — 수동/이벤트 트리거라 RPD 영향 없음
 - **인용 문단 보존은 미채택**: 그라운딩 검색 원문을 통제할 수 없고 네이버 어댑터는 제목만 준다. 반증 패스가 같은 문제를 실질적으로 해결
 
@@ -734,13 +737,14 @@ KRX_API_KEY=             # 선택 — KRX 오픈API (일별 전종목 벌크 적
 - 프롬프트 규칙: 앱 계산 파생지표(judgment/상대수익률/trend_note/per_ttm/퍼센타일) **재계산 금지, 그대로 인용** / per_trailing 왜곡 시 per_ttm·forward 우선 / 환율=외인 수급 공통 팩터로 종목 고유 요인과 구분
 - **뉴스 최신성 가드 (2026-07-03)**: 프롬프트에 14일 창 앵커 + 주가 변동 동인 필수 검색(앱이 1개월/당일 수치 확정 주입) / 파싱 후 14일 내 기사 0건이면 재검색 1회 → 그래도 없으면 `data_flags.news_recency` 명시 후 저장(억지 인용 강제 안 함). 배경: 그라운딩이 앵커 없이는 구 자료로 수렴 (7/2 분석 = 4월 기사 재탕)
 - **외부 데이터 어댑터 (2026-07-03)**: 스냅샷에 `dart_disclosures`(DART 공식 API 최근 14일 공시 — 확정 데이터) + `news_recent`(네이버 뉴스 최신순 10건, 제목 중복 제거) 주입. Gemini 검색은 "발견"이 아닌 해석·시장 반응·내용 보강 담당으로 역할 조정. 어댑터 실패 시 분석 안 죽고 data_flags 기록 (공시 "0건"은 실패가 아닌 확정 사실 — status 013은 available=True). DART는 티커가 아닌 8자리 corp_code 사용 — corpCode.xml 매핑을 `~/.dart_corp_code.json` 캐시(30일 TTL, 미매핑 시 강제갱신하되 24h 최소간격)
-- `run_analysis(db, user_id, ...)`: 수집 → gemini-2.5-flash 검색 그라운딩 → JSON 파싱 → StockAnalysis 저장. **무효화_조건 비면 1회 강제 재요청** 후 실패 시 ValueError. 조건 파이프라인 순서 = `normalize_conditions`(구조 검증) → `calibrate_conditions`(임계 재계산) → `screen_conditions`(품질 게이트, 결함 시 1회 재요청 — 재요청분도 캘리브레이션 통과) → `_run_falsification_pass`(반증 병합). 완료 시 조건 감시 안내 텔레그램 (best-effort)
+- `run_analysis(db, user_id, ...)`: 수집 → gemini-2.5-flash 검색 그라운딩 → JSON 파싱 → StockAnalysis 저장. **무효화_조건 비면 1회 강제 재요청** 후 실패 시 ValueError. 조건 파이프라인 순서 = `normalize_conditions`(구조 검증) → `calibrate_conditions`(임계 재계산) → `screen_conditions`(품질 게이트, 결함 시 1회 재요청 — 재요청분도 캘리브레이션 통과) → `dedupe_conditions`+`finalize_conditions`(중복 제거·임계 미확정 강등) → `_run_falsification_pass`(반증 병합, 끝에서 다시 finalize). 완료 시 조건 감시 안내 텔레그램 (best-effort)
 - `_run_falsification_pass(db, analyzer, result, snapshot, ...)`: 핵심_주장만 넘긴 반증 전용 호출 → `result["반증_관점"]` 저장 + 무효화_조건 병합. 근거 미인용 항목 제거, `_cond_key`로 중복 제거. result를 제자리에서 갱신
 - **무효화_조건 구조화 (2026-07-16)**: `{조건, check_type, params}` 객체 배열 — flow(수급 연속일/누적액)/fx(환율 레벨)/valuation(PBR 5년 퍼센타일)/earnings(대상 분기 실적, 공시 후 판정)/consensus(분석 시점 컨센 대비 하향%)/manual(정성, 확인_방법 명시). params 임계값은 입력 데이터에서 도출 강제, manual에 날짜 지어내기 금지
 
 ### app/services/watchlist/invalidation.py
 - 무효화_조건 자동 판정 — **판정은 앱이 결정론적으로, LLM 관여 없음** (추가 Gemini 호출 0회)
-- `normalize_conditions(raw)`: LLM 출력 검증 — 문자열(구 포맷)/스펙 불완전 조건은 오판 대신 manual 강등 (spec_note 기록)
+- `normalize_conditions(raw)`: LLM 출력 검증 — 문자열(구 포맷)/스펙 불완전 조건은 오판 대신 manual 강등 (spec_note 기록). **flow의 `amount_eok`는 없어도 통과** — 임계는 앱이 정하는 게 원칙이라 "LLM이 금액을 안 냈다"는 스펙 결함이 아니다 (2026-09-10)
+- `cond_key(c)` / `dedupe_conditions(...)` / `finalize_conditions(...)`: **조건 집합 마감 (2026-09-10)** — `cond_key`가 중복 판정의 단일 기준(analyzer도 이걸 import). fx는 `op`을 키에 넣지 않아 **분석당 환율 조건 1개**로 수렴 — 상회·하회가 공존하면 환율이 어느 쪽으로 크게 움직여도 무효화라 반증 가능한 명제가 아니다. `finalize_conditions`는 캘리브레이션이 표본 부족으로 임계를 못 채운 flow 조건을 manual 강등(임계를 지어내지 않는다)
 - `evaluate_condition(...)`: 타입별 체크 → (state, detail). state: ok/triggered/**pending_data**(미공시 분기·수급 커버리지 부족 — 부분 데이터로 단정 금지)/manual/error
 - `check_analysis(...)`: 최신 분석 1건의 조건 전체 판정 → condition_status 갱신, **미충족→충족 전이만** 반환 (경계 왕복 노이즈 방지, 해제 후 재충족은 재알림)
 - `screen_conditions(db, code, snapshot, conditions)` / `downgrade_rejected(...)`: **조건 품질 게이트 (2026-08-28)** — 구조는 유효하나 감시 가치가 없는 조건을 결정론으로 탈락(추가 API·LLM 0회). ①이미 충족/임계 70% 도달(예정된 사건) ②earnings YoY 임계 |100%| 초과(기저효과 종속) ③valuation `below`(싸지는 건 강세 논거 반증 아님) ④fx 임계가 최근 1개월 진폭 안 ⑤과거 창 발동률 30% 초과/0% ⑥fx 3.5σ 밖 ⑦분기 마진 3σ 밖 ⑧컨센 하향 25% 초과 (⑤~⑧은 "절대 안 켜지는 조건"을 막는 반대편 꼬리, 2026-09-07). 탈락분은 사유와 함께 1회 재요청 → 그래도 남으면 삭제 아닌 manual 강등

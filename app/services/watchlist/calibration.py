@@ -128,6 +128,8 @@ def condition_text(check_type: str, p: dict) -> str:
         who = "외국인" if p["investor"] == "frgn" else "기관"
         way = "순매도" if p["direction"] == "sell" else "순매수"
         if p["metric"] == "cum_amount":
+            if not p.get("amount_eok"):   # 임계 미확정 (캘리브레이션 전/실패)
+                return f"{who} {way} 누적 {p['days']}거래일 (임계 미확정)"
             return (f"{who} {way} 누적이 {p['days']}거래일 동안 "
                     f"{_fmt_eok(p['amount_eok'])}을 넘어설 경우")
         return f"{who} {way}가 {p['days']}거래일 연속될 경우"
@@ -178,12 +180,16 @@ def _calibrate_flow(db, stock_code: str, p: dict) -> tuple[dict, str] | None:
         eok = max(step, round(eok / step) * step)
         new_p = dict(p, amount_eok=float(eok))
         rate = fire_rate(sums, eok * 100, p["direction"])
-        old = _fmt_eok(p["amount_eok"])
+        # 원안이 없는 조건(LLM이 임계를 안 낸 반증 조건 등)도 정상 경로다
+        if p.get("amount_eok"):
+            old_note = (f"LLM 원안 {_fmt_eok(p['amount_eok'])}은 발동률 "
+                        f"{fire_rate(sums, p['amount_eok'] * 100, p['direction']):.0%}. ")
+        else:
+            old_note = "LLM 원안에 임계 없음(앱 산출). "
         return new_p, (
             f"{who} {p['days']}거래일 누적 분포 {len(sums)}창(적재 {len(vals)}거래일)의 "
             f"p{TARGET_FIRE_RATE:.0%} 지점 → {_fmt_eok(eok)} (과거 발동률 {rate:.0%}). "
-            f"LLM 원안 {old}은 발동률 {fire_rate(sums, p['amount_eok'] * 100, p['direction']):.0%}. "
-            f"최근 {len(vals)}거래일 대비 상대 기준"
+            f"{old_note}최근 {len(vals)}거래일 대비 상대 기준"
         )
 
     # consecutive_days — 목표 발동률 이하가 되는 최소 연속일수

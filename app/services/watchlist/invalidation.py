@@ -56,9 +56,11 @@ def _validate_params(check_type: str, params: dict) -> dict | None:
                "metric": metric, "days": int(days)}
         if metric == "cum_amount":
             amount = _f(params.get("amount_eok"))
-            if not amount or amount <= 0:
-                return None
-            out["amount_eok"] = amount
+            if amount and amount > 0:
+                out["amount_eok"] = amount
+            # 금액 미지정은 스펙 결함이 아니다 — 임계는 LLM이 아니라 앱이 분포에서
+            # 정한다(2026-09-07 원칙). calibration이 채우고, 표본 부족으로 못 채우면
+            # finalize_conditions()가 그때 manual로 강등한다.
         return out
 
     if check_type == "fx":
@@ -189,6 +191,9 @@ def _screen_reason(db, stock_code: str, snapshot: dict | None, cond: dict) -> st
     if ct == "flow":
         from app.services.watchlist.calibration import (
             FIRE_RATE_MAX, MIN_WINDOWS, flow_series, fire_rate, rolling_sums, streak_rate)
+
+        if p["metric"] == "cum_amount" and not p.get("amount_eok"):
+            return None  # 임계 미확정 — finalize 단계에서 판정
 
         cum, streak, coverage = _flow_state(
             db, stock_code, p["investor"], p["direction"], p["days"])
@@ -323,6 +328,62 @@ def screen_conditions(db, stock_code: str, snapshot: dict | None,
     return kept, rejected
 
 
+# 조건 중복/모순 판정 키 — 이 함수가 유일한 기준이다 (analyzer도 이걸 쓴다).
+# fx가 op을 키에 넣지 않는 이유: 상회·하회 조건이 공존하면 환율이 어느 쪽으로
+# 크게 움직여도 논거가 깨진다 → 반증 가능한 명제가 아니라 상시 경보다
+# (2026-09-10 실측: 1,430원 상회 + 1,265원 하회가 한 분석에 동시 등록).
+def cond_key(c: dict):
+    ct, p = c.get("check_type"), c.get("params") or {}
+    if ct == "flow":
+        return (ct, p.get("investor"), p.get("direction"), p.get("metric"))
+    if ct == "fx":
+        return (ct,)
+    if ct == "valuation":
+        return (ct,)
+    if ct == "earnings":
+        return (ct, p.get("period"), p.get("metric"))
+    if ct == "consensus":
+        return (ct, p.get("year"), p.get("metric"))
+    return (ct, str(c.get("조건", ""))[:40])
+
+
+def dedupe_conditions(conditions: list[dict]) -> list[dict]:
+    """같은 대상을 두 번 감시하는 조건을 제거한다 (먼저 온 것을 남긴다).
+
+    본 분석 자체가 중복을 낼 수도 있어 반증 병합 전에도 한 번 거른다.
+    """
+    seen, out = set(), []
+    for c in conditions:
+        k = cond_key(c)
+        if k in seen:
+            continue
+        seen.add(k)
+        out.append(c)
+    return out
+
+
+def finalize_conditions(conditions: list[dict]) -> list[dict]:
+    """캘리브레이션 후에도 임계가 비어 있는 자동 조건을 manual로 강등한다.
+
+    임계는 앱이 분포에서 정하지만 표본(창 30개)이 모자라면 지어내지 않는다.
+    그 경우 자동 감시 대상에서 빼되 서술은 남긴다 — flow_store의 부분합 위장
+    금지와 같은 철학.
+    """
+    out = []
+    for c in conditions:
+        p = c.get("params") or {}
+        unset = (c.get("check_type") == "flow"
+                 and p.get("metric") == "cum_amount"
+                 and not p.get("amount_eok"))
+        if unset:
+            out.append({"조건": c.get("조건", ""), "check_type": "manual",
+                        "params": {"확인_방법": "상시 수급 확인"},
+                        "spec_note": "임계 산출 표본 부족 (적재 창 30개 미만) — 수동 확인으로 강등"})
+        else:
+            out.append(c)
+    return out
+
+
 def downgrade_rejected(rejected: list[tuple[dict, str]]) -> list[dict]:
     """스크리닝 탈락 조건 → manual 강등 (서술은 보존, 자동 감시에서만 제외)."""
     return [
@@ -372,6 +433,8 @@ def _check_flow(db, stock_code: str, p: dict) -> tuple[str, str]:
         return "ok", f"현재 {label} 연속 {streak}거래일 — 기준 {days}거래일 미달"
 
     # cum_amount
+    if not p.get("amount_eok"):
+        return "error", "누적 금액 임계 미확정 — 재분석 필요"
     if len(vals) < days:
         return "pending_data", f"확정 적재 {len(vals)}거래일 — {days}거래일 누적 판정은 커버리지 도달 후"
     cum = sum(vals[:days])

@@ -845,22 +845,6 @@ def _price_move_note(price: dict) -> str:
 _MAX_CONDITIONS = 8   # 조건이 많아지면 감시가 아니라 목록이 된다
 
 
-def _cond_key(c: dict):
-    """중복 판정 키 — 같은 대상을 두 번 감시하지 않도록."""
-    ct, p = c.get("check_type"), c.get("params") or {}
-    if ct == "flow":
-        return (ct, p.get("investor"), p.get("direction"), p.get("metric"))
-    if ct == "fx":
-        return (ct, p.get("op"))
-    if ct == "valuation":
-        return (ct,)
-    if ct == "earnings":
-        return (ct, p.get("period"), p.get("metric"))
-    if ct == "consensus":
-        return (ct, p.get("year"), p.get("metric"))
-    return (ct, str(c.get("조건", ""))[:40])
-
-
 def _run_falsification_pass(db, analyzer, result: dict, snapshot: dict, stock_code: str,
                             stock_name: str, sector: str | None, analysis_date: date) -> None:
     """핵심_주장만 넘겨 반증 관점을 별도 생성 → 반대_해석 저장 + 무효화_조건 병합.
@@ -870,7 +854,8 @@ def _run_falsification_pass(db, analyzer, result: dict, snapshot: dict, stock_co
     """
     from app.services.watchlist.calibration import calibrate_conditions
     from app.services.watchlist.invalidation import (
-        downgrade_rejected, normalize_conditions, screen_conditions)
+        cond_key, downgrade_rejected, finalize_conditions,
+        normalize_conditions, screen_conditions)
 
     claim = (result.get("핵심_주장") or "").strip()
     if not claim:
@@ -901,18 +886,18 @@ def _run_falsification_pass(db, analyzer, result: dict, snapshot: dict, stock_co
         return
     kept, rejected = screen_conditions(db, stock_code, snapshot, conds)
     merged = list(result.get("무효화_조건") or [])
-    seen = {_cond_key(c) for c in merged}
+    seen = {cond_key(c) for c in merged}
     added = 0
     for c in kept + downgrade_rejected(rejected):
         if len(merged) >= _MAX_CONDITIONS:
             break
-        key = _cond_key(c)
+        key = cond_key(c)
         if key in seen:
             continue
         seen.add(key)
         merged.append(dict(c, origin="반증"))
         added += 1
-    result["무효화_조건"] = merged
+    result["무효화_조건"] = finalize_conditions(merged)
     logger.info("반증 패스 (%s): 반대_해석 %d건, 무효화_조건 %d건 추가",
                 stock_code, len(counters), added)
 
@@ -947,7 +932,8 @@ def run_analysis(db, user_id: uuid.UUID, stock_code: str, stock_name: str,
 
     from app.services.watchlist.calibration import calibrate_conditions
     from app.services.watchlist.invalidation import (
-        downgrade_rejected, normalize_conditions, screen_conditions, send_condition_notice)
+        dedupe_conditions, downgrade_rejected, finalize_conditions,
+        normalize_conditions, screen_conditions, send_condition_notice)
 
     analyzer = GeminiAnalyzer()
     result, raw_text, model = analyzer.grounded_json(prompt, WATCHLIST_MODEL)
@@ -1012,7 +998,8 @@ def run_analysis(db, user_id: uuid.UUID, stock_code: str, stock_name: str,
                     kept, rejected = k3, rej3
         except Exception as e:  # 재요청 실패가 분석을 죽이지 않는다
             logger.warning("condition quality retry failed for %s: %s", stock_code, e)
-    result["무효화_조건"] = kept + downgrade_rejected(rejected)
+    result["무효화_조건"] = finalize_conditions(
+        dedupe_conditions(kept + downgrade_rejected(rejected)))
 
     # 반증 전용 패스 — 강세 논거를 감춘 채 핵심_주장만 주고 반대편을 따로 생성.
     # 같은 컨텍스트에서 논거를 쓴 뒤 무효화_조건을 이어 쓰면 방금 세운 논리를 진지하게
