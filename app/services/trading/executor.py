@@ -460,11 +460,21 @@ class TradeExecutor:
 
         logger.info("Monitoring %d positions", len(positions))
 
+        from app.services.trading.realtime_monitor import get_monitor
+        monitor = get_monitor()
+
         for pos in positions:
             try:
                 self._check_position(pos)
             except Exception as e:
                 logger.error("Monitor error for position=%s: %s", pos.position_id, e)
+                # 같은 포지션에서 반복되면 손절선 자체가 동작 안 하는 상태다.
+                monitor.record_close_failure(
+                    str(pos.position_id), pos.stock_code, e, source="폴링"
+                )
+            else:
+                if pos.status == PositionStatus.HOLDING:
+                    monitor.clear_close_failure(str(pos.position_id))
 
         self.db.commit()
 
@@ -585,6 +595,9 @@ class TradeExecutor:
         except Exception as e:
             logger.error("Sell order failed for %s: %s", pos.stock_code, e)
             monitor.release(str(pos.position_id))   # 청산 미성립 → 선점 해제
+            monitor.record_close_failure(
+                str(pos.position_id), pos.stock_code, e, source="매도주문"
+            )
             return
 
         import time as _time

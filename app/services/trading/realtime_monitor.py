@@ -38,12 +38,22 @@ class PositionWatch:
     target_hit_peak: Decimal | None
 
 
+# 청산 실패가 몇 번 연속되면 어드민에게 알릴지 / 지속 시 재알림 간격(초).
+# 1회 실패는 일시적 네트워크 오류일 수 있어 바로 알리지 않는다. 반대로 계속
+# 실패하는데 로그만 쌓이면 손절이 안 먹는 상태가 조용히 유지된다 (2026-09-08
+# try_claim AttributeError가 이틀간 23,990회 실패하며 아무도 모르게 방치됐다).
+_CLOSE_FAIL_ALERT_AT = 3
+_CLOSE_FAIL_RENOTIFY_SEC = 3600
+
+
 class RealtimePositionMonitor:
     def __init__(self) -> None:
         # code → {position_id → PositionWatch}
         self._by_code: dict[str, dict[str, PositionWatch]] = {}
         # 청산 진행 중인 position_id (중복 트리거 방지)
         self._closing: set[str] = set()
+        # position_id → {count, first_at, last_notified_at} (청산 실패 추적)
+        self._close_failures: dict[str, dict] = {}
 
     # ------------------------------------------------------------------ #
     # 등록 / 해제
@@ -75,6 +85,50 @@ class RealtimePositionMonitor:
         if not bucket:
             self._by_code.pop(stock_code, None)
         self._closing.discard(position_id)
+        self.clear_close_failure(position_id)
+
+    # ------------------------------------------------------------------ #
+    # 청산 실패 추적 — 실시간·폴링 양쪽 경로가 공유한다
+    # ------------------------------------------------------------------ #
+
+    def record_close_failure(
+        self, position_id: str, stock_code: str, error: object, source: str
+    ) -> None:
+        """청산 실패를 누적하고, 연속 실패가 임계를 넘으면 어드민에게 알린다.
+
+        손절이 안 먹는 상태는 로그만으로는 드러나지 않는다 — 알림이 유일한
+        가시화 경로다. 알림 자체가 실패해도 청산 경로를 막지 않는다.
+        """
+        now = datetime.now(timezone.utc)
+        rec = self._close_failures.setdefault(
+            position_id, {"count": 0, "first_at": now, "last_notified_at": None}
+        )
+        rec["count"] += 1
+        rec["last_error"] = str(error)
+
+        if rec["count"] < _CLOSE_FAIL_ALERT_AT:
+            return
+        last = rec["last_notified_at"]
+        if last and (now - last).total_seconds() < _CLOSE_FAIL_RENOTIFY_SEC:
+            return
+        rec["last_notified_at"] = now
+
+        stuck_min = int((now - rec["first_at"]).total_seconds() // 60)
+        try:
+            from app.services.telegram.notifier import notify_admins_error
+            notify_admins_error(
+                "포지션 청산 실패",
+                f"{stock_code} 청산이 {rec['count']}회 연속 실패했습니다 "
+                f"(최초 실패 {stuck_min}분 전, 경로={source}).\n"
+                f"position_id={position_id}\n"
+                f"오류: {error}\n"
+                "손절·익절이 동작하지 않는 상태입니다. 즉시 확인 필요.",
+            )
+        except Exception as e:  # 알림 실패가 청산 경로를 막지 않는다
+            logger.warning("close failure alert failed pos=%s: %s", position_id, e)
+
+    def clear_close_failure(self, position_id: str) -> None:
+        self._close_failures.pop(position_id, None)
 
     def force_trailing(self, position_id: str, peak_price: Decimal) -> None:
         """WARNING 발동 시 수익 포지션의 트레일링을 인메모리에서 즉시 강제 활성화."""
@@ -339,5 +393,8 @@ def _close_position_sync(
                     watch.stock_code, watch.position_id, current_price, reason)
     except Exception as e:
         logger.error("RT close_position_sync failed pos=%s: %s", watch.position_id, e)
+        monitor.record_close_failure(
+            watch.position_id, watch.stock_code, e, source="realtime"
+        )
     finally:
         monitor._closing.discard(watch.position_id)
