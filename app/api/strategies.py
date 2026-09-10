@@ -17,7 +17,6 @@ router = APIRouter(prefix="/strategies", tags=["strategies"])
 PICK_COUNT_MAX       = 4
 DAILY_RETURN_MAX_PCT = 0.7   # target_pct / hold_days 상한
 RR_RATIO_MIN         = 1.5   # target_pct / stop_loss_pct 하한
-MIN_PROBABILITY_MIN  = 55.0  # AI 확률 최소값
 
 
 def _validate_strategy(body) -> None:
@@ -26,7 +25,6 @@ def _validate_strategy(body) -> None:
     target_pct     = float(getattr(body, "target_pct", 0) or 0)
     hold_days      = int(getattr(body, "hold_days", 1) or 1)
     stop_loss_pct  = float(getattr(body, "stop_loss_pct", 0) or 0)
-    min_probability = float(getattr(body, "min_probability", 0) or 0)
 
     if pick_count is not None and pick_count > PICK_COUNT_MAX:
         raise HTTPException(status_code=422, detail=f"pick_count는 최대 {PICK_COUNT_MAX}개입니다.")
@@ -46,12 +44,6 @@ def _validate_strategy(body) -> None:
                 status_code=422,
                 detail=f"R/R 비율 {rr:.2f}가 너무 낮습니다 (최소 {RR_RATIO_MIN})."
             )
-
-    if min_probability and min_probability < MIN_PROBABILITY_MIN:
-        raise HTTPException(
-            status_code=422,
-            detail=f"min_probability는 최소 {MIN_PROBABILITY_MIN}% 이상이어야 합니다."
-        )
 
 
 @router.post("", response_model=StrategyOut, status_code=201)

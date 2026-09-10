@@ -259,7 +259,6 @@ class GeminiAnalyzer:
         hold_days: int,
         target_pct: Decimal,
         stop_loss_pct: Decimal,
-        min_probability: Decimal,
         pick_count: int,
         candidate_filter: str = "mixed",
         selection_mode: str = "momentum",
@@ -312,7 +311,6 @@ class GeminiAnalyzer:
         hold_days: int,
         target_pct: Decimal,
         stop_loss_pct: Decimal,
-        min_probability: Decimal,
         pick_count: int,
         candidate_filter: str,
         backtest_date,
@@ -380,7 +378,6 @@ class GeminiAnalyzer:
             hold_days=strategy.hold_days,
             target_pct=strategy.target_pct,
             stop_loss_pct=strategy.stop_loss_pct,
-            min_probability=strategy.min_probability,
             pick_count=strategy.pick_count,
             candidate_filter=getattr(strategy, "candidate_filter", "mixed"),
         )

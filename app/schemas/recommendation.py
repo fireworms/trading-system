@@ -13,7 +13,6 @@ class RecommendationOut(BaseModel):
     stock_name: str
     target_price: Decimal | None
     stop_loss_price: Decimal | None
-    ai_probability: Decimal | None
     ai_reason: str | None
     historical_basis: str | None
     risk_factors: str | None

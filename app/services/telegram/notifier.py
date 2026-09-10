@@ -60,13 +60,12 @@ class TelegramNotifier:
             "─" * 24,
         ]
         for p in picks:
-            prob   = p.get("ai_probability", "")
             target = f"{int(p['target_price']):,}" if p.get("target_price") else "-"
             stop   = f"{int(p['stop_loss_price']):,}" if p.get("stop_loss_price") else "-"
             reason = (p.get("ai_reason") or "")[:60]
             lines += [
                 f"\n<b>{p.get('rank','')}. {p.get('stock_name','')} ({p.get('stock_code','')})</b>",
-                f"   확률 {prob}% | 목표가 {target} | 손절가 {stop}",
+                f"   목표가 {target} | 손절가 {stop}",
                 f"   <i>{reason}</i>",
             ]
         lines += ["\n" + "─" * 24, f"📈 테마: {market_theme[:60]}"]

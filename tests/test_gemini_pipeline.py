@@ -94,7 +94,6 @@ def test_stage4(analyzer, macro, industry) -> tuple[bool, object]:
         hold_days = 10
         target_pct = Decimal("10")
         stop_loss_pct = Decimal("5")
-        min_probability = Decimal("60")
         pick_count = 3
 
     try:
@@ -105,16 +104,14 @@ def test_stage4(analyzer, macro, industry) -> tuple[bool, object]:
             hold_days=MockStrategy.hold_days,
             target_pct=MockStrategy.target_pct,
             stop_loss_pct=MockStrategy.stop_loss_pct,
-            min_probability=MockStrategy.min_probability,
             pick_count=MockStrategy.pick_count,
         )
         logger.info("  picks: %d개", len(result.picks))
         for p in result.picks:
             logger.info(
-                "    %s %s 목표=%s 손절=%s 확률=%s%%",
+                "    %s %s 목표=%s 손절=%s",
                 p.get("stock_code"), p.get("stock_name"),
                 p.get("target_price"), p.get("stop_loss_price"),
-                p.get("ai_probability"),
             )
         logger.info("  [OK] Stage 4 완료")
         return True, result

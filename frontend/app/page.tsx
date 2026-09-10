@@ -74,7 +74,7 @@ function getStrategyHint(hold_days: number, target_pct: string): {
 const DEFAULT_FORM = {
   name: "", description: "",
   hold_days: 20, target_pct: "6", stop_loss_pct: "3",
-  min_probability: "60", pick_count: 3, run_interval_days: 3,
+  pick_count: 3, run_interval_days: 3,
   candidate_filter: "mixed" as CandidateFilter,
   candidate_market: "ALL" as CandidateMarket,
   use_trailing_stop: false,
@@ -129,11 +129,9 @@ export default function DashboardPage() {
     const tgt   = parseFloat(form.target_pct) || 0;
     const days  = Number(form.hold_days) || 1;
     const stop  = parseFloat(form.stop_loss_pct) || 0;
-    const prob  = parseFloat(form.min_probability) || 0;
     const picks = Number(form.pick_count);
 
     if (picks > 4) { setMsg("픽 종목 수는 최대 4개입니다."); return; }
-    if (prob < 55) { setMsg("최소 확률은 55% 이상이어야 합니다."); return; }
     if (stop > 0 && tgt / stop < 1.5) { setMsg(`R/R 비율 ${(tgt/stop).toFixed(2)}가 너무 낮습니다 (최소 1.5).`); return; }
 
     const dailyExpected = tgt / days;
@@ -153,7 +151,6 @@ export default function DashboardPage() {
         hold_days:         Number(form.hold_days),
         target_pct:        form.target_pct,
         stop_loss_pct:     form.stop_loss_pct,
-        min_probability:   form.min_probability,
         pick_count:        Number(form.pick_count),
         run_interval_days: Number(form.run_interval_days),
         candidate_filter:   form.candidate_filter,
@@ -293,7 +290,6 @@ export default function DashboardPage() {
                 ["보유기간 (일)", "hold_days", 1, 365, null],
                 ["목표수익률 (%)", "target_pct", 0.1, 100, null],
                 ["손절라인 (%)", "stop_loss_pct", 0.1, 50, null],
-                ["최소확률 (%, 최소 55)", "min_probability", 55, 100, null],
                 ["픽 종목 수 (최대 4)", "pick_count", 1, 4, null],
                 ["실행 주기 (일)", "run_interval_days", 1, 30, null],
               ] as [string, keyof typeof form, number, number, null][]).map(([label, key, min, max]) => (
@@ -437,7 +433,6 @@ export default function DashboardPage() {
                   <span>보유 {strategy.hold_days}일</span>
                   <span>목표 +{strategy.target_pct}%</span>
                   <span>손절 -{strategy.stop_loss_pct}%</span>
-                  <span>최소확률 {strategy.min_probability}%</span>
                   <span>픽 {strategy.pick_count}개</span>
                   <span>주기 {strategy.run_interval_days}일</span>
                 </div>

@@ -114,62 +114,6 @@ _FILTER_GUIDANCE = {
     ),
 }
 
-STAGE4_PICKS = """
-당신은 퀀트 트레이딩 전문가입니다.
-
-=== 매크로 분석 ===
-{macro_summary}
-테마: {market_theme}
-
-=== 수혜 예상 섹터 ===
-{expected_beneficiary}
-
-=== 선택 가능한 종목 목록 (반드시 이 목록의 코드만 사용) ===
-{valid_codes}
-
-=== 기술적 데이터 ===
-{stocks_data}
-
-각 종목의 데이터 설명:
-- current_price: 현재가
-- rsi_14: RSI(14일), 30 이하=과매도, 70 이상=과매수
-- ma5/ma20/ma60: 5/20/60일 이동평균
-- frgn_net_buy_1d/5d: 외국인 1일/5일 누적 순매수 수량 (양수=순매수)
-- orgn_net_buy_1d/5d: 기관 1일/5일 누적 순매수 수량
-
-=== 전략 파라미터 ===
-- 보유기간: {hold_days}일
-- 목표수익률: +{target_pct}%
-- 손절라인: -{stop_loss_pct}%
-- AI 최소 확률: {min_probability}% (이 확률 미달 종목은 제외)
-- 선정 종목 수: {pick_count}개
-
-{filter_guidance}
-
-위 정보를 종합하여 최적 종목을 {pick_count}개 선정하세요.
-
-【중요 규칙】
-1. stock_code는 반드시 위 "선택 가능한 종목 목록"에 있는 코드를 그대로 복사하세요.
-2. 목록에 없는 코드는 절대 사용하지 마세요.
-3. 응답에 종목명·가격·목표가·손절가를 포함하지 마세요. 분석 근거만 반환합니다.
-
-다음 JSON 형식으로만 응답하세요. 다른 설명 없이 JSON만 반환하세요.
-
-{{
-  "picks": [
-    {{
-      "rank": 1,
-      "stock_code": "005930",
-      "ai_probability": 78.5,
-      "ai_reason": "선정 근거 2-3문장",
-      "historical_basis": "역사적 유사 사례 근거",
-      "risk_factors": "주요 리스크"
-    }}
-  ],
-  "excluded_reason": "min_probability 미달 또는 제외 이유 간략 설명"
-}}
-"""
-
 STAGE4A_ANALYSIS = """
 당신은 퀀트 트레이딩 전문가입니다.
 

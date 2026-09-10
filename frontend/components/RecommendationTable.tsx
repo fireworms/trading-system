@@ -6,12 +6,6 @@ interface Props {
   recommendations: Recommendation[];
 }
 
-function probColor(p: number) {
-  if (p >= 75) return "text-green-400";
-  if (p >= 60) return "text-yellow-400";
-  return "text-gray-400";
-}
-
 function VerificationBadge({ v }: { v: Recommendation["verification"] }) {
   if (!v) return <span className="text-xs text-gray-600">미검증</span>;
   const pnl = v.pnl_pct ? parseFloat(v.pnl_pct) : null;
@@ -45,7 +39,6 @@ export default function RecommendationTable({ recommendations }: Props) {
           <tr className="text-gray-400 border-b border-gray-700">
             <th className="pb-2 text-left">순위</th>
             <th className="pb-2 text-left">종목</th>
-            <th className="pb-2 text-right">확률</th>
             <th className="pb-2 text-right">목표가</th>
             <th className="pb-2 text-right">손절가</th>
             {hasVerification && <th className="pb-2 text-right">검증</th>}
@@ -54,16 +47,12 @@ export default function RecommendationTable({ recommendations }: Props) {
         </thead>
         <tbody>
           {recommendations.map((rec) => {
-            const prob = rec.ai_probability ? parseFloat(rec.ai_probability) : null;
             return (
               <tr key={rec.rec_id} className="border-b border-gray-800 hover:bg-gray-800/50">
                 <td className="py-2 text-gray-400">{rec.rank ?? "-"}</td>
                 <td className="py-2">
                   <div className="font-medium">{rec.stock_name}</div>
                   <div className="text-xs text-gray-500">{rec.stock_code}</div>
-                </td>
-                <td className={`py-2 text-right font-bold ${prob ? probColor(prob) : "text-gray-400"}`}>
-                  {prob != null ? `${prob.toFixed(1)}%` : "-"}
                 </td>
                 <td className="py-2 text-right text-red-400">
                   {rec.target_price ? Number(rec.target_price).toLocaleString() : "-"}

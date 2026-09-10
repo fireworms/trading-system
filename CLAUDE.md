@@ -65,7 +65,7 @@ trading_system/
 │   │   │   └── realtime.py      # KIS WebSocket 클라이언트 (H0STCNT0 + H0STCNI0)
 │   │   ├── gemini/
 │   │   │   ├── analyzer.py      # GeminiAnalyzer (4단계)
-│   │   │   └── prompts.py       # 프롬프트 템플릿 (STAGE1~4, BUY_CONFIRM 미사용)
+│   │   │   └── prompts.py       # 프롬프트 템플릿 (STAGE1~3, STAGE4A/B, BUY_CONFIRM 미사용)
 │   │   ├── news/
 │   │   │   └── watcher.py       # 뉴스 감시, news_events 저장, 사후 검증
 │   │   ├── stock_master/
@@ -145,7 +145,7 @@ trading_system/
 ### strategies
 - strategy_id (PK, UUID), created_by (FK)
 - name, description
-- hold_days, target_pct, stop_loss_pct, min_probability, pick_count, run_interval_days
+- hold_days, target_pct, stop_loss_pct, pick_count, run_interval_days
 - **candidate_filter**: volume / largecap / mixed (기본 mixed)
 - **candidate_market**: KOSPI / KOSDAQ / NAS / ALL (기본 ALL)
 - **selection_mode**: momentum(기본) / earnings_catalyst / **rule_breakout** / **rule_oversold** — 전략 단위 선정 로직 분기.
@@ -345,7 +345,9 @@ trading_system/
   - STAGE4A: ai_probability 제거, 서술 순서가 곧 추천 순위
   - STAGE4B: ai_probability 필드 제거, rank(언급 순서)만 추출
   - executor 정렬: `ai_probability + cross_signal_bonus` → `cross_signal_bonus 우선, 동점이면 rank`
-  - min_probability 필터 제거 (DB 컬럼은 유지, executor에서 미사용)
+  - min_probability 필터 제거 → **잔재까지 전면 제거 (2026-09-10)**: `strategies.min_probability` 컬럼 드롭(마이그레이션 c3d4e5f6a7b9), 프론트 "최소확률" 입력·검증·전략카드 표시 제거, 추천 테이블 확률 열 제거, 텔레그램 추천 알림 확률 표기 제거, 죽은 `STAGE4_PICKS` 템플릿(확률 요구 프롬프트) 삭제, analyzer·runner·백테스터의 min_probability 인자와 ai_probability 쓰기 제거
+  - **`recommendations.ai_probability` 컬럼은 남긴다** — 폐기 이전 값이 곧 무상관 분석 515건의 원본 근거다. 신규 쓰기·API 노출·UI 표시 없는 **동결 기록**이고 되살리지 말 것
+  - 확률을 다시 넣고 싶어지면 먼저 그 컬럼으로 재현할 것: 확률 구간과 실제 승률이 무관했다 (60~70%→22.9%, 80~90%→18.3%)
 - **B-gate** (항상 동작): Stage4A/B 프롬프트에 "0개 반환 허용" 명시 — pick_count 충족 위한 억지 선정 금지
 - **A-gate** (키워드 OR 수치, 둘 중 하나면 Stage4 스킵 + 어드민 알림):
   - 매 run마다 `kospi_at_run` 저장, 16:00 잡이 `kospi_change_1d` 채움
@@ -553,7 +555,7 @@ KRX_API_KEY=             # 선택 — KRX 오픈API (일별 전종목 벌크 적
 - 목표가 도달 시 즉시 TARGET_HIT 청산 (기본, AI thesis 완료 기준)
 - `Strategy.use_trailing_stop=true`이면 목표가 후 peak 추적 → peak × (1 - stop_loss_pct%) 이탈 시 청산
 - 손절: entry_price × (1 - stop_loss_pct/100) 고정선 (trailing 모드는 peak 기준)
-- 전략 검증: pick_count≤4, 일평균≤0.7%/일, R/R≥1.5, min_probability≥55 (API+프론트 동일 기준)
+- 전략 검증: pick_count≤4, 일평균≤0.7%/일, R/R≥1.5 (API+프론트 동일 기준). **확률 하한 기준은 없다** — 2026-09-10 제거
 
 ## 협업 원칙
 

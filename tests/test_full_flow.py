@@ -38,7 +38,6 @@ def create_strategy(db, user_id) -> "Strategy":
         hold_days=10,
         target_pct=Decimal("10.00"),
         stop_loss_pct=Decimal("5.00"),
-        min_probability=Decimal("60.00"),
         pick_count=3,
         run_interval_days=3,
         is_active=True,
@@ -106,7 +105,6 @@ def run_ai_pipeline(strategy, stock_data: list[dict]) -> tuple:
         hold_days=strategy.hold_days,
         target_pct=strategy.target_pct,
         stop_loss_pct=strategy.stop_loss_pct,
-        min_probability=strategy.min_probability,
         pick_count=strategy.pick_count,
     )
     logger.info("  %d개 선정 (%.1fs)", len(picks.picks), time.time() - t0)
@@ -149,7 +147,6 @@ def save_results(db, strategy, macro, historical, industry, picks) -> "Recommend
             stock_name=pick.get("stock_name", ""),
             target_price=Decimal(str(pick["target_price"])) if pick.get("target_price") else None,
             stop_loss_price=Decimal(str(pick["stop_loss_price"])) if pick.get("stop_loss_price") else None,
-            ai_probability=Decimal(str(pick["ai_probability"])) if pick.get("ai_probability") else None,
             ai_reason=pick.get("ai_reason"),
             historical_basis=pick.get("historical_basis"),
             risk_factors=pick.get("risk_factors"),
@@ -171,12 +168,11 @@ def print_summary(run, picks):
     for i, pick in enumerate(picks.picks, 1):
         code = pick.get("stock_code", "")
         name = pick.get("stock_name", "")
-        prob = pick.get("ai_probability", "")
         target = pick.get("target_price", "")
         stop = pick.get("stop_loss_price", "")
         reason = (pick.get("ai_reason") or "")[:80]
         logger.info("[%d] %s %s", i, code, name)
-        logger.info("     확률=%s%% | 목표가=%s | 손절가=%s", prob, target, stop)
+        logger.info("     목표가=%s | 손절가=%s", target, stop)
         logger.info("     근거: %s", reason)
     logger.info("=" * 60)
 

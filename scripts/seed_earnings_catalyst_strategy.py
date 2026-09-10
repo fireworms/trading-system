@@ -53,7 +53,6 @@ def main():
             hold_days=template.hold_days,
             target_pct=template.target_pct,
             stop_loss_pct=template.stop_loss_pct,
-            min_probability=template.min_probability,
             pick_count=template.pick_count,
             run_interval_days=template.run_interval_days,
             candidate_filter=template.candidate_filter,

@@ -14,7 +14,6 @@ class StrategyCreate(BaseModel):
     hold_days: int = Field(default=10, ge=1, le=365)
     target_pct: Decimal = Field(ge=Decimal("0.1"), le=Decimal("100"))
     stop_loss_pct: Decimal = Field(ge=Decimal("0.1"), le=Decimal("50"))
-    min_probability: Decimal = Field(ge=Decimal("0"), le=Decimal("100"))
     pick_count: int = Field(default=5, ge=1, le=20)
     run_interval_days: int = Field(default=3, ge=1, le=30)
     candidate_filter: CandidateFilter = "mixed"
@@ -28,7 +27,6 @@ class StrategyUpdate(BaseModel):
     hold_days: int | None = Field(default=None, ge=1, le=365)
     target_pct: Decimal | None = None
     stop_loss_pct: Decimal | None = None
-    min_probability: Decimal | None = None
     pick_count: int | None = None
     run_interval_days: int | None = None
     candidate_filter: CandidateFilter | None = None
@@ -45,7 +43,6 @@ class StrategyOut(BaseModel):
     hold_days: int
     target_pct: Decimal
     stop_loss_pct: Decimal
-    min_probability: Decimal
     pick_count: int
     run_interval_days: int
     candidate_filter: str

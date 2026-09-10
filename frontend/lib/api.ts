@@ -76,7 +76,6 @@ export interface Strategy {
   hold_days: number;
   target_pct: string;
   stop_loss_pct: string;
-  min_probability: string;
   pick_count: number;
   run_interval_days: number;
   candidate_filter: CandidateFilter;
@@ -104,7 +103,6 @@ export interface Recommendation {
   stock_name: string;
   target_price: string | null;
   stop_loss_price: string | null;
-  ai_probability: string | null;
   ai_reason: string | null;
   risk_factors: string | null;
   historical_basis: string | null;
@@ -534,14 +532,14 @@ export const api = {
     create: (body: {
       name: string; description?: string | null;
       hold_days: number; target_pct: string; stop_loss_pct: string;
-      min_probability: string; pick_count: number; run_interval_days: number;
+      pick_count: number; run_interval_days: number;
       candidate_filter: CandidateFilter; candidate_market: CandidateMarket;
       use_trailing_stop?: boolean;
     }) => authFetch<Strategy>("/strategies", { method: "POST", body: JSON.stringify(body) }),
     update: (id: string, body: Partial<{
       name: string; description: string | null;
       hold_days: number; target_pct: string; stop_loss_pct: string;
-      min_probability: string; pick_count: number; run_interval_days: number;
+      pick_count: number; run_interval_days: number;
       candidate_filter: CandidateFilter; candidate_market: CandidateMarket;
       use_trailing_stop: boolean;
       is_active: boolean;

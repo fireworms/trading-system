@@ -28,7 +28,6 @@ class Strategy(Base):
     hold_days: Mapped[int] = mapped_column(Integer, default=10, nullable=False)
     target_pct: Mapped[Decimal] = mapped_column(Numeric(6, 2), nullable=False)
     stop_loss_pct: Mapped[Decimal] = mapped_column(Numeric(6, 2), nullable=False)
-    min_probability: Mapped[Decimal] = mapped_column(Numeric(5, 2), nullable=False)
     pick_count: Mapped[int] = mapped_column(Integer, default=5, nullable=False)
     run_interval_days: Mapped[int] = mapped_column(Integer, default=3, nullable=False)
     candidate_filter: Mapped[str] = mapped_column(String(20), default="mixed", nullable=False)

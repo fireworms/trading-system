@@ -93,6 +93,8 @@ class Recommendation(Base):
     current_price_at_rec: Mapped[Decimal | None] = mapped_column(Numeric(18, 4), nullable=True)
     target_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 0), nullable=True)
     stop_loss_price: Mapped[Decimal | None] = mapped_column(Numeric(18, 0), nullable=True)
+    # 동결 기록 — 2026-05-28 확률 폐기 이전 값만 들어있다 (515건 무상관 분석의 원본 근거).
+    # 신규 쓰기·API 노출·UI 표시 없음. 되살리지 말 것 (판단 근거는 CLAUDE.md 확률 폐기 절 참조).
     ai_probability: Mapped[Decimal | None] = mapped_column(Numeric(5, 2), nullable=True)
     ai_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     historical_basis: Mapped[str | None] = mapped_column(Text, nullable=True)
