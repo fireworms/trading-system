@@ -81,6 +81,10 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
   const sources = r["뉴스_출처"] ?? [];
   const dart = snap.dart_disclosures ?? {};
   const dartItems: Record<string, any>[] = dart.items ?? [];
+  const buyback = snap.buyback_context ?? {};
+  const buybackItems: Record<string, any>[] = buyback.items ?? [];
+  // 3주체 합이 0이 아닌 구조 — 잔차(기타법인·자사주)를 감추면 순매도의 반대편이 사라진다
+  const flowWindow = flow.window_days ?? {};
   const newsRecent = snap.news_recent ?? {};
   const newsItems: Record<string, any>[] = newsRecent.items ?? [];
   const paceNotes: { label: string; text: string }[] = [
@@ -312,6 +316,18 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
           <SnapCell label="기관 30일" value={fmtMillion(flow.orgn_net_30d)} />
           <SnapCell label="개인 30일" value={fmtMillion(flow.prsn_net_30d)} />
         </div>
+        <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 text-xs">
+          <SnapCell label="기타 30일 (자사주 등)" value={fmtMillion(flow.other_net_30d)} />
+          <SnapCell label="기타 60일" value={fmtMillion(flowExt.other_net_60d)} />
+          <SnapCell label="누적 실거래일" value={typeof flowWindow["30d"] === "number"
+            ? `5일창 ${flowWindow["5d"]}일 / 30일창 ${flowWindow["30d"]}일` : "-"} />
+        </div>
+        {typeof flow.other_net_30d === "number" && (
+          <p className="text-xs text-gray-600">
+            기타 = KIS 미제공 기타법인·기타외국인 순매수 역산 −(개인+외국인+기관). 세 주체 합이 0이 아닌 것은 정상이며,
+            이 값이 크면 자사주 매입 구간일 수 있다 (아래 자사주 공시 확인).
+          </p>
+        )}
         {typeof flowExt.coverage_days === "number" && flowExt.coverage_days < 120 && (
           <p className="text-xs text-gray-600">
             60/120일 수급은 자체 적재 기반 — 현재 {flowExt.coverage_days}거래일분 축적
@@ -389,6 +405,32 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
                 ))}
               </ul>
             )}
+          </div>
+        )}
+
+        {/* 자사주 공시 — 수급 잔차(기타)의 반대편 설명용 장기 창 (180일) */}
+        {buyback.available && buybackItems.length > 0 && (
+          <div>
+            <p className="text-xs text-gray-500 mb-1.5">
+              자사주 공시 <span className="text-gray-600">({buyback.window ?? "최근 180일"} · 취득/처분/소각 — 수급 잔차 해석용)</span>
+            </p>
+            <ul className="flex flex-col gap-1">
+              {buybackItems.map((d, i) => (
+                <li key={i} className="text-xs text-gray-400">
+                  <span className="font-mono text-gray-600 mr-1.5">{fmtYmd(d.date)}</span>
+                  {d.url ? (
+                    <a href={d.url} target="_blank" rel="noreferrer" className="text-blue-400 hover:underline">
+                      {d.title || d.url}
+                    </a>
+                  ) : (
+                    <span className="text-gray-300">{d.title}</span>
+                  )}
+                </li>
+              ))}
+            </ul>
+            <p className="text-xs text-gray-600 mt-1">
+              취득결정은 법정 취득기간이 3개월 — 공시일 이후 수개월간 일별 수급에 기타법인 순매수로 계속 찍힌다.
+            </p>
           </div>
         )}
 

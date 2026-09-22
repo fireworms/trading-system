@@ -62,22 +62,34 @@ def get_extended_flow(db, stock_code: str) -> dict:
 
     커버리지 미달 구간은 부분합으로 위장하지 않고 None — "60일 누적"이라는
     라벨에 40일치 합이 들어가면 매도 규모를 과소평가하게 됨.
+
+    장중 미확정 행(3주체 전부 NULL)은 창 계산 **전에** 제거한다 — 자리만 차지하면
+    "60일 누적"이 59거래일 합이 된다 (calibration.flow_series와 같은 원칙).
     """
-    rows = db.execute(
+    raw = db.execute(
         select(InvestorFlowDaily)
         .where(InvestorFlowDaily.stock_code == stock_code)
         .order_by(InvestorFlowDaily.trade_date.desc())
-        .limit(120)
+        .limit(130)
     ).scalars().all()
+    rows = [r for r in raw
+            if r.frgn_ntby_amt is not None and r.orgn_ntby_amt is not None
+            and r.prsn_ntby_amt is not None][:120]
     if not rows:
         return {"available": False,
-                "note": "적재된 수급 이력 없음 — 이번 분석부터 축적 시작 (백필 불가)"}
+                "note": "적재된 확정 수급 이력 없음 — 이번 분석부터 축적 시작 (백필 불가)"}
 
     def _cum(attr: str, n: int) -> float | None:
         if len(rows) < n:
             return None
-        vals = [getattr(r, attr) for r in rows[:n] if getattr(r, attr) is not None]
-        return float(sum(vals)) if vals else None
+        return float(sum(getattr(r, attr) for r in rows[:n]))
+
+    def _other(n: int) -> float | None:
+        """기타법인·기타외국인 추정 순매수 = -(3주체 합). KIS 미제공분 역산."""
+        if len(rows) < n:
+            return None
+        return float(-sum(r.frgn_ntby_amt + r.orgn_ntby_amt + r.prsn_ntby_amt
+                          for r in rows[:n]))
 
     out = {
         "available": True,
@@ -90,6 +102,10 @@ def get_extended_flow(db, stock_code: str) -> dict:
         "orgn_net_120d": _cum("orgn_ntby_amt", 120),
         "prsn_net_60d": _cum("prsn_ntby_amt", 60),
         "prsn_net_120d": _cum("prsn_ntby_amt", 120),
+        "other_net_60d": _other(60),
+        "other_net_120d": _other(120),
+        "other_note": "other_net_*은 KIS 미제공 기타법인·기타외국인 순매수 역산 "
+                      "(자사주 취득/처분 포함) — investor_flow.other_note 참조",
     }
     if len(rows) < 60:
         out["note"] = f"적재 {len(rows)}거래일분 — 60/120일 누적은 커버리지 도달 후 제공"

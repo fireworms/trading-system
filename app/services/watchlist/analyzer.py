@@ -64,6 +64,7 @@ _ANALYSIS_PROMPT = """당신은 데이터를 구조화하는 애널리스트입�
 5. 앱이 계산해 넣은 파생 지표는 재계산하지 말고 그대로 인용할 것 — investor_flow의 frgn_pace/orgn_pace judgment 문자열, market의 상대수익률/relative_note, fx_usdkrw의 trend_note, per_ttm, pbr_band_5y 퍼센타일, valuation_scenarios의 함의주가. 직접 나눗셈/비율 계산 금지.
 6. PER 시점 구분: per_trailing은 직전 공시 실적 기준이라 실적 급변 구간에서 왜곡됨 — income_single_q 추세와 괴리가 크면 per_ttm(최근 4개 분기 합산)과 per_forward_consensus를 우선해 밸류를 평가할 것.
 7. 환율은 외국인 수급의 공통 팩터 — 외국인 순매도가 fx_usdkrw 추세와 동행하는 시장 공통 요인인지, market의 상대수익률상 종목 고유 요인인지 구분해 서술할 것.
+7-1. 수급의 세 주체(개인·외국인·기관계) 합은 0이 아니다 — KIS가 기타법인·기타외국인을 주지 않기 때문이고, 앱이 이를 investor_flow.other_net_*으로 역산해 넣었다. 개인 또는 외국인의 대량 순매도를 서술할 때는 **그 반대편이 누구인지** other_net_*으로 함께 확인할 것. other_net_*이 크면 자사주 매입일 가능성이 높으므로 buyback_context의 공시를 확인해 인용하고, 확인되면 "분산/투매"로 단정하지 말 것. 누적 창의 실제 거래일 수는 window_days에 있다 — 라벨(5d/30d)이 아니라 이 값을 인용할 것. 서술에는 필드명(other_net_*)을 그대로 쓰지 말고 "기타법인·기타외국인"으로 풀어 쓸 것.
 8. valuation_scenarios는 앱이 배수 밴드에서 역산한 산술값(현재가 × 목표배수 ÷ 현재배수)이다. 새 목표주가를 만들어내지 말고, 이 표에서 현재 논거와 정합적인 행을 고르고 그 행의 "전제"가 성립할 조건을 서술할 것. warnings에 담긴 경고(이익 피크 구간·영업외 요인·장부가 시점차)는 반드시 반영할 것 — 경고를 무시한 상단 인용 금지. 행에 "신뢰도"가 붙어 있으면 그 행을 인용할 때 반드시 사유를 함께 밝히고, 신뢰도 낮은 행만 남아 있으면 "현재 국면에서는 밴드 회귀 역산이 유효하지 않다"고 명시할 것 — 근거 없는 숫자를 만들어 채우지 말 것.
 9. 날짜를 지어내지 말 것. 실적 발표일·공시일은 dart_disclosures의 rcept_dt에서, 기사 날짜는 news_recent에서만 인용한다. 정기보고서 법정 제출기한은 실제 실적 발표일이 아니다 — 둘을 혼동하지 말 것.
 10. 단기_촉매는 분석 기준일 이후에 발생할 이벤트만 쓸 것. 이미 발표·확정된 건은 논거의 배경으로 서술하고 촉매에 넣지 말 것. 예상_시점은 미래 날짜 또는 확정된 기한이어야 한다.
@@ -626,22 +627,46 @@ def _derive_quarters(income_rows: list[dict]) -> list[dict]:
 
 
 def _summarize_flow(rows: list[dict], holding: dict | None) -> dict:
-    """일별 투자자 순매수(최근 30거래일) → 누적/최근 흐름 요약. 금액 단위: 백만원."""
-    if not rows:
-        return {"available": False}
+    """일별 투자자 순매수(최근 30거래일) → 누적/최근 흐름 요약. 금액 단위: 백만원.
 
-    def _cum(key: str, n: int) -> float | None:
-        vals = [r[key] for r in rows[:n] if r.get(key) is not None]
-        return round(sum(vals), 0) if vals else None
+    KIS FHKST01010900은 개인/외국인/기관계 **3주체만** 준다 — 기타법인(자사주 취득 포함)과
+    기타외국인은 응답에 없다. 따라서 세 주체의 합은 0이 아니고, 그 잔차가 곧 나머지 주체의
+    순매수다. 잔차를 감추면 "개인 대량 순매도"의 반대편이 사라져 분산/투매 서사로 오독된다
+    (2026-08-20~ SK하이닉스 자사주 취득 구간: 잔차가 일 -1.1조로 고정, 8/19 취득결정 공시와
+    시작일 일치. 같은 구간 삼성전자는 8/21 공시 → 8/24부터). other_net_*으로 명시 노출한다.
 
-    def _avg(key: str, n: int) -> tuple[float, int] | None:
-        """(일평균, 실제 데이터가 있는 거래일 수) — 분모를 호출부에 그대로 넘긴다."""
-        vals = [r[key] for r in rows[:n] if r.get(key) is not None]
-        return (sum(vals) / len(vals), len(vals)) if vals else None
+    장중 미확정 행(3주체 전부 공란)은 **창 계산 전에** 제거한다 — 자리를 차지하면 "5일 누적"이
+    4거래일 합이 되고 라벨이 거짓말을 한다 (calibration.flow_series의 null 창 금지와 같은 원칙).
+    실제 거래일 수는 window_days로 함께 낸다.
+    """
+    _KEYS = ("frgn_ntby_amt", "orgn_ntby_amt", "prsn_ntby_amt")
+    confirmed, unconfirmed = [], []
+    for r in rows:
+        (confirmed if all(r.get(k) is not None for k in _KEYS)
+         else unconfirmed).append(r)
+    if not confirmed:
+        return {"available": False,
+                "note": "확정 일별 수급 없음 (장중 미확정 행만 수신 — 장 마감 후 재수집 필요)"}
+
+    def _cum(key: str, n: int) -> float:
+        return round(sum(r[key] for r in confirmed[:n]), 0)
+
+    def _other(n: int) -> float:
+        """기타(기타법인·기타외국인, 자사주 취득 포함) 추정 순매수 = -(3주체 합)."""
+        return round(-sum(r[k] for r in confirmed[:n] for k in _KEYS), 0)
+
+    def _avg(key: str, n: int) -> tuple[float, int]:
+        """(일평균, 실제 거래일 수) — 분모를 호출부에 그대로 넘긴다."""
+        w = confirmed[:n]
+        return (sum(r[key] for r in w) / len(w), len(w))
 
     return {
         "available": True,
         "unit": "백만원",
+        # 라벨(5d/30d)과 실제 거래일 수가 다를 수 있다 — 30거래일 API 한계/미확정 행 제외 때문
+        "window_days": {"5d": min(5, len(confirmed)), "20d": min(20, len(confirmed)),
+                        "30d": min(30, len(confirmed))},
+        "unconfirmed_excluded": [r.get("date") for r in unconfirmed] or None,
         "frgn_net_5d": _cum("frgn_ntby_amt", 5),
         "frgn_net_20d": _cum("frgn_ntby_amt", 20),
         "frgn_net_30d": _cum("frgn_ntby_amt", 30),
@@ -652,13 +677,22 @@ def _summarize_flow(rows: list[dict], holding: dict | None) -> dict:
         "prsn_net_5d": _cum("prsn_ntby_amt", 5),
         "prsn_net_20d": _cum("prsn_ntby_amt", 20),
         "prsn_net_30d": _cum("prsn_ntby_amt", 30),
+        # KIS 미제공분 역산 — 3주체 합이 0이 아닌 것은 데이터 오류가 아니라 구조다
+        "other_net_5d": _other(5),
+        "other_net_20d": _other(20),
+        "other_net_30d": _other(30),
+        "other_note": "other_net_*은 KIS가 제공하지 않는 기타법인·기타외국인의 순매수를 "
+                      "-(개인+외국인+기관계)로 역산한 값 (자사주 취득/처분이 여기 잡힌다). "
+                      "3주체 합이 0이 아닌 것은 정상이며, 개인 순매도의 반대편을 읽을 때 "
+                      "이 값과 buyback_context를 함께 볼 것",
         # 페이스 판정은 앱이 확정 — judgment 문자열을 그대로 인용할 것 (재계산 금지)
         "frgn_pace": _pace_judgment(_avg("frgn_ntby_amt", 5), _avg("frgn_ntby_amt", 30)),
         "orgn_pace": _pace_judgment(_avg("orgn_ntby_amt", 5), _avg("orgn_ntby_amt", 30)),
         "recent_5d_daily": [
             {"date": r["date"], "frgn": r["frgn_ntby_amt"], "orgn": r["orgn_ntby_amt"],
-             "prsn": r["prsn_ntby_amt"]}
-            for r in rows[:5]
+             "prsn": r["prsn_ntby_amt"],
+             "other": round(-sum(r[k] for k in _KEYS), 0)}
+            for r in confirmed[:5]
         ],
         "frgn_exhaust_rate_pct": holding.get("frgn_exhaust_rate") if holding else None,
     }
@@ -718,9 +752,12 @@ def collect_input_snapshot(client: KISClient, stock_code: str,
         quarters[0] if quarters else None, pbr_recent_q, per_band_5y=per_band)
 
     # ---- 외부 소스: DART 공시(확정) + 네이버 뉴스(최신순) — 실패 시 data_flags 폴백 ----
-    from app.services.dart.client import fetch_recent_disclosures
+    from app.services.dart.client import fetch_buyback_disclosures, fetch_recent_disclosures
     from app.services.naver.news import fetch_recent_news
     disclosures = fetch_recent_disclosures(stock_code)
+    # 자사주 프로그램은 취득기간이 3개월이라 14일 창을 벗어나도 수급에 계속 찍힌다 —
+    # other_net_*(기타법인 역산)의 반대편을 설명할 장기 창을 따로 붙인다
+    buyback = fetch_buyback_disclosures(stock_code)
     recent_news = fetch_recent_news(stock_name)
 
     # ---- 수급: 30일 실측 요약 + 적재분 60/120일 + 적재 upsert ----
@@ -780,6 +817,8 @@ def collect_input_snapshot(client: KISClient, stock_code: str,
             "available": False, "note": "적재분 조회 불가 (db 미제공)"},
         # 확정 외부 데이터 — 검색 "발견"이 아닌 공식 API 수집 (스펙: 출처와 함께 스냅샷 보존)
         "dart_disclosures": disclosures,
+        # 진행 중인 자사주 프로그램 (180일 창) — 수급 잔차 해석 재료
+        "buyback_context": buyback,
         "news_recent": recent_news,
         "data_flags": {
             "consensus_target_price": "KIS 미제공 — 검색으로만 확인 가능",
@@ -803,9 +842,27 @@ def collect_input_snapshot(client: KISClient, stock_code: str,
     latest_q_note = (quarters[0].get("ni_over_op_note") if quarters else None)
     if latest_q_note:
         snapshot["data_flags"]["net_income_quality"] = latest_q_note
+    # 기타(자사주 등) 잔차가 3주체 최대값 대비 유의미하면 오독 방지용 플래그.
+    # 임계 30%: 이 아래면 통상적인 기타법인 노이즈, 위면 "개인 순매도"의 반대편을
+    # 3주체만으로 설명할 수 없다 (하이닉스 2026-09 실측: 잔차 +25조 vs 개인 -14.2조).
+    other30 = flow.get("other_net_30d") if flow.get("available") else None
+    if other30 is not None:
+        biggest = max(abs(flow.get(k) or 0)
+                      for k in ("frgn_net_30d", "orgn_net_30d", "prsn_net_30d"))
+        if biggest and abs(other30) >= biggest * 0.3:
+            bb = [f"{i['date']} {i['title']}" for i in (buyback.get("items") or [])][:3]
+            snapshot["data_flags"]["investor_flow_counterparty"] = (
+                f"KIS 미제공 기타법인·기타외국인의 30일 순매수가 {_fmt_eok(other30)}로 "
+                f"3주체 최대 순매수/도({_fmt_eok(biggest)}) 대비 크다 — 개인/외국인 순매도의 "
+                f"반대편이 3주체 밖에 있다는 뜻이므로 분산·투매로 단정 금지. "
+                + (f"진행 중인 자사주 공시: {' / '.join(bb)}" if bb
+                   else "자사주 공시는 확인되지 않음 (buyback_context 참조)"))
     if not disclosures.get("available"):
         snapshot["data_flags"]["dart_disclosures"] = (
             f"DART 공시 조회 실패 — 공시는 Gemini 검색으로만 확인됨: {disclosures.get('note')}")
+    if not buyback.get("available"):
+        snapshot["data_flags"]["buyback_context"] = (
+            f"자사주 공시 조회 실패 — 수급 잔차의 자사주 여부 확인 불가: {buyback.get('note')}")
     if not recent_news.get("available"):
         snapshot["data_flags"]["news_recent"] = (
             f"네이버 뉴스 조회 실패 — 최신 기사는 Gemini 검색에 의존: {recent_news.get('note')}")

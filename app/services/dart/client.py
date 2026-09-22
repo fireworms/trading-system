@@ -91,7 +91,8 @@ def get_corp_code(stock_code: str) -> str | None:
 
 
 def fetch_recent_disclosures(stock_code: str, end_date: date | None = None,
-                             days: int = 14, limit: int = 20) -> dict:
+                             days: int = 14, limit: int = 20,
+                             pblntf_ty: str | None = None) -> dict:
     """최근 N일 공시 목록 — 스냅샷에 그대로 들어가는 확정 데이터.
 
     반환: {"available": True, "source": ..., "window": ..., "items": [...]}
@@ -108,13 +109,16 @@ def fetch_recent_disclosures(stock_code: str, end_date: date | None = None,
 
         end = end_date or date.today()
         bgn = end - timedelta(days=days)
-        resp = httpx.get(f"{_BASE_URL}/list.json", params={
+        params = {
             "crtfc_key": api_key,
             "corp_code": corp_code,
             "bgn_de": bgn.strftime("%Y%m%d"),
             "end_de": end.strftime("%Y%m%d"),
             "page_count": 100,
-        }, timeout=15)
+        }
+        if pblntf_ty:  # 공시유형 좁히기 — 긴 창에서 100건 페이지 잘림 방지
+            params["pblntf_ty"] = pblntf_ty
+        resp = httpx.get(f"{_BASE_URL}/list.json", params=params, timeout=15)
         resp.raise_for_status()
         data = resp.json()
         status = data.get("status")
@@ -140,3 +144,50 @@ def fetch_recent_disclosures(stock_code: str, end_date: date | None = None,
     except Exception as e:
         logger.warning("DART 공시 조회 실패 (%s): %s", stock_code, e)
         return {"available": False, "note": f"DART 조회 실패: {e}"}
+
+
+# 자기주식 취득/처분/소각 — 공시일이 지나도 수개월간 매일 수급에 남는 유형
+_BUYBACK_KEYWORDS = ("자기주식", "자사주", "소각")
+# 자사주 공시가 흩어져 있는 공시유형 (2026-09-22 실측):
+#   B 주요사항보고서 = 자기주식취득/처분결정, E 기타공시 = 결과보고서, I 거래소공시 = 주식소각결정
+# 유형을 안 좁히면 180일 창에서 삼성전자 911건 → page 1(100건)에 잘려 취득결정이 사라진다
+_BUYBACK_TYPES = ("B", "E", "I")
+
+
+def fetch_buyback_disclosures(stock_code: str, end_date: date | None = None,
+                              days: int = 180, limit: int = 10) -> dict:
+    """자기주식 취득/처분/소각 공시만 뽑는 장기 창 — 수급 잔차(other_net_*) 해석용.
+
+    일반 공시 창(14일)과 분리한 이유: 자기주식취득결정은 법정 취득기간이 3개월이라
+    **공시일이 창 밖으로 나간 뒤에도 매일 수급에 찍힌다**. 14일 창만 보면 잔차의 원인을
+    알 수 없어 "개인 대량 순매도 = 분산"으로 오독하게 된다 (2026-08-19 SK하이닉스
+    자기주식취득결정 → 8/20부터 일 62만주 고정 매수, 9/22 분석 시점엔 14일 창 밖).
+
+    감지가 아닌 **해석 재료** 제공이 목적이라 events.py의 공시 이벤트와는 별개다
+    (저쪽은 신규 공시 알림, 이쪽은 진행 중인 프로그램의 존재 확인).
+    """
+    merged: dict[str, dict] = {}
+    window, failures = None, []
+    for ty in _BUYBACK_TYPES:
+        res = fetch_recent_disclosures(stock_code, end_date=end_date,
+                                       days=days, limit=100, pblntf_ty=ty)
+        if not res.get("available"):
+            failures.append(f"{ty}: {res.get('note')}")
+            continue
+        window = window or res.get("window")
+        for it in res.get("items", []):
+            if any(k in (it.get("title") or "") for k in _BUYBACK_KEYWORDS):
+                merged[it.get("rcept_no")] = it
+    if not merged and failures and len(failures) == len(_BUYBACK_TYPES):
+        return {"available": False, "note": f"DART 자사주 공시 조회 실패: {'; '.join(failures)}"}
+
+    items = sorted(merged.values(), key=lambda x: x.get("date") or "", reverse=True)[:limit]
+    out = {"available": True, "source": "DART OpenDART list API (유형 B/E/I)",
+           "window": window, "items": items,
+           "note": ("기간 내 자기주식 관련 공시 없음 — 수급 잔차(other_net_*)는 자사주 외 요인"
+                    if not items else
+                    "취득결정 공시일 이후 수개월간 일별 수급에 기타법인 순매수로 반영된다 "
+                    "— other_net_*의 반대편으로 함께 읽을 것")}
+    if failures:
+        out["partial"] = f"일부 공시유형 조회 실패: {'; '.join(failures)}"
+    return out
