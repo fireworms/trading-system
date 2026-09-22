@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 _NI_OP_GAP_RATIO = 1.2   # 순이익/영업이익 이 배수 초과 시 영업외 요인 플래그
 _PBR_BASIS_GAP_PCT = 15  # 연간 BPS vs 최근 분기 BPS 기준 PBR 괴리 경고 임계 (%)
+_PACE_CONCENTRATION = 0.5  # 창 내 절대합의 이 비율 이상을 하루가 차지하면 단일일 주도로 표시
 
 WATCHLIST_MODEL = "gemini-2.5-flash"  # 검색 그라운딩 필요 (뉴스/공시/컨센서스 보강)
 
@@ -64,7 +65,7 @@ _ANALYSIS_PROMPT = """당신은 데이터를 구조화하는 애널리스트입�
 5. 앱이 계산해 넣은 파생 지표는 재계산하지 말고 그대로 인용할 것 — investor_flow의 frgn_pace/orgn_pace judgment 문자열, market의 상대수익률/relative_note, fx_usdkrw의 trend_note, per_ttm, pbr_band_5y 퍼센타일, valuation_scenarios의 함의주가. 직접 나눗셈/비율 계산 금지.
 6. PER 시점 구분: per_trailing은 직전 공시 실적 기준이라 실적 급변 구간에서 왜곡됨 — income_single_q 추세와 괴리가 크면 per_ttm(최근 4개 분기 합산)과 per_forward_consensus를 우선해 밸류를 평가할 것.
 7. 환율은 외국인 수급의 공통 팩터 — 외국인 순매도가 fx_usdkrw 추세와 동행하는 시장 공통 요인인지, market의 상대수익률상 종목 고유 요인인지 구분해 서술할 것.
-7-1. 수급의 세 주체(개인·외국인·기관계) 합은 0이 아니다 — KIS가 기타법인·기타외국인을 주지 않기 때문이고, 앱이 이를 investor_flow.other_net_*으로 역산해 넣었다. 개인 또는 외국인의 대량 순매도를 서술할 때는 **그 반대편이 누구인지** other_net_*으로 함께 확인할 것. other_net_*이 크면 자사주 매입일 가능성이 높으므로 buyback_context의 공시를 확인해 인용하고, 확인되면 "분산/투매"로 단정하지 말 것. 누적 창의 실제 거래일 수는 window_days에 있다 — 라벨(5d/30d)이 아니라 이 값을 인용할 것. 서술에는 필드명(other_net_*)을 그대로 쓰지 말고 "기타법인·기타외국인"으로 풀어 쓸 것.
+7-1. 수급의 세 주체(개인·외국인·기관계) 합은 0이 아니다 — KIS가 기타법인·기타외국인을 주지 않기 때문이고, 앱이 이를 investor_flow.other_net_*으로 역산해 넣었다. 개인 또는 외국인의 대량 순매도를 서술할 때는 **그 반대편이 누구인지** other_net_*으로 함께 확인할 것. other_net_*이 크면 자사주 매입일 가능성이 높으므로 buyback_context의 공시를 확인해 인용하고, 확인되면 "분산/투매"로 단정하지 말 것. 누적 창의 실제 거래일 수는 window_days에 있다 — 라벨(5d/30d)이 아니라 이 값을 인용할 것. 서술에는 필드명(other_net_*)을 그대로 쓰지 말고 "기타법인·기타외국인"으로 풀어 쓸 것. frgn_pace/orgn_pace의 judgment에 "(단, …하루가 …%)" 단서가 붙어 있으면 반드시 함께 인용할 것 — 단일 대형일이 평균을 주도한 구간을 "추세 전환"으로 단정하면 안 된다.
 8. valuation_scenarios는 앱이 배수 밴드에서 역산한 산술값(현재가 × 목표배수 ÷ 현재배수)이다. 새 목표주가를 만들어내지 말고, 이 표에서 현재 논거와 정합적인 행을 고르고 그 행의 "전제"가 성립할 조건을 서술할 것. warnings에 담긴 경고(이익 피크 구간·영업외 요인·장부가 시점차)는 반드시 반영할 것 — 경고를 무시한 상단 인용 금지. 행에 "신뢰도"가 붙어 있으면 그 행을 인용할 때 반드시 사유를 함께 밝히고, 신뢰도 낮은 행만 남아 있으면 "현재 국면에서는 밴드 회귀 역산이 유효하지 않다"고 명시할 것 — 근거 없는 숫자를 만들어 채우지 말 것.
 9. 날짜를 지어내지 말 것. 실적 발표일·공시일은 dart_disclosures의 rcept_dt에서, 기사 날짜는 news_recent에서만 인용한다. 정기보고서 법정 제출기한은 실제 실적 발표일이 아니다 — 둘을 혼동하지 말 것.
 10. 단기_촉매는 분석 기준일 이후에 발생할 이벤트만 쓸 것. 이미 발표·확정된 건은 논거의 배경으로 서술하고 촉매에 넣지 말 것. 예상_시점은 미래 날짜 또는 확정된 기한이어야 한다.
@@ -168,8 +169,40 @@ def _fmt_eok(v_million: float) -> str:
     return f"{eok:+,.0f}억"
 
 
-def _pace_judgment(recent: tuple[float, int] | None,
-                   base: tuple[float, int] | None) -> dict | None:
+def _window_stats(rows: list[dict], key: str, n: int) -> dict | None:
+    """창 내 일별 수급 통계 — 평균이 단일 대형일에 끌려간 것인지 판정할 재료.
+
+    평균만 내면 하루치 블록딜/대량 프로그램이 "페이스 전환"으로 둔갑한다
+    (2026-09-18 하이닉스 외인 +1.33조 하루가 5일 평균의 부호를 좌우한 실사례).
+    중앙값·최대 기여일·그날 제외 평균을 함께 내서 앱이 판정하고 LLM은 인용만 한다.
+    """
+    w = [(r["date"], r[key]) for r in rows[:n]]
+    if not w:
+        return None
+    vals = [v for _, v in w]
+    avg = sum(vals) / len(vals)
+    ordered = sorted(vals)
+    mid = len(ordered) // 2
+    median = ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+    top_date, top_val = max(w, key=lambda x: abs(x[1]))
+    abs_sum = sum(abs(v) for v in vals)
+    share = abs(top_val) / abs_sum if abs_sum else 0.0
+    rest = [v for d, v in w if d != top_date]
+    avg_ex_top = sum(rest) / len(rest) if rest else None
+    # 판정을 뒤집는가 = 그 하루를 빼면 평균의 부호가 바뀌는가. 집중도만으로는
+    # "큰 날이 있었다"까지만 말하고 "방향이 그 날에 달렸다"는 못 말한다.
+    flips = (avg_ex_top is not None and avg != 0 and avg_ex_top != 0
+             and (avg > 0) != (avg_ex_top > 0))
+    return {
+        "avg": avg, "days": len(vals), "median": median,
+        "top_date": top_date, "top_value": top_val, "top_share": share,
+        "avg_ex_top": avg_ex_top,
+        "outlier_driven": bool(flips or share >= _PACE_CONCENTRATION),
+        "flips_sign": bool(flips),
+    }
+
+
+def _pace_judgment(recent: dict | None, base: dict | None) -> dict | None:
     """최근 단기 vs 장기 일평균 순매수(백만원/일) → 가속/둔화/전환 판정.
 
     판정을 앱에서 확정해 문자열로 넣는 이유: LLM에 나눗셈/비교를 시키면
@@ -181,8 +214,8 @@ def _pace_judgment(recent: tuple[float, int] | None,
     """
     if recent is None or base is None:
         return None
-    avg5, n5 = recent
-    avg30, n30 = base
+    avg5, n5 = recent["avg"], recent["days"]
+    avg30, n30 = base["avg"], base["days"]
     # 30일 평균이 5일 평균 대비 무시할 수준이면 비율 판정이 폭주 — 중립 취급
     neutral30 = abs(avg30) < max(abs(avg5) * 0.05, 100)
     if neutral30 and abs(avg5) < 100:
@@ -202,13 +235,32 @@ def _pace_judgment(recent: tuple[float, int] | None,
             label = f"{direction} 둔화"
         else:
             label = f"{direction} 지속 (페이스 유사)"
+    # 단일 대형일이 최근 창 평균을 주도하면 라벨을 바꾸지 않고 단서를 덧붙인다 —
+    # 라벨 자체를 흔들면 판정이 불안정해지고, 수치를 감추면 LLM이 전환을 단정한다
+    caveat = ""
+    if recent.get("outlier_driven"):
+        ex = recent.get("avg_ex_top")
+        detail = (f"{recent['top_date']} 하루가 {_fmt_eok(recent['top_value'])}로 "
+                  f"창 내 절대 순매수의 {recent['top_share'] * 100:.0f}%")
+        if ex is not None:
+            detail += f", 그날 제외 시 일평균 {_fmt_eok(ex)}"
+            if recent.get("flips_sign"):
+                detail += " (방향 반전)"
+        caveat = f" (단, {detail})"
     return {
         "avg_recent_daily": round(avg5, 0),
         "recent_days": n5,
         "avg_base_daily": round(avg30, 0),
         "base_days": n30,
+        # 평균이 소수 대형일에 끌렸는지 보는 값 — 중앙값과 평균의 부호가 다르면 특히
+        "median_recent_daily": round(recent["median"], 0),
+        "top_day": {"date": recent["top_date"], "value": round(recent["top_value"], 0),
+                    "share_pct": round(recent["top_share"] * 100, 1)},
+        "avg_recent_ex_top": (round(recent["avg_ex_top"], 0)
+                              if recent.get("avg_ex_top") is not None else None),
+        "outlier_driven": recent.get("outlier_driven", False),
         "judgment": (f"최근 {n5}거래일 일평균 {_fmt_eok(avg5)} vs "
-                     f"{n30}거래일 일평균 {_fmt_eok(avg30)} → {label}"),
+                     f"{n30}거래일 일평균 {_fmt_eok(avg30)} → {label}{caveat}"),
     }
 
 
@@ -655,10 +707,9 @@ def _summarize_flow(rows: list[dict], holding: dict | None) -> dict:
         """기타(기타법인·기타외국인, 자사주 취득 포함) 추정 순매수 = -(3주체 합)."""
         return round(-sum(r[k] for r in confirmed[:n] for k in _KEYS), 0)
 
-    def _avg(key: str, n: int) -> tuple[float, int]:
-        """(일평균, 실제 거래일 수) — 분모를 호출부에 그대로 넘긴다."""
-        w = confirmed[:n]
-        return (sum(r[key] for r in w) / len(w), len(w))
+    def _avg(key: str, n: int) -> dict | None:
+        """창 통계(일평균·중앙값·최대 기여일) — 분모와 이상치 정보를 그대로 넘긴다."""
+        return _window_stats(confirmed, key, n)
 
     return {
         "available": True,
