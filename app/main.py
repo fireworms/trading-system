@@ -3,6 +3,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.logging import setup_logging
+
+setup_logging()   # 라우터/서비스 import 전에 — import 시점 로그까지 저널에 남기기 위해
 logger = logging.getLogger(__name__)
 
 from app.api import users, strategies, recommendations, positions, market, admin, prompt_versions, stock_master, backtest, news_events, watchlist, research

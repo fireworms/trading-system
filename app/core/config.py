@@ -25,6 +25,10 @@ class Settings(BaseSettings):
     # KRX 오픈API (일별 전종목 시세 벌크 적재) — 미설정 시 어댑터가 available=False 반환
     krx_api_key: str | None = Field(None, alias="KRX_API_KEY")
 
+    # 로깅 — 기본 INFO (앱 로거가 루트 기본값 WARNING에 막혀 정상 기록이 안 남던 문제 교정)
+    log_level: str = Field("INFO", alias="LOG_LEVEL")
+    log_access: bool = Field(True, alias="LOG_ACCESS")  # uvicorn 액세스 로그 (프론트 폴링 소음)
+
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24
 

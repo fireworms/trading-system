@@ -33,6 +33,7 @@ trading_system/
 │   │   ├── database.py          # SessionLocal, Base
 │   │   ├── security.py          # JWT, bcrypt, Fernet 암호화
 │   │   ├── config_store.py      # AppConfig key-value (DB 기반 동적 설정)
+│   │   ├── logging.py           # setup_logging() — 루트 레벨/소음 억제 (uvicorn이 루트를 안 건드림)
 │   │   └── loop.py              # async 이벤트루프 싱글턴 (APScheduler 스레드↔async 브리지)
 │   ├── models/
 │   │   ├── user.py              # User, BrokerAccount (hts_id 포함)
@@ -467,7 +468,7 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 9/3 커밋(`try_claim` 도입) 후 **서버를 재시작하지 않아** 2026-09-08 14:53부터 9/10 11:08까지 실시간·폴링 청산이 **23,990회 연속 실패**했다. 로그에만 쌓이고 알림이 없어 아무도 몰랐다. 그 사이 018260 포지션이 손절선(-3%)을 뚫고 매달려 **-7.41%에 청산**됐다 (가상계좌라 실손실 없음, 다만 가상 성과 통계는 이 건만큼 오염 — 대조군 판정 시 장애분으로 제외할 것)
 - **원인은 신구 코드 혼재**: `_close_position_sync`가 executor를 **함수 내부에서 지연 import** 한다. 프로세스는 9/3 18:56 기동이라 monitor는 구 클래스인데, 첫 청산 시점에 import된 executor는 20:34 수정된 새 소스 → 새 executor가 구 monitor의 없는 메서드(`try_claim`)를 호출. **커밋 후 재시작을 빼먹으면 "구 코드로 계속 돈다"가 아니라 "한 프로세스 안에서 신구가 섞인다"**
 - **조치**: `monitor.record_close_failure()` — 실패 3회 연속 시 어드민 알림, 1시간 간격 재알림. 3개 경로(실시간/매도주문/폴링) 공유
-- **앱 로그 INFO가 저널에 안 올라간다** — 로그 레벨이 WARNING 이상만 통과해 `RT closed`·`Monitoring N positions` 같은 정상 기록이 안 보인다. 그래서 이번 건도 ERROR라서 보인 것. 청산 성공 여부를 로그로 추적하려면 로깅 설정부터 손봐야 함 (미조치)
+- **앱 로그 INFO가 저널에 안 올라가던 문제 (2026-09-22 조치)** — uvicorn은 자기 로거(`uvicorn`/`uvicorn.access`)만 INFO로 올리고 **루트 로거는 손대지 않는다**. 앱 모듈은 전부 `getLogger(__name__)`이라 루트 기본값 WARNING이 유효 레벨이 돼 `RT closed`·`Monitoring N positions` 같은 정상 기록이 통째로 사라졌다 (이번 건이 보인 건 ERROR였기 때문). `app/core/logging.py`의 `setup_logging()`이 루트 레벨을 `LOG_LEVEL`(기본 INFO)로 올린다
 
 ## Circuit Breaker
 - 직전 4건 청산이 전부 손실이면 해당 유저 매수 자동 차단 (4건 미만은 체크 안 함)
@@ -541,6 +542,8 @@ DART_API_KEY=            # 선택 — 관심종목 공시 어댑터 (미설정 �
 NAVER_CLIENT_ID=         # 선택 — 관심종목 뉴스 어댑터
 NAVER_CLIENT_SECRET=
 KRX_API_KEY=             # 선택 — KRX 오픈API (일별 전종목 벌크 적재)
+LOG_LEVEL=INFO           # 선택 — 앱 로그 레벨 (기본 INFO)
+LOG_ACCESS=true          # 선택 — uvicorn 액세스 로그 (프론트 폴링이 저널을 덮으면 false)
 ```
 - KIS API 키/계좌번호는 .env 사용 안 함 → DB broker_accounts에 Fernet 암호화 저장
 - HTS 아이디는 DB broker_accounts.hts_id (프론트 포지션 페이지 > 계좌 설정에서 입력)
@@ -612,6 +615,7 @@ KRX_API_KEY=             # 선택 — KRX 오픈API (일별 전종목 벌크 적
 
 ### app/core/
 - `config_store.py`: `get_config(db, key)` / `set_config(db, key, value)` — app_config 테이블 key-value 읽기/쓰기
+- `logging.py`: `setup_logging()` — 루트 로거 레벨을 `LOG_LEVEL`로 설정 + 소음 라이브러리(httpx/httpcore/websockets/google_genai) WARNING 고정. main.py가 라우터 import 전에 1회 호출(멱등). **핸들러는 안 붙인다** — uvicorn 로거는 `propagate=False`라 루트 핸들러와 중복되지 않고, uvicorn은 루트를 설정하지 않으므로 basicConfig가 루트 핸들러 1개를 담당. journald가 줄마다 타임스탬프를 찍으므로 포맷에 asctime 없음
 - `loop.py`: `set_loop()` / `get_loop()` — APScheduler 스레드에서 async 함수 호출 시 `run_coroutine_threadsafe`에 넘길 루프 저장
 - `security.py`: `hash_password` / `verify_password` (bcrypt, 72바이트 truncate), `create_access_token` / `decode_access_token` (JWT), `encrypt_secret` / `decrypt_secret` (Fernet)
 
