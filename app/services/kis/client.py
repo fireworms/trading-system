@@ -989,18 +989,44 @@ class KISClient:
 
         recent     = bars[:5] if bars else []
         avg_volume = int(sum(b.volume for b in bars[:20]) / min(20, len(bars))) if bars else 0
+
         # 규칙 기반 전략용 파생값 — 이미 받아둔 일봉에서 계산, 추가 API 호출 없음.
-        # bars는 최신순이고 08:30 실행 시점엔 bars[0]이 전 거래일 → bars[1:21]이 "직전 20거래일"
-        prior20 = bars[1:21] if len(bars) > 1 else []
-        close_high_20d = int(max(b.close for b in prior20)) if prior20 else None
-        turnover_ratio = _turnover_ratio(bars[0], bars[1]) if len(bars) > 1 else None
+        #
+        # ⚠️ bars[0]을 "전 거래일"로 가정하면 안 된다. KIS는 장 시작 전(08:30)에도
+        # **당일 날짜 봉을 종가=전일종가로 초기화해서** 내려준다. 그래서 bars[1:21]을
+        # 직전 20거래일로 쓰면 창에 전일이 끼고, 비교 대상인 current_price(장전엔 전일 종가)와
+        # 같은 값이 창 안에 들어가 `price > close_high_20d`가 **구조적으로 성립 불가**가 된다.
+        # 실측(2026-10-09): 규칙 돌파 전략 11런 중 장전 실행 8런이 전부 0픽, 재시작 캐치업으로
+        # 장중에 실행된 3런만 발동 — 완벽히 갈렸다. 백테스터(get_historical_stock_info)는
+        # 기준봉을 prior20에서 제외해 원래 맞았고 라이브만 틀렸다 (랜덤 벤치마크 때와 같은 모양).
+        #
+        # 따라서 **완결 봉만** 추려 기준봉을 잡는다 (미확정 행을 창 계산 전에 제거하는
+        # flow_store/calibration과 같은 원칙).
+        today_kst = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
+        done      = [b for b in bars if b.date < today_kst]
+        if bars and len(done) < len(bars):
+            logger.debug("%s: 당일 미확정 봉 %d개 제외 (bars[0]=%s)",
+                         stock_code, len(bars) - len(done), bars[0].date)
+        asof    = done[0] if done else None
+        prior20 = done[1:21]
+        # 20개 미달이면 "20일 신고가"를 판정할 수 없다 — 짧은 창으로 거짓 신고가를 만들지 않는다
+        close_high_20d = int(max(b.close for b in prior20)) if len(prior20) == 20 else None
+        turnover_ratio = _turnover_ratio(done[0], done[1]) if len(done) > 1 else None
+        close_asof     = int(asof.close) if asof else None
+        ma5_asof       = (int(sum(float(b.close) for b in done[:5]) / 5)
+                          if len(done) >= 5 else None)
 
         return {
             "stock_code":      stock_code,
             "currency":        "KRW",
             "current_price":   int(current_price),
-            "close_high_20d":  close_high_20d,   # 직전 20거래일 종가 최고 (신고가 판정용)
-            "turnover_ratio":  turnover_ratio,   # 최신봉 거래대금 ÷ 직전봉 거래대금
+            # 규칙 판정 기준값 — 실행 시각(장전/장중)에 흔들리지 않게 '최근 완결 봉' 고정.
+            # current_price는 장중엔 실시간가라 규칙 판정에 쓰면 캐치업 실행만 발동한다.
+            "asof_date":       asof.date if asof else None,
+            "close_asof":      close_asof,       # 최근 완결 봉 종가 (= 장전 실행 시 전일 종가)
+            "ma5_asof":        ma5_asof,         # 완결 봉 기준 MA5
+            "close_high_20d":  close_high_20d,   # asof 직전 20거래일 종가 최고 (asof 제외)
+            "turnover_ratio":  turnover_ratio,   # 완결 최신봉 거래대금 ÷ 그 직전봉
             "rsi_14":          float(rsi) if rsi else None,
             "ma5":             int(mas["ma5"])  if mas["ma5"]  else None,
             "ma20":            int(mas["ma20"]) if mas["ma20"] else None,
@@ -1060,6 +1086,12 @@ class KISClient:
                 "stock_code":      stock_code,
                 "currency":        "KRW",
                 "current_price":   int(target_bar.close),
+                # 라이브 경로와 키를 맞춘다 — 이 경로는 target_bar가 곧 완결 기준봉이라
+                # 원래 올바랐지만, 키가 비면 규칙 선정기가 폴백으로 돌아 두 경로가 또 갈린다
+                "asof_date":       target_bar.date,
+                "close_asof":      int(target_bar.close),
+                "ma5_asof":        (int(sum(float(b.close) for b in hist_bars[-5:]) / 5)
+                                    if len(hist_bars) >= 5 else None),
                 "close_high_20d":  close_high_20d,
                 "turnover_ratio":  turnover_ratio,
                 "rsi_14":          float(rsi) if rsi else None,

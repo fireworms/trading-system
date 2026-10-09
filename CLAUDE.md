@@ -320,7 +320,7 @@ trading_system/
 ## Gemini 모델 체인
 | 용도 | 모델 | Fallback |
 |------|------|----------|
-| Stage1 (매크로+그라운딩) | gemini-2.5-flash | - |
+| Stage1 (매크로+그라운딩) | gemini-2.5-flash | 재시도 3회 → 실패 시 Stage2 체인(**비그라운딩**, grounded=false 기록) |
 | Stage2 (역사 분석) | gemini-3-flash-preview | gemini-3.1-flash-lite |
 | Stage3 (산업 분석) | gemini-3.1-flash-lite | gemini-2.5-flash-lite |
 | Stage4-A (자유형식 분석) | gemini-3-flash-preview | gemini-3.1-flash-lite → gemini-2.5-flash-lite |
@@ -384,6 +384,7 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
   - **rule_breakout**: 종가가 직전 20거래일 종가 최고 갱신 + 종가 > MA5. 정렬은 돌파 폭 큰 순
   - **rule_oversold**: RSI(14) ≤ 35 + 거래대금 전일 대비 ≥ 1.5배. 정렬은 RSI 낮은 순
   - 입력은 `_collect_stock_data`가 이미 수집한 값만 사용 — **추가 API 호출 0회**. `close_high_20d` / `turnover_ratio`를 `_get_domestic_stock_info`가 이미 받아둔 일봉에서 계산해 동봉
+  - **판정 기준값은 `close_asof`(최근 완결 봉 종가)다 — `current_price` 금지**. 장중엔 실시간가라 실행 시각에 따라 결과가 달라진다. 아래 '미확정 당일 봉' 참조
   - 지시서의 "거래대금 상위 100위" 조건은 **의도적으로 제외** — KOSPI200 유니버스에선 거의 항상 통과라 무효 필터(전체시장용 유동성 스크린)이고, 조건이 늘면 대조군의 변수만 늘어남
 
 ## 관찰 전략 구성 (2026-09-03 개편)
@@ -431,7 +432,9 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 **적재 운영**
 - 진행 지점을 app_config(`krx_load_last_date`)에 저장 → `--resume`으로 이어받기
 - `--status`로 적재 현황, `--dry-run`으로 DB 미반영 조회
-- 첫 실행 완료(2026-09-03): 2026-08-04~09-02, 21거래일 58,045행
+- **적재 현황(2026-10-09 실측)**: 2020-01-02~2026-09-02, **1,637거래일 / 4,219,219행** (KOSPI 1,021 + KOSDAQ 종목). 2026-09-03 이후 미적재 — 이어받기는 `--resume`
+- **생존 편향 없음**: 2020년 상장분 중 216개가 현재 미존재(상폐분이 과거 날짜에 그대로 남아 있다)
+- `trade_date`는 **DATE 타입**이다 (KIS 일봉의 "YYYYMMDD" 문자열과 혼용 금지 — `substr()`이 안 먹는다)
 - 스펙 문서(docx)는 `docs/krx/`에 있으나 **git 미추적** (KRX 배포 문서라 공개 레포에 싣지 않음)
 
 ## 수급 3주체 합은 0이 아니다 (2026-09-22)
@@ -463,6 +466,35 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 - 결과 조건은 정규화→캘리브레이션→스크리닝을 거쳐 본 분석 조건에 병합(`origin: "반증"`, 총 `_MAX_CONDITIONS=8` 상한, `cond_key`로 중복 제거). 실패해도 분석은 유효
 - 비용은 분석당 Gemini +1회 — 수동/이벤트 트리거라 RPD 영향 없음
 - **인용 문단 보존은 미채택**: 그라운딩 검색 원문을 통제할 수 없고 네이버 어댑터는 제목만 준다. 반증 패스가 같은 문제를 실질적으로 해결
+
+## 미확정 당일 봉 — bars[0]을 전 거래일로 가정하지 말 것 (2026-10-09)
+**KIS `get_ohlcv`는 장 시작 전(08:30)에도 당일 날짜 봉을 내려준다** — 종가는 전일 종가로 초기화, 거래량 0. `bars[0]`을 "전 거래일"로 가정한 계산은 창이 한 칸 밀린다. 휴장일엔 당일 봉이 없어 **휴장일 테스트로는 재현되지 않는다**(이 가설을 한 번 기각했다가 데이터로 되돌아왔다).
+
+**이것 때문에 규칙 대조군이 5주간 아무것도 측정하지 못했다:**
+- `close_high_20d = max(bars[1:21])` 창에 전일이 끼고, 비교 대상 `current_price`(장전엔 전일 종가)와 같은 값이 창 안에 들어가 `price > high20`이 **구조적으로 성립 불가**
+- `turnover_ratio = bars[0]/bars[1]` = (거래량 0)/(전일) = 0 → `≥1.5`가 영구 불가 → **과매도 반등 5주 0건의 진짜 원인**(임계가 빡세서가 아니다 — 당시 해석은 오진이었다)
+- 증거: 돌파 전략 11런 중 **장전 실행 8런 전부 0픽**, 재시작 캐치업으로 장중 실행된 3런만 발동. 저장 가격이 전일 종가와 정확히 일치하는지로 완벽히 갈렸다
+- 백테스터(`get_historical_stock_info`)는 `prior20 = hist_bars[-21:-1]`로 기준봉을 제외해 **원래 맞았다** — 랜덤 벤치마크 때와 같은 모양(로직이 두 경로에 복제돼 라이브만 드리프트)
+- **조치**: `_get_domestic_stock_info`가 완결 봉만(`b.date < today_kst`) 추려 기준봉을 잡고 `asof_date`/`close_asof`/`ma5_asof`를 분리 노출. 20개 미달 창은 `close_high_20d=None`(짧은 창으로 거짓 신고가 금지). 백테스트 경로도 같은 키를 내보내 폴백으로 갈리지 않게 맞춤
+- **깨끗한 규칙 표본은 2026-10-09 이후부터** — 그 전 3건(평균 -3.00%)은 장애분으로 제외
+- **미결**: AI 경로 `_prefilter_stocks`의 `vol_score`(점수 20%)가 `recent_ohlcv[0]`이 플레이스홀더라 **모든 08:30 런에서 0**이다(실측 20/20 종목 0.000, 정상 평균 0.711). RSI는 델타 0이 avg_gain·avg_loss를 같은 비율로 줄여 **수학적으로 면역**, MA는 상대차 0.18~0.9%로 trend 등급 변동 0/20. prefilter 통과 교집합 19/20이나 순위는 17/20 변동. 수정하면 라이브 AI 선정이 바뀌므로 표본 분리 라벨링 필요
+- 수급(`flow_store`·`calibration`)에서 세운 "미확정 행은 창 계산 전에 제거" 원칙과 같은 것 — 일봉 경로엔 적용돼 있지 않았다
+
+## Gemini 일시 오류(503) 재시도 (2026-10-09)
+503(UNAVAILABLE, 모델 과부하)·429·5xx는 **기다렸다 다시 하면 대개 풀린다.** 그런데 재시도가 호출부마다 달랐다 — `check_news`만 20초 후 1회, 나머지는 1회 실패로 끝. `app/services/gemini/retry.py`의 `call_with_retry`/`is_transient`로 통합.
+
+| 경로 | 전 | 후 |
+|---|---|---|
+| 모닝 게이트 | 1회 | 4회 (20s→60s→120s) |
+| 뉴스 감시 | 2회 | 3회 (20s→60s) |
+| thesis 재검증 | 1회 (그룹 실패는 로그만) | 3회 (15s→45s) |
+| Stage1 그라운딩 | 1회 → 즉시 비그라운딩 폴백 | 3회 (15s→45s) |
+
+- 재시도 대상: 429/5xx + `UNAVAILABLE`·`overloaded`·`RESOURCE_EXHAUSTED` 문자열 + 응답 파싱 실패. **400/401/403/404는 재시도 안 함**(기다려도 안 고쳐지고 잡을 붙잡을 이유가 없다)
+- 대기에 ±20% 지터 — 여러 잡이 같은 분에 실패하면 동시 재시도로 과부하를 다시 때린다
+- **모닝 게이트 예산이 가장 긴 이유**: 08:00 실행, 매수 잡 09:20 → 여유 80분. 게이트가 503 하나로 날아가면 그날 지정학·선물 판단 없이 매수가 진행된다(QQQ 수치 게이트만 남음)
+- **Stage1이 가장 위험했다**: 503 시 그라운딩을 포기하고 비그라운딩 체인으로 넘어간 뒤 **조용히 정상처럼 저장**됐다 → `market_theme`이 훈련 기억 기반 과거 서사가 되고 Stage2~4와 A-gate 키워드 게이트가 그걸 물려받는다. 실측(2026-10-09): 전일 KOSPI -2.62%·MA20 아래인 날에 "AI 실질 수익화와 지능형 로봇 산업의 본격 개화" 강세 테마 저장 — 그날은 수치 게이트가 막았고, 그건 안전망이 작동한 것이지 Stage1이 제대로 돈 게 아니다. 6/5 폭락장 키워드 게이트 미스와 같은 구조의 **두 번째 경로**
+- 재시도 후에도 그라운딩 실패 시 어드민 ⚠️ 경고 + `raw_response.macro.grounded=false` 기록 → 사후 분리 `WHERE raw_response->'macro'->>'grounded' = 'false'`
 
 ## 청산 실패는 반드시 알림으로 드러낸다 (2026-09-10)
 9/3 커밋(`try_claim` 도입) 후 **서버를 재시작하지 않아** 2026-09-08 14:53부터 9/10 11:08까지 실시간·폴링 청산이 **23,990회 연속 실패**했다. 로그에만 쌓이고 알림이 없어 아무도 몰랐다. 그 사이 018260 포지션이 손절선(-3%)을 뚫고 매달려 **-7.41%에 청산**됐다 (가상계좌라 실손실 없음, 다만 가상 성과 통계는 이 건만큼 오염 — 대조군 판정 시 장애분으로 제외할 것)
@@ -559,6 +591,7 @@ LOG_ACCESS=true          # 선택 — uvicorn 액세스 로그 (프론트 폴링
 - 매수 스킵 fallback: AI 확인 실패 시 전종목 skip (안전 방향)
 - `get_index_change_pct()`는 실패 시 해당 지수 None 반환 (0.0으로 위장 금지) — 호출부는 None을 "확인 불가"로 보고 안전 방향 처리 (09:20 매수: 전체 스킵+알림 / 듀얼시그널: 어드민 수동확인 알림). 2026-06-10 fail-open 교정
 - 하락장 매수금 절반은 `execute_buys_for_run(invest_override=...)` 일회성 파라미터 사용 — `sub.invest_amount_per_pick` 모델 직접 수정 금지 (중간 커밋/예외 시 구독 설정 영구 오염)
+- 일봉 창/이평/비율 계산 시 `bars[0]`이 **당일 미확정 봉일 수 있다** — 완결 봉만 추려 쓸 것 (`close_asof` 참조)
 - HTTP 클라이언트: 전체 코드 httpx 통일 (requests 사용 금지)
 - KIS API rate limit: client.py `_RateLimiter(18/초)` 전역 싱글턴 — _get/_post 모든 호출 자동 적용
 - KIS 토큰 캐시: `~/.kis_token_cache.json` (재부팅 후에도 유지). `get_kis_client_from_account()`는 account_id 기준 싱글턴 반환 — 인메모리 토큰 공유로 중복 발급 방지
@@ -627,7 +660,7 @@ LOG_ACCESS=true          # 선택 — uvicorn 액세스 로그 (프론트 폴링
 - `get_intraday_status(code)`: 시가/고가/체결강도/거래량 (09:20 장중 체크용)
 - `get_index_change_pct()`: KOSPI(0001)/KOSDAQ(1001) 등락률 — 매수 전 -2% 체크. **휴장일엔 직전 거래일 값을 그대로 반환하므로 시장 조치 전 is_market_open_now() 필수**
 - `is_market_open_day(date)` / `is_market_open_now()`: CTCA0903R 휴장일 조회(날짜별 캐시) + KST 평일 09:00~15:30. 조회 실패 시 개장 간주 (보호 조치를 막지 않는 fail-safe)
-- `_get_domestic_stock_info(code)`: 현재가+RSI+이평선+외국인/기관 순매수+**per/eps**+**close_high_20d/turnover_ratio**(규칙 전략용, 이미 받은 일봉에서 계산 — 추가 호출 없음) 통합 (runner 종목 데이터 수집용). inquire-price 1회 호출로 price+per+eps 동시 추출 (get_current_price 중복 호출 제거). per/eps는 **trailing(직전 공시 실적) 기준** — forward 추정 서사와 다른 값. 적자기업·데이터없음은 None(0/음수 위장 금지). eps는 KIS가 "6564.00" 문자열 반환 → int(float()) 파싱
+- `_get_domestic_stock_info(code)`: 현재가+RSI+이평선+외국인/기관 순매수+**per/eps**+**close_high_20d/turnover_ratio/asof_date/close_asof/ma5_asof**(규칙 전략용, **완결 봉만** 추려 계산 — 추가 호출 없음. 배경은 '미확정 당일 봉') 통합 (runner 종목 데이터 수집용). inquire-price 1회 호출로 price+per+eps 동시 추출 (get_current_price 중복 호출 제거). per/eps는 **trailing(직전 공시 실적) 기준** — forward 추정 서사와 다른 값. 적자기업·데이터없음은 None(0/음수 위장 금지). eps는 KIS가 "6564.00" 문자열 반환 → int(float()) 파싱
 - `get_index_daily_series(code, days)`: 지수 일봉 **(날짜, 종가)** 최신순 — 국면 소급 계산용. `get_index_daily_closes`는 종가만 뽑는 얇은 래퍼
 - `get_stock_basic_info(code)`: CTPF1002R 섹터 조회 (매수 직전 MAX_PER_SECTOR 체크용)
 - `get_fx_daily_closes(symbol='FX@KRW', days)`: USD/KRW 환율 일봉 (FHKST03030100, mrkt div 'X')
@@ -646,9 +679,13 @@ LOG_ACCESS=true          # 선택 — uvicorn 액세스 로그 (프론트 폴링
 - 하트비트: 30초마다 `ws.ping()` (KIS 서버 idle 끊김 방지)
 - `init_realtime_client()` / `get_realtime_client()`: 앱 전역 싱글턴
 
+### app/services/gemini/retry.py
+- `call_with_retry(fn, *, label, attempts, delays)`: Gemini 일시 오류 재시도 공용 헬퍼 (지터 포함). **Gemini 호출부를 새로 추가하면 이걸 경유할 것** — 재시도를 호출부마다 복제하면 한쪽만 드리프트한다
+- `is_transient(exc)`: 429/5xx·과부하 문자열·파싱 실패는 True, 400/401/403/404는 False
+
 ### app/services/gemini/analyzer.py
 - `GeminiAnalyzer`: 4단계 Gemini 파이프라인 + fallback 체인 관리
-- `stage1_macro()`: gemini-2.5-flash + google_search → MacroResult (macro_summary, key_factors, market_theme, sector_outlook)
+- `stage1_macro()`: gemini-2.5-flash + google_search → MacroResult. 그라운딩 호출은 `call_with_retry` 3회 경유, 최종 실패 시 비그라운딩 폴백 + 어드민 경고 + `raw.grounded=False`
 - `stage2_historical()`: gemini-3-flash-preview → HistoricalResult (유사 과거 시기 3개)
 - `stage3_industry()`: gemini-3.1-flash-lite → IndustryResult (섹터별 outlook)
 - `stage4_picks(stock_data, ..., selection_mode)`: 2단계 — A(flash-preview 자유형식 분석) → B(flash-lite 코드 추출). 그룹 분할은 runner가 담당. selection_mode=earnings_catalyst면 STAGE4A_EARNINGS 프롬프트 사용(아니면 STAGE4A_ANALYSIS)

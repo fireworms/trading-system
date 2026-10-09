@@ -8,6 +8,11 @@
 - 파라미터·유니버스·청산 규칙은 비교 대상 AI 전략과 완전히 동일하게 두고,
   **변수는 '선정 방식' 하나만** 다르게 한다.
 - 입력은 StrategyRunner가 이미 수집한 stock_data를 그대로 쓴다 (추가 API 호출 0).
+- **판정 기준값은 `close_asof`(최근 완결 봉 종가)를 쓴다.** `current_price`는 장중엔
+  실시간가라 실행 시각에 따라 결과가 달라진다 — 2026-10-09 실측에서 장전(08:30) 실행
+  8런이 전부 0픽이고 재시작 캐치업으로 장중 실행된 3런만 발동했다. 원인은
+  `close_high_20d` 창에 비교 대상인 전일 종가가 끼어 신고가 판정이 구조적으로
+  성립 불가였던 것(client.py `_get_domestic_stock_info` 주석 참조).
 - 조건 충족 종목이 pick_count에 못 미치면 **모자란 채로 반환**한다.
   억지로 채우면 규칙의 의미가 사라진다 (Stage4 B-gate와 같은 철학).
 """
@@ -25,6 +30,16 @@ _OVERSOLD_TURNOVER_MIN = 1.5
 
 def is_rule_mode(selection_mode: str | None) -> bool:
     return (selection_mode or "") in RULE_MODES
+
+
+def _ref_close(stock: dict) -> float | None:
+    """규칙 판정 기준 종가 — 최근 완결 봉 종가. 구 스냅샷 호환으로 current_price 폴백."""
+    return stock.get("close_asof") or stock.get("current_price")
+
+
+def _ref_ma5(stock: dict) -> float | None:
+    """완결 봉 기준 MA5. 폴백은 기존 ma5(당일 미확정 봉 포함 가능)."""
+    return stock.get("ma5_asof") or stock.get("ma5")
 
 
 def _pick(stock: dict, rank: int, reason: str) -> dict:
@@ -49,9 +64,9 @@ def select_breakout(stock_data: list[dict], pick_count: int) -> list[dict]:
     """
     hits = []
     for s in stock_data:
-        price = s.get("current_price")
+        price  = _ref_close(s)
         high20 = s.get("close_high_20d")
-        ma5 = s.get("ma5")
+        ma5    = _ref_ma5(s)
         if not price or not high20 or not ma5:
             continue
         if price > high20 and price > ma5:
@@ -59,8 +74,9 @@ def select_breakout(stock_data: list[dict], pick_count: int) -> list[dict]:
 
     hits.sort(key=lambda x: -x[0])
     return [
-        _pick(s, i + 1, f"20일 신고가 돌파 (직전 최고 {int(s['close_high_20d']):,}원 대비 "
-                        f"+{gap * 100:.1f}%), 종가 > MA5({int(s['ma5']):,}원)")
+        _pick(s, i + 1, f"20일 신고가 돌파 ({s.get('asof_date') or '기준일 미상'} 종가 "
+                        f"{int(_ref_close(s)):,}원, 직전 최고 {int(s['close_high_20d']):,}원 대비 "
+                        f"+{gap * 100:.1f}%), 종가 > MA5({int(_ref_ma5(s)):,}원)")
         for i, (gap, s) in enumerate(hits[:pick_count])
     ]
 
