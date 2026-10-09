@@ -932,6 +932,10 @@ class KISClient:
     def _get_us_stock_info(self, symbol: str, exchange: str) -> dict:
         """해외주식 통합 정보 (현재가 + OHLCV + 기술적지표). currency=USD."""
         current_price = self.get_us_current_price(symbol, exchange)
+        # 국내 경로의 '완결 봉만' 필터를 여기 그대로 적용하지 않았다 — 해외 일봉은
+        # 미국 날짜 기준이라 KST 오늘과 비교하면 의미가 어긋나고, 현재 활성 전략은
+        # 전부 KOSPI/KOSDAQ이라 검증할 실데이터가 없다. NAS 전략을 켜기 전에
+        # 'KST 오늘'이 아닌 미국 거래일 기준으로 같은 처리를 넣을 것
         bars          = self.get_us_ohlcv(symbol, exchange)
         rsi           = self._compute_rsi(bars)
         mas           = self._compute_mas(bars)
@@ -982,39 +986,47 @@ class KISClient:
         eps           = int(float(po.get("eps") or 0)) or None   # KIS는 "6564.00" 문자열 반환
         if per is not None and per <= 0:
             per = None
-        bars          = self.get_ohlcv(stock_code)
-        rsi           = self._compute_rsi(bars)
-        mas           = self._compute_mas(bars)
-        investor      = self.get_investor_trend(stock_code)
+        bars = self.get_ohlcv(stock_code)
 
-        recent     = bars[:5] if bars else []
-        avg_volume = int(sum(b.volume for b in bars[:20]) / min(20, len(bars))) if bars else 0
-
-        # 규칙 기반 전략용 파생값 — 이미 받아둔 일봉에서 계산, 추가 API 호출 없음.
-        #
         # ⚠️ bars[0]을 "전 거래일"로 가정하면 안 된다. KIS는 장 시작 전(08:30)에도
-        # **당일 날짜 봉을 종가=전일종가로 초기화해서** 내려준다. 그래서 bars[1:21]을
-        # 직전 20거래일로 쓰면 창에 전일이 끼고, 비교 대상인 current_price(장전엔 전일 종가)와
-        # 같은 값이 창 안에 들어가 `price > close_high_20d`가 **구조적으로 성립 불가**가 된다.
-        # 실측(2026-10-09): 규칙 돌파 전략 11런 중 장전 실행 8런이 전부 0픽, 재시작 캐치업으로
-        # 장중에 실행된 3런만 발동 — 완벽히 갈렸다. 백테스터(get_historical_stock_info)는
-        # 기준봉을 prior20에서 제외해 원래 맞았고 라이브만 틀렸다 (랜덤 벤치마크 때와 같은 모양).
+        # **당일 날짜 봉을 종가=전일종가·거래량 0으로 초기화해서** 내려준다.
+        # 이걸 창 계산에 넣으면 두 가지가 동시에 깨진다 (2026-10-09 실측):
+        #   ① bars[1:21]을 "직전 20거래일"로 쓰면 창에 전일이 끼고, 비교 대상인
+        #      current_price(장전엔 전일 종가)와 같은 값이 창에 들어가
+        #      `price > close_high_20d`가 **구조적으로 성립 불가**가 된다.
+        #      → 규칙 돌파 전략 11런 중 장전 실행 8런이 전부 0픽, 캐치업으로 장중에
+        #        실행된 3런만 발동. turnover_ratio도 (거래량 0)/(전일)=0이라
+        #        과매도 조건(≥1.5배)이 영구 불가였다
+        #   ② recent_ohlcv[0]이 거래량 0인 플레이스홀더라
+        #      `_prefilter_stocks`의 vol_score(점수 20%)가 **모든 08:30 런에서 0**이었다
+        #      (실측 20/20 종목 0.000, 정상 평균 0.711). 문서상 "거래량 기준"이
+        #      작동하지 않는 상태로 AI 선정이 돌고 있었다
+        # 백테스터(get_historical_stock_info)는 기준봉을 창에서 제외해 원래 맞았고
+        # 라이브만 틀렸다 — 랜덤 벤치마크 때와 같은 모양이다.
         #
-        # 따라서 **완결 봉만** 추려 기준봉을 잡는다 (미확정 행을 창 계산 전에 제거하는
-        # flow_store/calibration과 같은 원칙).
+        # 따라서 **완결 봉만** 추려 모든 파생지표를 계산한다 (미확정 행을 창 계산 전에
+        # 제거하는 flow_store/calibration과 같은 원칙). current_price는 그대로
+        # 실시간가를 쓴다 — "현재가 > MA20" 같은 판정은 그게 맞는 의미다.
         today_kst = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d")
         done      = [b for b in bars if b.date < today_kst]
         if bars and len(done) < len(bars):
             logger.debug("%s: 당일 미확정 봉 %d개 제외 (bars[0]=%s)",
                          stock_code, len(bars) - len(done), bars[0].date)
+
+        rsi      = self._compute_rsi(done)
+        mas      = self._compute_mas(done)
+        investor = self.get_investor_trend(stock_code)
+
+        recent     = done[:5]
+        avg_volume = int(sum(b.volume for b in done[:20]) / min(20, len(done))) if done else 0
+
+        # 규칙 기반 전략용 파생값 — 추가 API 호출 없음
         asof    = done[0] if done else None
         prior20 = done[1:21]
         # 20개 미달이면 "20일 신고가"를 판정할 수 없다 — 짧은 창으로 거짓 신고가를 만들지 않는다
         close_high_20d = int(max(b.close for b in prior20)) if len(prior20) == 20 else None
         turnover_ratio = _turnover_ratio(done[0], done[1]) if len(done) > 1 else None
         close_asof     = int(asof.close) if asof else None
-        ma5_asof       = (int(sum(float(b.close) for b in done[:5]) / 5)
-                          if len(done) >= 5 else None)
 
         return {
             "stock_code":      stock_code,
@@ -1024,7 +1036,10 @@ class KISClient:
             # current_price는 장중엔 실시간가라 규칙 판정에 쓰면 캐치업 실행만 발동한다.
             "asof_date":       asof.date if asof else None,
             "close_asof":      close_asof,       # 최근 완결 봉 종가 (= 장전 실행 시 전일 종가)
-            "ma5_asof":        ma5_asof,         # 완결 봉 기준 MA5
+            # ma5는 이제 완결 봉 기준이라 ma5_asof와 같은 값이다. 키를 남겨두는 이유는
+            # 규칙 선정기가 "완결 봉 기준 MA"를 요구한다는 의도를 명시하기 위함 —
+            # 값은 같은 계산에서 나오므로 두 경로가 갈릴 수 없다
+            "ma5_asof":        int(mas["ma5"]) if mas["ma5"] else None,
             "close_high_20d":  close_high_20d,   # asof 직전 20거래일 종가 최고 (asof 제외)
             "turnover_ratio":  turnover_ratio,   # 완결 최신봉 거래대금 ÷ 그 직전봉
             "rsi_14":          float(rsi) if rsi else None,

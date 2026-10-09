@@ -477,7 +477,9 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 - 백테스터(`get_historical_stock_info`)는 `prior20 = hist_bars[-21:-1]`로 기준봉을 제외해 **원래 맞았다** — 랜덤 벤치마크 때와 같은 모양(로직이 두 경로에 복제돼 라이브만 드리프트)
 - **조치**: `_get_domestic_stock_info`가 완결 봉만(`b.date < today_kst`) 추려 기준봉을 잡고 `asof_date`/`close_asof`/`ma5_asof`를 분리 노출. 20개 미달 창은 `close_high_20d=None`(짧은 창으로 거짓 신고가 금지). 백테스트 경로도 같은 키를 내보내 폴백으로 갈리지 않게 맞춤
 - **깨끗한 규칙 표본은 2026-10-09 이후부터** — 그 전 3건(평균 -3.00%)은 장애분으로 제외
-- **미결**: AI 경로 `_prefilter_stocks`의 `vol_score`(점수 20%)가 `recent_ohlcv[0]`이 플레이스홀더라 **모든 08:30 런에서 0**이다(실측 20/20 종목 0.000, 정상 평균 0.711). RSI는 델타 0이 avg_gain·avg_loss를 같은 비율로 줄여 **수학적으로 면역**, MA는 상대차 0.18~0.9%로 trend 등급 변동 0/20. prefilter 통과 교집합 19/20이나 순위는 17/20 변동. 수정하면 라이브 AI 선정이 바뀌므로 표본 분리 라벨링 필요
+- **AI 경로도 같이 깨져 있었다 (같은 날 교정)**: `_prefilter_stocks`의 `vol_score`(점수 20%)가 `recent_ohlcv[0]`이 거래량 0 플레이스홀더라 **모든 08:30 런에서 0**이었다(실측 20/20 종목 0.000, 정상 평균 0.711) — 문서상 "추세·수급·거래량 기준" 중 거래량이 작동하지 않는 상태로 AI 선정이 돌았다. RSI는 델타 0이 avg_gain·avg_loss를 같은 비율(13/14)로 줄여 비율이 불변이라 **수학적으로 면역**(실측 0.000%), MA는 상대차 0.18~0.9%로 trend 등급 변동 0/20. 교정 후 prefilter 통과 교집합 19/20, **순위는 17/20 변동** → `rsi_14`/`ma*`/`recent_ohlcv`/`avg_volume_20d`도 전부 완결 봉 기준으로 통일
+- **AI 표본은 2026-10-09 전후를 구분해 볼 것** — 기존 51건을 버릴 필요는 없다(축 하나가 빠진 상태였고 완전 무발동은 아니었다). 다만 입력이 바뀐 지점이므로 성과를 합산할 때 라벨을 남긴다
+- 해외 경로(`_get_us_stock_info`)는 **의도적으로 미적용** — 해외 일봉은 미국 날짜 기준이라 KST 오늘과 비교하면 어긋나고, 활성 전략이 전부 KOSPI/KOSDAQ이라 검증할 실데이터가 없다. NAS 전략을 켜기 전에 미국 거래일 기준으로 같은 처리를 넣을 것
 - 수급(`flow_store`·`calibration`)에서 세운 "미확정 행은 창 계산 전에 제거" 원칙과 같은 것 — 일봉 경로엔 적용돼 있지 않았다
 
 ## Gemini 일시 오류(503) 재시도 (2026-10-09)
@@ -660,7 +662,7 @@ LOG_ACCESS=true          # 선택 — uvicorn 액세스 로그 (프론트 폴링
 - `get_intraday_status(code)`: 시가/고가/체결강도/거래량 (09:20 장중 체크용)
 - `get_index_change_pct()`: KOSPI(0001)/KOSDAQ(1001) 등락률 — 매수 전 -2% 체크. **휴장일엔 직전 거래일 값을 그대로 반환하므로 시장 조치 전 is_market_open_now() 필수**
 - `is_market_open_day(date)` / `is_market_open_now()`: CTCA0903R 휴장일 조회(날짜별 캐시) + KST 평일 09:00~15:30. 조회 실패 시 개장 간주 (보호 조치를 막지 않는 fail-safe)
-- `_get_domestic_stock_info(code)`: 현재가+RSI+이평선+외국인/기관 순매수+**per/eps**+**close_high_20d/turnover_ratio/asof_date/close_asof/ma5_asof**(규칙 전략용, **완결 봉만** 추려 계산 — 추가 호출 없음. 배경은 '미확정 당일 봉') 통합 (runner 종목 데이터 수집용). inquire-price 1회 호출로 price+per+eps 동시 추출 (get_current_price 중복 호출 제거). per/eps는 **trailing(직전 공시 실적) 기준** — forward 추정 서사와 다른 값. 적자기업·데이터없음은 None(0/음수 위장 금지). eps는 KIS가 "6564.00" 문자열 반환 → int(float()) 파싱
+- `_get_domestic_stock_info(code)`: 현재가+RSI+이평선+외국인/기관 순매수+**per/eps**+**close_high_20d/turnover_ratio/asof_date/close_asof/ma5_asof** 통합. **일봉 파생지표 전부(rsi_14·ma5/20/60·recent_ohlcv·avg_volume_20d·규칙 필드) 완결 봉만 추려 계산** — 추가 호출 없음, 배경은 '미확정 당일 봉'. `current_price`만 실시간가 유지 (runner 종목 데이터 수집용). inquire-price 1회 호출로 price+per+eps 동시 추출 (get_current_price 중복 호출 제거). per/eps는 **trailing(직전 공시 실적) 기준** — forward 추정 서사와 다른 값. 적자기업·데이터없음은 None(0/음수 위장 금지). eps는 KIS가 "6564.00" 문자열 반환 → int(float()) 파싱
 - `get_index_daily_series(code, days)`: 지수 일봉 **(날짜, 종가)** 최신순 — 국면 소급 계산용. `get_index_daily_closes`는 종가만 뽑는 얇은 래퍼
 - `get_stock_basic_info(code)`: CTPF1002R 섹터 조회 (매수 직전 MAX_PER_SECTOR 체크용)
 - `get_fx_daily_closes(symbol='FX@KRW', days)`: USD/KRW 환율 일봉 (FHKST03030100, mrkt div 'X')
@@ -700,7 +702,7 @@ LOG_ACCESS=true          # 선택 — uvicorn 액세스 로그 (프론트 폴링
   - volume: KIS 시총순위 API 실시간
   - mixed: largecap 우선 + stride
 - `_collect_stock_data(candidates)`: KIS API로 종목별 현재가/RSI/이평선/수급/per·eps 수집 + stock_name DB 주입
-- `_prefilter_stocks(stock_data, n=20)`: 추세정배열·RSI(~60)·수급·거래량 점수로 75개→20개 압축 (모멘텀 리더 보존 + Stage4 컨텍스트 축소)
+- `_prefilter_stocks(stock_data, n=20)`: 추세정배열·RSI(~60)·수급·거래량 점수로 75개→20개 압축 (모멘텀 리더 보존 + Stage4 컨텍스트 축소). 거래량 축(vol_score, 가중 0.2)은 `recent_ohlcv[0].volume ÷ avg_volume_20d` — 2026-10-09까지 당일 미확정 봉 때문에 **전 종목 0이었다**('미확정 당일 봉' 참조)
 - `_run_stage4_grouped(...)`: 20개를 10개씩 2그룹 분할 → 각 그룹 Stage4 독립 실행 → 확률순 집계. selection_mode=earnings_catalyst면 사전필터 직후 `detect_earnings_catalysts` 1회 호출 → stock_data에 earnings_catalyst 주입 후 stage4_picks에 mode 전달
 - `_is_market_unfavorable(market_theme)`: `_BEAR_KEYWORDS` 감지 → Stage4 스킵 여부 (A-gate, 검증 20건+ 시 활성화)
 - `_run_rule_strategy(strategy, run_date, stock_data, selection_mode)`: 규칙 기반 경로. `run_strategy`가 데이터 수집 직후 `is_rule_mode()`로 분기 → Stage1~4 전체 스킵 → `select_by_rule` → 공용 저장
