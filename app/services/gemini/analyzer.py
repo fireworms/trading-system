@@ -28,6 +28,8 @@ from app.services.gemini.prompts import (
 
 _CHAIN_STAGE4B = ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite"]
 
+from app.services.gemini.retry import call_with_retry
+
 logger = logging.getLogger(__name__)
 
 # ------------------------------------------------------------------ #
@@ -172,11 +174,32 @@ class GeminiAnalyzer:
         """1단계: 현재 매크로 상황 파악 (Google Search 그라운딩)."""
         prompt = STAGE1_MACRO.format(today=str(today or date.today()))
         model = _CHAIN_STAGE1[0]
+        grounded = True
         try:
-            text = self._call_model_with_search(prompt, model)
+            # 그라운딩을 잃는 비용이 크다 — 503 같은 일시 오류로 포기하지 않고 기다렸다 다시 한다.
+            # 비그라운딩 폴백은 market_theme을 '훈련 기억에서 나온 과거 서사'로 바꿔놓고,
+            # Stage2~4와 A-gate 키워드 게이트가 그걸 그대로 물려받는다 (2026-10-09 실측:
+            # 전일 KOSPI -2.62%·MA20 아래인 날에 "AI 수익화 본격 개화" 강세 테마가 저장됐다.
+            # 그날은 수치 게이트가 막았지만 그건 안전망이고 Stage1이 제대로 돈 게 아니다).
+            text = call_with_retry(
+                lambda: self._call_model_with_search(prompt, model),
+                label="Stage1 grounding", attempts=3, delays=(15.0, 45.0),
+            )
         except Exception as e:
-            logger.warning("Stage1 grounding failed (%s), fallback to Stage2 chain", e)
+            logger.warning("Stage1 grounding failed after retries (%s), fallback to Stage2 chain", e)
+            grounded = False
             text, model = self._call_with_fallback(prompt, _CHAIN_STAGE2)
+            try:
+                from app.services.telegram.notifier import notify_admins_warning
+                notify_admins_warning(
+                    "Stage1 그라운딩 상실",
+                    "재시도 후에도 검색 그라운딩에 실패해 비그라운딩 모델로 매크로를 생성했습니다.\n"
+                    f"오류: {e}\n"
+                    "market_theme이 현재 시장이 아닌 훈련 기억 기반일 수 있습니다 "
+                    "(A-gate 키워드 게이트가 이 서술을 읽습니다).",
+                )
+            except Exception as notify_err:
+                logger.error("Telegram alert failed: %s", notify_err)
 
         data = self._parse_json(text)
         return MacroResult(
@@ -186,7 +209,7 @@ class GeminiAnalyzer:
             risk_factors=data.get("risk_factors", []),
             sector_outlook=data.get("sector_outlook", {}),
             model_used=model,
-            raw=data,
+            raw={**data, "grounded": grounded},
         )
 
     def stage2_historical(self, macro: MacroResult) -> HistoricalResult:

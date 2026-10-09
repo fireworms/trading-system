@@ -6,10 +6,11 @@ Gemini 그라운딩으로 주가 급변 이슈 감지.
 """
 import json
 import logging
-import time
 from datetime import datetime, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
+
+from app.services.gemini.retry import call_with_retry
 
 logger = logging.getLogger(__name__)
 
@@ -123,29 +124,29 @@ def check_news(db=None) -> dict:
         tools=[types.Tool(google_search=types.GoogleSearch())]
     )
 
-    # 503 등 일시 오류 대비 1회 재시도 (모델 변경 없음 — 검색 그라운딩 유지)
-    for attempt in range(2):
-        try:
-            response = client.models.generate_content(
-                model=NEWS_MODEL, contents=prompt, config=config,
-            )
-            text = response.text.strip()
-            if "```" in text:
-                text = text.split("```")[1]
-                if text.startswith("json"):
-                    text = text[4:]
-            result = json.loads(text)
-            return {
-                "has_major_event": bool(result.get("has_major_event", False)),
-                "severity":         result.get("severity", "NORMAL"),
-                "event_description": result.get("event_description", ""),
-                "keywords":         result.get("keywords", []),
-                "ai_confidence":    float(result.get("ai_confidence", 0.5)),
-            }
-        except Exception as e:
-            logger.error("News check failed (attempt %d/2): %s", attempt + 1, e)
-            if attempt == 0:
-                time.sleep(20)
+    # 503 등 일시 오류는 기다렸다 다시 하면 대개 풀린다 (모델 변경 없음 — 검색 그라운딩 유지)
+    def _ask() -> dict:
+        response = client.models.generate_content(
+            model=NEWS_MODEL, contents=prompt, config=config,
+        )
+        text = response.text.strip()
+        if "```" in text:
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        result = json.loads(text)
+        return {
+            "has_major_event": bool(result.get("has_major_event", False)),
+            "severity":         result.get("severity", "NORMAL"),
+            "event_description": result.get("event_description", ""),
+            "keywords":         result.get("keywords", []),
+            "ai_confidence":    float(result.get("ai_confidence", 0.5)),
+        }
+
+    try:
+        return call_with_retry(_ask, label="News check", attempts=3, delays=(20.0, 60.0))
+    except Exception as e:
+        logger.error("News check failed after retries: %s", e)
 
     # 최종 실패 — NORMAL로 위장하지 않고 실패 마커 반환 (이벤트 저장/판단에서 제외)
     return {"check_failed": True, "has_major_event": False, "severity": "NORMAL",
@@ -248,7 +249,10 @@ def morning_gate_check() -> None:
         )
 
         llm_futures_pct = None
-        try:
+
+        # 08:00 실행이고 매수 잡은 09:20이라 재시도 여유가 80분 있다.
+        # 503 하나로 게이트가 날아가면 그날 야간 리스크 평가 없이 매수가 진행된다.
+        def _ask_gate() -> dict:
             response = client_g.models.generate_content(
                 model=NEWS_MODEL, contents=_MORNING_GATE_PROMPT, config=config,
             )
@@ -257,13 +261,18 @@ def morning_gate_check() -> None:
                 text = text.split("```")[1]
                 if text.startswith("json"):
                     text = text[4:]
-            result = json.loads(text)
+            return json.loads(text)
+
+        try:
+            result = call_with_retry(
+                _ask_gate, label="Morning gate check", attempts=4, delays=(20.0, 60.0, 120.0),
+            )
             severity = result.get("severity", "NORMAL")
             reason   = result.get("reason", "")
             llm_futures_pct = result.get("us_futures_pct")
             logger.info("Morning gate check: severity=%s reason=%s", severity, reason)
         except Exception as e:
-            logger.error("Morning gate check failed: %s", e)
+            logger.error("Morning gate check failed after retries: %s", e)
             try:
                 from app.services.telegram.notifier import notify_admins_error
                 notify_admins_error(
@@ -698,10 +707,10 @@ def check_position_theses() -> None:
                 )
             positions_text = "\n\n".join(lines)
 
-            try:
+            def _ask_thesis(text_block: str = positions_text) -> dict:
                 response = client_g.models.generate_content(
                     model=NEWS_MODEL,
-                    contents=_THESIS_CHECK_PROMPT.format(positions_text=positions_text),
+                    contents=_THESIS_CHECK_PROMPT.format(positions_text=text_block),
                     config=config,
                 )
                 text = response.text.strip()
@@ -709,11 +718,17 @@ def check_position_theses() -> None:
                     text = text.split("```")[1]
                     if text.startswith("json"):
                         text = text[4:]
-                data = json.loads(text)
+                return json.loads(text)
+
+            try:
+                # 그룹이 여러 개라 대기를 짧게 — 한 그룹 실패가 전체 잡을 붙잡지 않게
+                data = call_with_retry(
+                    _ask_thesis, label="Thesis check group", attempts=3, delays=(15.0, 45.0),
+                )
                 for check in data.get("checks", []):
                     results[check["stock_code"]] = check
             except Exception as e:
-                logger.error("Thesis check group failed: %s", e)
+                logger.error("Thesis check group failed after retries: %s", e)
 
         if not results:
             return
