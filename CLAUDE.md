@@ -836,6 +836,7 @@ LOG_ACCESS=true          # 선택 — uvicorn 액세스 로그 (프론트 폴링
 ### app/api/watchlist.py
 - 관심종목 CRUD + `POST /watchlist/analyze` + 이력/상세 조회, 전부 current_user 스코핑
 - 삭제 시 분석 일지는 보존 (FK 없음). 이력 집계는 stock_code 기준 별도 쿼리
+- 프론트 분석 상세(`frontend/app/watchlist/page.tsx`): 섹션 제목 클릭으로 개별 접기 + **「핵심만 보기」** 토글 — 핵심 주장·반증 관점·무효화 조건만 펼치고 나머지(논거·촉매·밸류·입력 스냅샷)는 제목만 남김. 반증 구조를 한 화면에 보기 위함(포트폴리오 스샷용으로 도입, 2026-10-26)
 
 ### app/services/research/analyst.py + app/api/research.py — AI 리서치 탭 (2026-08-10)
 - 자유 텍스트 질문 → 종목 리서치. **참고용 프레이밍** — 매매 시그널 아님 (AI 서술형 전망 예측력 미검증은 ai_probability 폐기와 동일 근거, UI 경고 배너 고정), 자동매매 개입 없음

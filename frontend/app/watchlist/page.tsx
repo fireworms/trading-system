@@ -63,6 +63,10 @@ const COND_BADGE: Record<string, { label: string; cls: string }> = {
 // 분석 상세 뷰: 5개 섹션 + 입력 스냅샷 (사후 검증용으로 함께 표시)
 // ------------------------------------------------------------------ //
 function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
+  // 핵심만 보기: 핵심 주장·반증 관점·무효화 조건만 펼치고 나머지는 제목만 남김 (반증 구조를 한눈에)
+  const [focus, setFocus] = useState(false);
+  const [snapOpen, setSnapOpen] = useState(true);
+  useEffect(() => setSnapOpen(!focus), [focus]);
   const r = detail.result ?? {};
   const snap = detail.input_snapshot ?? {};
   const price = snap.price ?? {};
@@ -96,6 +100,20 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
 
   return (
     <div className="flex flex-col gap-4">
+      <div className="flex justify-end -mb-2">
+        <button
+          type="button"
+          onClick={() => setFocus((f) => !f)}
+          className={`text-xs px-2.5 py-1 rounded-lg border transition-colors ${
+            focus
+              ? "border-amber-700/60 bg-amber-900/30 text-amber-200"
+              : "border-gray-700 text-gray-400 hover:text-gray-200"
+          }`}
+        >
+          {focus ? "전체 펼치기" : "핵심만 보기"}
+        </button>
+      </div>
+
       {/* AI 구조화 출력 — 핵심 주장이 먼저 (무효화 조건이 반증할 대상) */}
       {r["핵심_주장"] && (
         <Section title="핵심 주장 — 이것이 참이어야 이 분석이 성립한다" tone="border-blue-700/60">
@@ -103,11 +121,11 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
         </Section>
       )}
 
-      <Section title="논거" tone="border-gray-600">
+      <Section title="논거" tone="border-gray-600" collapsed={focus}>
         <p className="text-sm text-gray-200 leading-relaxed whitespace-pre-wrap">{r["논거"] || "-"}</p>
       </Section>
 
-      <Section title="단기 촉매" tone="border-gray-600">
+      <Section title="단기 촉매" tone="border-gray-600" collapsed={focus}>
         {(r["단기_촉매"] ?? []).length === 0 ? (
           <p className="text-sm text-gray-500">없음</p>
         ) : (
@@ -124,7 +142,7 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
         )}
       </Section>
 
-      <Section title="장기 논거" tone="border-gray-600">
+      <Section title="장기 논거" tone="border-gray-600" collapsed={focus}>
         <p className="text-sm text-gray-200 leading-relaxed whitespace-pre-wrap">{r["장기_논거"] || "-"}</p>
       </Section>
 
@@ -196,12 +214,12 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
         )}
       </Section>
 
-      <Section title="밸류 코멘트" tone="border-gray-600">
+      <Section title="밸류 코멘트" tone="border-gray-600" collapsed={focus}>
         <p className="text-sm text-gray-200 leading-relaxed whitespace-pre-wrap">{r["밸류_코멘트"] || "-"}</p>
       </Section>
 
       {/* 밸류 시나리오 — 앱이 배수 밴드에서 역산한 산술값 (예측 아님) */}
-      <Section title="밸류 시나리오 — 멀티플 밴드 회귀 가정하의 함의주가" tone="border-gray-600">
+      <Section title="밸류 시나리오 — 멀티플 밴드 회귀 가정하의 함의주가" tone="border-gray-600" collapsed={focus}>
         <p className="text-xs text-gray-500 mb-2">
           앱이 <span className="text-gray-400">현재가 × 목표배수 ÷ 현재배수</span>로 역산한 산술값입니다.
           주가 예측이 아니며, 각 행의 전제가 깨지면 그 행은 무효입니다.
@@ -271,11 +289,18 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
 
       {/* 입력 스냅샷 — 그날 AI가 실제로 본 데이터 */}
       <div className="border-t border-gray-700 pt-4 flex flex-col gap-4">
-        <h3 className="text-sm font-semibold text-gray-400">
+        <button
+          type="button"
+          onClick={() => setSnapOpen((o) => !o)}
+          className="text-left text-sm font-semibold text-gray-400 hover:text-gray-300"
+        >
+          <span className="text-gray-600 mr-1">{snapOpen ? "▾" : "▸"}</span>
           입력 스냅샷 <span className="font-normal text-gray-500">
             (수집: {snap.collected_at ? new Date(snap.collected_at).toLocaleString("ko-KR") : "-"})
           </span>
-        </h3>
+        </button>
+
+        {snapOpen && (<>
 
         {/* 가격/시장 요약 */}
         <div className="grid grid-cols-3 sm:grid-cols-6 gap-3 text-xs">
@@ -501,16 +526,29 @@ function AnalysisDetailView({ detail }: { detail: StockAnalysisDetail }) {
             {JSON.stringify(snap, null, 2)}
           </pre>
         </details>
+        </>)}
       </div>
     </div>
   );
 }
 
-function Section({ title, tone, children }: { title: string; tone: string; children: React.ReactNode }) {
+function Section({ title, tone, children, collapsed = false }: {
+  title: string; tone: string; children: React.ReactNode; collapsed?: boolean;
+}) {
+  // 제목 클릭으로 개별 접기 — 상위의 collapsed가 바뀌면 그 값으로 다시 맞춘다
+  const [open, setOpen] = useState(!collapsed);
+  useEffect(() => setOpen(!collapsed), [collapsed]);
   return (
     <div className={`border-l-2 ${tone} pl-3`}>
-      <h3 className="text-xs font-semibold text-gray-400 mb-1.5">{title}</h3>
-      {children}
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className={`text-left text-xs font-semibold text-gray-400 hover:text-gray-300 ${open ? "mb-1.5" : ""}`}
+      >
+        <span className="text-gray-600 mr-1">{open ? "▾" : "▸"}</span>
+        {title}
+      </button>
+      {open && children}
     </div>
   );
 }
