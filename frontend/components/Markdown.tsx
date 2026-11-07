@@ -60,6 +60,23 @@ export default function Markdown({ text }: { text: string }) {
 
     if (!trimmed) { i++; continue; }
 
+    // 코드 블록 (```lang ... ```) — 에이전트 탭 답변에 흔함. 닫는 펜스가 없으면 끝까지
+    if (trimmed.startsWith("```")) {
+      const code: string[] = [];
+      i++;
+      while (i < lines.length && !lines[i].trim().startsWith("```")) {
+        code.push(lines[i]);
+        i++;
+      }
+      i++; // 닫는 펜스
+      out.push(
+        <pre key={key++} className="my-2 p-2.5 rounded bg-gray-950 border border-gray-800 text-xs text-gray-200 overflow-x-auto whitespace-pre">
+          {code.join("\n")}
+        </pre>
+      );
+      continue;
+    }
+
     // 표: | 헤더 | + 다음 줄이 구분선(---)
     if (trimmed.startsWith("|") && i + 1 < lines.length && /^\|?[\s:|-]+\|?$/.test(lines[i + 1].trim()) && lines[i + 1].includes("-")) {
       const header = parseTableRow(trimmed);

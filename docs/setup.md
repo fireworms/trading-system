@@ -154,3 +154,25 @@ sudo systemctl start trading-backend
 ```
 
 프론트엔드도 동일 패턴으로 `trading-frontend.service` 등록 (`npm run dev` 또는 `npm start`).
+
+## 웹 에이전트 (선택 — 모바일에서 Claude Code 대화)
+
+웹 UI `/agent` 메뉴에서 서버의 Claude Code와 대화한다. `claude-agent-sdk` 기반, **SUPER_ADMIN 전용**,
+trading-backend와 **별도 서비스(:8001)** 로 돈다 — 에이전트가 백엔드를 재시작해도 자기 자신은 안 죽게.
+
+**셸 권한을 웹에 여는 기능이다.** VPN(Tailscale 등) 내부망에서만 쓰고 포트포워딩으로 외부에 열지 말 것.
+
+1. Claude Code CLI 설치 + 로그인 (`claude` 실행 후 로그인). 이 서버 주인 혼자 쓰는 개인 도구라면 구독 로그인으로 충분하다.
+   **이 코드를 다른 사람에게 제공하는 용도라면 `ANTHROPIC_API_KEY`를 써야 한다** (Anthropic 정책: Agent SDK 제품에 claude.ai 로그인 제공 불가)
+2. `.env`에 `AGENT_ENABLED=true` (기본 꺼짐)
+3. 서비스 등록 — `deploy/trading-agent.service`의 경로/유저를 환경에 맞게 고친 뒤
+   ```bash
+   sudo cp deploy/trading-agent.service /etc/systemd/system/
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now trading-agent
+   ```
+4. 프론트 포트가 8001이 아니면 `frontend/.env.local`에 `NEXT_PUBLIC_AGENT_PORT`
+
+**권한 구조**: ① 차단 목록(`app/services/agent/guard.py`, PreToolUse 훅 — 승인 버튼을 눌러도 거부: rm -rf, 강제 push,
+DROP/WHERE 없는 DELETE, 서비스 stop, `.env` 등 비밀 파일) → ② 나머지는 Claude Code 설정대로 묻고, 물을 땐 웹 승인 카드 (10분 무응답 = 거부).
+차단 목록은 **실수 방지용 정규식이지 샌드박스가 아니다**.

@@ -28,6 +28,7 @@ trading_system/
 ├── alembic.ini
 ├── app/
 │   ├── main.py                  # FastAPI 앱, lifespan (스케줄러+WebSocket 초기화)
+│   ├── agent_main.py            # 웹 에이전트 서비스 (trading-agent :8001, 별도 프로세스 — 아래 '웹 에이전트')
 │   ├── core/
 │   │   ├── config.py            # Settings (pydantic)
 │   │   ├── database.py          # SessionLocal, Base
@@ -78,6 +79,9 @@ trading_system/
 │   │   │   ├── invalidation.py  # 무효화_조건 자동 판정 (결정론 체커 + 16:20 잡 + 전이 알림)
 │   │   │   ├── calibration.py   # 무효화_조건 임계 캘리브레이션 (분포 기반 — 임계는 LLM이 아닌 앱이 정함)
 │   │   │   └── events.py        # 이벤트 자동 감지 (DART 공시/수급·주가 급변/실적 캘린더 + 자동 분석, 16:30 잡)
+│   │   ├── agent/
+│   │   │   ├── session.py       # AgentHub — claude-agent-sdk 세션 (WS보다 오래 삶, 승인 대기·로그 재전송)
+│   │   │   └── guard.py         # 하드 차단 목록 (PreToolUse 훅 — 승인 눌러도 거부)
 │   │   ├── research/
 │   │   │   └── analyst.py       # AI 리서치 (질문→종목 식별→관심종목 스냅샷 재사용→마크다운 답변)
 │   │   ├── krx/
@@ -108,6 +112,8 @@ trading_system/
 ├── docs/
 │   ├── watchlist_spec.md        # 관심종목 분석 탭 스펙 (관련 작업 시 필독)
 │   └── setup.md                 # 설치/마이그레이션 가이드 (README에서 분리)
+├── deploy/
+│   └── trading-agent.service    # 웹 에이전트 systemd 유닛
 ├── frontend/                    # Next.js 프론트엔드
 ├── scripts/                     # seed 스크립트
 ├── migrations/                  # Alembic 마이그레이션
@@ -505,6 +511,18 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 - **조치**: `monitor.record_close_failure()` — 실패 3회 연속 시 어드민 알림, 1시간 간격 재알림. 3개 경로(실시간/매도주문/폴링) 공유
 - **앱 로그 INFO가 저널에 안 올라가던 문제 (2026-09-22 조치)** — uvicorn은 자기 로거(`uvicorn`/`uvicorn.access`)만 INFO로 올리고 **루트 로거는 손대지 않는다**. 앱 모듈은 전부 `getLogger(__name__)`이라 루트 기본값 WARNING이 유효 레벨이 돼 `RT closed`·`Monitoring N positions` 같은 정상 기록이 통째로 사라졌다 (이번 건이 보인 건 ERROR였기 때문). `app/core/logging.py`의 `setup_logging()`이 루트 레벨을 `LOG_LEVEL`(기본 INFO)로 올린다
 
+## 웹 에이전트 — 모바일에서 Claude Code 대화 (2026-11-07)
+웹 UI `/agent` 메뉴(SUPER_ADMIN 전용) ↔ `trading-agent` 서비스(:8001) ↔ `claude-agent-sdk` ↔ 서버의 Claude Code CLI (cwd=프로젝트 루트, CLAUDE.md·메모리 그대로 로드)
+- **별도 서비스인 이유**: trading-backend 안에 두면 에이전트가 `systemctl restart trading-backend`를 치는 순간 같은 cgroup의 CLI 자식까지 systemd가 죽인다. 매매 프로세스와 셸 권한 에이전트의 격리 의미도 있다. **trading-agent 재시작은 대화를 끊는다** — 차단 목록에 넣어 웹에선 못 하게 했다
+- **허브가 WebSocket보다 오래 산다**: 폰 화면이 꺼져 WS가 끊겨도 턴·승인 대기는 유지, 재접속 시 이벤트 로그 + 대기 승인 재전송. 30분 유휴면 CLI만 내리고 세션은 디스크에 남아 다음 메시지에서 resume
+- **권한 2겹**: ① `guard.check_tool`(PreToolUse 훅 — settings 허용 목록으로 자동 승인되는 도구에도 발동, 승인 눌러도 거부: rm -r/-f·강제 push·reset --hard·DROP/TRUNCATE/WHERE 없는 DELETE·systemctl stop/disable·trading-agent 재시작·전원·`.env`/자격증명 파일) → ② 나머지는 Claude Code 설정대로, 물을 땐 `can_use_tool`로 웹 승인 카드 (10분 무응답 = 거부). **정규식 실수 방지이지 샌드박스가 아니다**
+- `AskUserQuestion`은 비활성(웹에 선택 UI 없음 — 본문 번호 목록으로 묻게 시스템 프롬프트 append)
+- 인증: 같은 SECRET_KEY JWT + SUPER_ADMIN. **토큰은 URL이 아니라 첫 WS 메시지로** (uvicorn 액세스 로그에 쿼리스트링이 남는다). `AGENT_ENABLED=false`가 기본 — 공개 레포 클론이 실수로 셸을 열지 않게
+- **같은 세션을 터미널과 웹에서 동시에 이어 쓰지 말 것** — 기록이 꼬인다. 허브는 단일 세션만 유지
+- 인증 과금: 서버 주인 1인용이라 CLI 구독 로그인 사용. 남에게 제공하는 용도면 `ANTHROPIC_API_KEY` 필수 (Anthropic 정책)
+- **의존성 함정**: SDK가 끌고 오는 `mcp`가 starlette를 1.x로 올려 fastapi 0.115와 깨진다 → requirements.txt에 starlette `<0.39` 고정. `sse-starlette` 버전 경고는 MCP SSE 서버를 안 쓰므로 무해
+- 공용 `components/Markdown.tsx`에 코드 블록(```) 지원 추가 (리서치 탭도 혜택), Nav는 모바일 가로 스크롤
+
 ## Circuit Breaker
 - 직전 4건 청산이 전부 손실이면 해당 유저 매수 자동 차단 (4건 미만은 체크 안 함)
 - app_config: `cb_paused_{user_id}`, `cb_reason_{user_id}`
@@ -603,7 +621,7 @@ LOG_ACCESS=true          # 선택 — uvicorn 액세스 로그 (프론트 폴링
 - _check_position(): rec 없으면 strategy.target_pct × entry_price로 목표가 계산 (수동매수 포함)
 - 전략 없이 수동매수 시 자동 청산 미작동 — 수동매수는 반드시 전략 선택 필요
 - _enrich(): rec_id 없어도 strategy.target_pct × entry_price로 익절가 계산
-- systemd 서비스: trading-backend (uvicorn), trading-frontend (npm run dev) — WSL2 부팅 시 자동 시작
+- systemd 서비스: trading-backend (uvicorn), trading-frontend (npm run dev), **trading-agent** (웹 에이전트 :8001, 선택) — 부팅 시 자동 시작
 - **코드 수정 후 백엔드 재시작 필수** (`sudo systemctl restart trading-backend`) — 지연 import 때문에 재시작을 빼먹으면 한 프로세스에 신구 코드가 섞여 `AttributeError`로 청산이 조용히 죽는다 (2026-09-08 사례). 프론트는 dev 모드라 자동 반영
 - 목표가 도달 시 즉시 TARGET_HIT 청산 (기본, AI thesis 완료 기준)
 - `Strategy.use_trailing_stop=true`이면 목표가 후 peak 추적 → peak × (1 - stop_loss_pct%) 이탈 시 청산

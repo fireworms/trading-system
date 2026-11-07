@@ -1,0 +1,21 @@
+# 웹 에이전트 서비스 (모바일에서 Claude Code 대화) — trading-backend와 별도 프로세스.
+# 설치/운영은 docs/setup.md "웹 에이전트" 참조. .env에 AGENT_ENABLED=true가 있어야 동작 (기본 꺼짐).
+#
+# 바인드 주소: 0.0.0.0이면 LAN + Tailscale 양쪽에서 접근된다. Tailscale로만 열려면
+# /etc/systemd/system에 복사한 쪽에서 --host를 이 기기의 Tailscale IP(`tailscale ip -4`)로 바꾼다.
+# (실 IP는 공개 레포에 커밋하지 않는다)
+[Unit]
+Description=Trading System Web Agent (Claude Agent SDK)
+After=network.target postgresql.service tailscaled.service
+
+[Service]
+User=fireworms
+WorkingDirectory=/home/fireworms/trading_system
+# 터미널과 같은 claude CLI(같은 버전·로그인)를 찾도록 ~/.local/bin을 PATH에 둔다
+Environment=PATH=/home/fireworms/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/home/fireworms/trading_system/.venv/bin/uvicorn app.agent_main:app --host 0.0.0.0 --port 8001
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

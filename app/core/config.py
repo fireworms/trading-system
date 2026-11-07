@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     log_level: str = Field("INFO", alias="LOG_LEVEL")
     log_access: bool = Field(True, alias="LOG_ACCESS")  # uvicorn 액세스 로그 (프론트 폴링 소음)
 
+    # 웹 에이전트 (trading-agent 서비스, 모바일에서 Claude Code 대화) — 기본 꺼짐.
+    # 서버 셸 권한을 웹에 여는 기능이라 명시적으로 켜야 동작한다 (공개 레포 클론 보호)
+    agent_enabled: bool = Field(False, alias="AGENT_ENABLED")
+
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 60 * 24
 

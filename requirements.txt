@@ -16,3 +16,7 @@ httpx==0.28.1
 python-multipart==0.0.12
 pandas==3.0.2
 websockets>=12.0
+# 웹 에이전트 (trading-agent 서비스). mcp 의존성이 starlette를 1.x로 끌어올려
+# fastapi 0.115와 깨지므로 starlette를 fastapi 범위에 고정 (sse-starlette 경고는 무해 — MCP SSE 서버 미사용)
+claude-agent-sdk==0.2.179
+starlette>=0.37.2,<0.39.0

@@ -19,6 +19,11 @@ const adminLinks = [
   { href: "/admin/users", label: "유저 관리" },
 ];
 
+// 서버 셸 권한을 가진 에이전트 — SUPER_ADMIN만 (백엔드 trading-agent도 같은 기준)
+const superAdminLinks = [
+  { href: "/agent", label: "에이전트" },
+];
+
 export default function Nav() {
   const pathname  = usePathname();
   const router    = useRouter();
@@ -34,18 +39,22 @@ export default function Nav() {
   }
 
   const isAdmin = user?.role === "ADMIN" || user?.role === "SUPER_ADMIN";
-  const navLinks = isAdmin ? [...links, ...adminLinks] : links;
+  const navLinks = [
+    ...links,
+    ...(isAdmin ? adminLinks : []),
+    ...(user?.role === "SUPER_ADMIN" ? superAdminLinks : []),
+  ];
 
   return (
-    <nav className="bg-gray-800 border-b border-gray-700 px-6 py-3 flex items-center justify-between">
-      <div className="flex items-center gap-6">
-        <span className="font-bold text-white text-sm">📈 Trading</span>
-        <div className="flex gap-1">
+    <nav className="bg-gray-800 border-b border-gray-700 px-3 sm:px-6 py-3 flex items-center justify-between gap-3">
+      <div className="flex items-center gap-3 sm:gap-6 min-w-0">
+        <span className="font-bold text-white text-sm shrink-0">📈<span className="hidden sm:inline"> Trading</span></span>
+        <div className="flex gap-1 overflow-x-auto">
           {navLinks.map((l) => (
             <Link
               key={l.href}
               href={l.href}
-              className={`px-3 py-1.5 rounded-lg text-sm transition-colors ${
+              className={`px-3 py-1.5 rounded-lg text-sm whitespace-nowrap transition-colors ${
                 pathname === l.href
                   ? "bg-blue-600 text-white"
                   : "text-gray-400 hover:text-white hover:bg-gray-700"
@@ -56,9 +65,9 @@ export default function Nav() {
           ))}
         </div>
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3 shrink-0">
         {user && (
-          <span className="text-xs text-gray-400">
+          <span className="hidden sm:inline text-xs text-gray-400">
             {user.username}
             <span className="ml-1 px-1.5 py-0.5 rounded bg-gray-700 text-gray-300">
               {user.role}
