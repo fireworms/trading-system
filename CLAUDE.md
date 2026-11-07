@@ -517,6 +517,7 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 - **허브가 WebSocket보다 오래 산다**: 폰 화면이 꺼져 WS가 끊겨도 턴·승인 대기는 유지, 재접속 시 이벤트 로그 + 대기 승인 재전송. 30분 유휴면 CLI만 내리고 세션은 디스크에 남아 다음 메시지에서 resume
 - **권한 2겹**: ① `guard.check_tool`(PreToolUse 훅 — settings 허용 목록으로 자동 승인되는 도구에도 발동, 승인 눌러도 거부: rm -r/-f·강제 push·reset --hard·DROP/TRUNCATE/WHERE 없는 DELETE·systemctl stop/disable·trading-agent 재시작·전원·`.env`/자격증명 파일) → ② 나머지는 Claude Code 설정대로, 물을 땐 `can_use_tool`로 웹 승인 카드 (10분 무응답 = 거부). **정규식 실수 방지이지 샌드박스가 아니다**
 - **웹은 `settings.local.json`을 안 읽는다** (`setting_sources=["user","project"]`, 2026-11-07): 터미널에서 쌓인 허용 규칙 75개 중 `python *` 같은 넓은 규칙이 웹에선 승인 없는 임의 코드 실행이 된다(guard는 Bash 문자열만 봐서 스크립트 안의 `.env` 읽기를 못 막음). 읽기 전용 명령(git status 등)은 CLI가 원래 안 물어서 카드 없이 실행되는 게 정상
+- **운영 서버는 Tailscale IP에만 바인드** (2026-11-07): `/etc/systemd/system/trading-agent.service`의 `--host`를 `tailscale ip -4` 값으로 교체 — LAN·localhost에선 연결 거부. 레포 유닛 파일은 0.0.0.0 그대로(실 IP 커밋 금지). 그래서 **LAN 주소로 프론트에 접속하면 에이전트 탭만 '서비스 연결 끊김'** 이 정상이고, 서버에서 점검할 땐 `curl localhost:8001`이 아니라 Tailscale IP로. 부팅 시 tailscaled보다 먼저 뜨면 bind 실패 → `Restart=on-failure`가 5초 간격 재시도
 - `AskUserQuestion`은 비활성(웹에 선택 UI 없음 — 본문 번호 목록으로 묻게 시스템 프롬프트 append)
 - 인증: 같은 SECRET_KEY JWT + SUPER_ADMIN. **토큰은 URL이 아니라 첫 WS 메시지로** (uvicorn 액세스 로그에 쿼리스트링이 남는다). `AGENT_ENABLED=false`가 기본 — 공개 레포 클론이 실수로 셸을 열지 않게
 - **같은 세션을 터미널과 웹에서 동시에 이어 쓰지 말 것** — 기록이 꼬인다. 허브는 단일 세션만 유지
