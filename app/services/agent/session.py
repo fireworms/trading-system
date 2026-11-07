@@ -172,6 +172,11 @@ class AgentHub:
                 can_use_tool=self._can_use_tool,
                 hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[self._guard_hook])]},
                 disallowed_tools=["AskUserQuestion"],
+                # settings.local.json(터미널에서 "항상 허용"으로 쌓인 규칙)은 웹에서 안 읽는다.
+                # `python *`·`.venv/bin/python *` 같은 넓은 규칙이 웹에선 승인 없는 임의 코드
+                # 실행이 되고, guard는 Bash 문자열만 보므로 스크립트 안의 .env 읽기를 못 막는다.
+                # user/project 설정·CLAUDE.md·메모리는 그대로 (읽기 전용 명령은 CLI가 원래 안 묻는다)
+                setting_sources=["user", "project"],
                 system_prompt={"type": "preset", "preset": "claude_code", "append": _APPEND_PROMPT},
                 cli_path=_cli_path(),
                 stderr=lambda line: logger.debug("claude cli: %s", line),
