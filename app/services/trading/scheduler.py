@@ -45,11 +45,37 @@ def _should_run(db, strategy: Strategy) -> bool:
     return date.today() >= last_run + timedelta(days=strategy.run_interval_days)
 
 
+def _is_trading_day_kst(db) -> bool:
+    """오늘(KST)이 개장일인지. 주말은 API 없이 판정, 공휴일은 CTCA0903R.
+    휴장일 조회 실패(None)는 개장 간주 — 분석을 막는 쪽으로 실패하지 않는다."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    today = datetime.now(ZoneInfo("Asia/Seoul")).date()
+    if today.weekday() >= 5:
+        return False
+    try:
+        from app.services.kis.client import get_kis_client
+        client = get_kis_client(db)
+        return client.is_market_open_day(today.strftime("%Y%m%d")) is not False
+    except Exception as e:
+        logger.warning("Trading day check failed, assuming open: %s", e)
+        return True
+
+
 def job_run_strategies() -> None:
     """활성 전략 전체 실행 — run_interval_days 경과한 전략만."""
     from app.services.trading.runner import StrategyRunner
 
     with SessionLocal() as db:
+        # 휴장일 분석 금지 — 서버 재시작 catch-up이 주말에도 이 함수를 부른다
+        # (2026-10-24 토 06:11 재시작 → 주기1일 전략이 토요일자 run 생성).
+        # 휴장일 run은 같은 금요일 종가를 한 번 더 표본으로 세는 중복이고,
+        # run_date가 비거래일이라 진입일 의미도 어긋난다.
+        if not _is_trading_day_kst(db):
+            logger.info("run_strategies: market closed today (KST) — skip")
+            return
+
         strategies = db.scalars(
             select(Strategy).where(Strategy.is_active == True)
         ).all()

@@ -305,7 +305,7 @@ trading_system/
 | 잡 ID | 시각 | 역할 |
 |-------|------|------|
 | morning_gate | 08:00 평일 | 개장 전 야간 리스크 체크 (미국 선물/지정학), 이상 시 09:20 매수 차단 |
-| run_strategies | 08:30 평일 | AI/규칙 분석 (매수 없음, morning_gate와 무관하게 실행). **잡은 매 평일 뜨고 전략별 간격은 각자의 run_interval_days가 통제** — mon,wed,fri 고정이면 run_interval_days=1 전략이 주 3회로 묶여 무력화됨 (2026-09-03 변경) |
+| run_strategies | 08:30 평일 | AI/규칙 분석 (매수 없음, morning_gate와 무관하게 실행). **휴장일(주말·공휴일)은 잡 내부에서 스킵** — 재시작 catch-up이 주말에도 부르기 때문 (2026-10-24 토요일자 run 생성 사례, 2026-11-07 가드). **잡은 매 평일 뜨고 전략별 간격은 각자의 run_interval_days가 통제** — mon,wed,fri 고정이면 run_interval_days=1 전략이 주 3회로 묶여 무력화됨 (2026-09-03 변경) |
 | execute_pending_buys | 09:20 평일 | 크로스 시그널 보너스 적용 후 매수 (morning_gate/news 차단 시 스킵) |
 | monitor_positions | 09:05~15:55 매 10분 평일 | 포지션 손절/익절 모니터링 |
 | thesis_check | 10:00, 14:00 평일 | 보유 포지션 thesis 재검증 (8개씩 그룹 grounding) |
@@ -396,6 +396,7 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 - **`[TEST] 과매도 반등 (규칙)`**: `rule_oversold`, hold 10 / target 7 / stop 3.5 / pick 3 / KOSPI largecap. 기존 전략이 전부 모멘텀 방향이라 같은 국면에서 동시에 죽는 문제의 상관 분산용
   - target 7%인 이유: `_validate_strategy`의 **일평균 0.7%/일 상한**에 걸려 hold 10일에서 가능한 최대치. 손절 3.5%는 3%보다 넓게 — 하락 추세 종목은 진입 직후 추가 하락이 흔해 좁은 손절이 구조적으로 불리
   - RSI 35 / 거래대금 1.5배는 지시서 원안(30 / 2배) 완화 — 원안은 KOSPI200에서 몇 주씩 0건. 완화 후에도 발동이 드물어 **표본 축적은 느릴 것으로 전제**
+- **AI vs 규칙 비교 시 A-gate 교란 (2026-11-07 첫 점검)**: 규칙 전략엔 A-gate가 없다. 10/9 이후 KOSPI가 내내 MA20 아래였고 AI 스윙은 8런 중 4런을 A-gate로 스킵했는데, 규칙 대조군은 같은 날에도 매매했다(10/12·10/15 규칙 픽 6건 중 5건 손절). 전체 평균끼리 비교하면 "선정력"이 아니라 "**AI는 하락장에 쉬고 규칙은 안 쉰다**"를 재게 된다 → **양쪽이 모두 픽을 낸 같은 run_date끼리** 비교하거나, AI 스킵일을 수익 0으로 넣은 버전을 따로 볼 것
 - **`[TEST] 실적 카탈리스트` 비활성화**: 관찰 슬롯·Gemini RPD가 유한한데 규칙 대조군이 더 나은 실험이라 교체. **삭제 금지** — `recommendation_runs.strategy_id`가 `ondelete=CASCADE`라 전략을 지우면 과거 run·추천·검증이 전부 소멸. `is_active=False`만
 
 ## 랜덤 벤치마크 설계 원칙 (2026-09-03 교정)
@@ -763,6 +764,7 @@ LOG_ACCESS=true          # 선택 — uvicorn 액세스 로그 (프론트 폴링
 ### app/services/trading/scheduler.py
 - `start_scheduler()`: APScheduler 설정 + 전체 잡 등록 (KST 기준)
 - `run_startup_catchup()`: 서버 재시작 시 누락 분석/검증/stock_master 자동 보완
+- `_is_trading_day_kst(db)`: 주말은 API 없이, 공휴일은 CTCA0903R로 판정. 조회 실패는 개장 간주. `job_run_strategies`가 먼저 확인 — catch-up 경유 휴장일 run 차단
 - `_should_run(db, strategy)`: run_interval_days 경과 여부 체크
 
 ### app/services/trading/verifier.py
