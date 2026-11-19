@@ -18,6 +18,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import re
 import shutil
 import time
 import uuid
@@ -29,6 +31,9 @@ from app.services.agent.guard import check_tool
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
+# CLI 세션 기록 위치: <config>/projects/<cwd의 영숫자 외 문자를 '-'로>
+SESSIONS_DIR = (Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+                / "projects" / re.sub(r"[^a-zA-Z0-9]", "-", str(PROJECT_ROOT)))
 
 _PERMISSION_TIMEOUT_S = 600
 _IDLE_DISCONNECT_S = 30 * 60
@@ -358,6 +363,42 @@ def _block_to_dict(b: Any) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------- 세션 기록
+_ENTRY_RE = re.compile(r'"entrypoint":"([^"]+)"')
+_origin_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def session_origin(session_id: str) -> dict[str, Any]:
+    """세션 출처 — CLI가 기록 줄마다 남기는 `entrypoint`로 판정 (cli=터미널, sdk-*=웹).
+
+    origin은 첫 기록 기준, mixed는 양쪽에서 이어 쓴 흔적 (기록 꼬임 경고용).
+    파일 mtime 기준 캐시 — 목록을 열 때마다 수 MB를 다시 읽지 않는다.
+    """
+    path = SESSIONS_DIR / f"{session_id}.jsonl"
+    try:
+        mtime = path.stat().st_mtime
+    except OSError:
+        return {"origin": "unknown", "mixed": False}
+    hit = _origin_cache.get(session_id)
+    if hit and hit[0] == mtime:
+        return hit[1]
+    kinds: list[str] = []
+    try:
+        with path.open(encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                m = _ENTRY_RE.search(line)
+                if m:
+                    k = "terminal" if m.group(1) == "cli" else "web"
+                    if k not in kinds:
+                        kinds.append(k)
+                        if len(kinds) == 2:
+                            break
+    except OSError:
+        pass
+    info = {"origin": kinds[0] if kinds else "unknown", "mixed": len(kinds) > 1}
+    _origin_cache[session_id] = (mtime, info)
+    return info
+
+
 def list_project_sessions(limit: int = 20) -> list[dict[str, Any]]:
     from claude_agent_sdk import list_sessions
     out = []
@@ -366,6 +407,7 @@ def list_project_sessions(limit: int = 20) -> list[dict[str, Any]]:
             "session_id": s.session_id,
             "title": s.custom_title or s.summary or (s.first_prompt or "")[:80],
             "last_modified": s.last_modified,
+            **session_origin(s.session_id),
         })
     return out
 

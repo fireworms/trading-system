@@ -10,7 +10,17 @@ interface SessionInfo {
   session_id: string;
   title: string;
   last_modified: number;
+  origin: "terminal" | "web" | "unknown";
+  mixed: boolean;
 }
+
+const ORIGIN_BADGE: Record<string, { text: string; cls: string }> = {
+  terminal: { text: "터미널", cls: "bg-purple-800/60 text-purple-200" },
+  web: { text: "웹", cls: "bg-sky-800/60 text-sky-200" },
+};
+
+// 터미널 세션이 최근 10분 내 기록됐으면 지금 쓰는 중일 수 있다
+const ACTIVE_MS = 10 * 60 * 1000;
 
 const STATE_LABEL: Record<string, { text: string; cls: string }> = {
   disconnected: { text: "대기", cls: "bg-gray-700 text-gray-300" },
@@ -130,7 +140,18 @@ export default function AgentPage() {
                 s.session_id === chat.sessionId ? "bg-gray-700" : "bg-gray-900/60"
               }`}
             >
-              <div className="text-sm truncate">{s.title || "(제목 없음)"}</div>
+              <div className="flex items-center gap-1.5">
+                {ORIGIN_BADGE[s.origin] && (
+                  <span className={`shrink-0 text-[10px] px-1 py-0.5 rounded ${ORIGIN_BADGE[s.origin].cls}`}>
+                    {ORIGIN_BADGE[s.origin].text}
+                  </span>
+                )}
+                <span className="text-sm truncate">{s.title || "(제목 없음)"}</span>
+              </div>
+              {s.origin === "terminal" && Date.now() - s.last_modified < ACTIVE_MS && (
+                <div className="text-[11px] text-amber-300">터미널에서 사용 중일 수 있음</div>
+              )}
+              {s.mixed && <div className="text-[11px] text-gray-400">터미널·웹 양쪽에서 이어 쓴 세션</div>}
               <div className="text-[11px] text-gray-500">
                 {timeAgo(s.last_modified)} · <span className="font-mono">{s.session_id.slice(0, 8)}</span>
               </div>
