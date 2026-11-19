@@ -120,6 +120,13 @@ export default function AgentPage() {
         </div>
       </div>
 
+      {chat.restartNeeded.length > 0 && (
+        <div className="mt-2 text-[11px] rounded border border-amber-700/60 bg-amber-900/30 text-amber-200 px-2 py-1.5">
+          에이전트 코드가 바뀌었습니다 — 터미널에서 <span className="font-mono">sudo systemctl restart trading-agent</span> 전까지 반영 안 됨
+          <div className="text-amber-300/70 font-mono truncate">{chat.restartNeeded.join(", ")}</div>
+        </div>
+      )}
+
       {/* 세션 선택 */}
       {(showSessions || (chat.state === "disconnected" && chat.events.length === 0)) && (
         <div className="mt-3 rounded-lg border border-gray-700 bg-gray-800/60 p-3 space-y-2">

@@ -26,6 +26,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from app.services.agent import code_watch
 from app.services.agent.guard import check_tool
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,8 @@ _APPEND_PROMPT = (
     "- AskUserQuestion 도구는 쓸 수 없다. 선택이 필요하면 본문에 번호 목록으로 묻는다.\n"
     "- 화면이 좁다. 답변은 짧게, 표는 3열 이하로.\n"
     "- `sudo systemctl restart trading-agent`는 이 대화를 끊는다 — 필요하면 사용자에게 터미널에서 하라고 안내.\n"
+    "- 에이전트 자기 코드(app/agent_main.py, app/services/agent/*, requirements.txt)를 고치면 "
+    "재시작 전까지 반영되지 않는다. UI에 '재시작 필요' 배너가 자동으로 뜬다 — 답변에서도 한 줄 짚어줄 것.\n"
     "- trading-backend 재시작은 이 세션에 영향이 없다 (별도 서비스).\n"
     "- 원칙 4(일상 명령은 사용자가 직접)는 모바일에선 완화한다: 사용자가 승인 버튼으로 실행을 허락하는 구조다."
 )
@@ -155,6 +158,7 @@ class AgentHub:
         return {
             "type": "status", "state": self.state, "session_id": self.session_id,
             "pending": len(self._pending),
+            "restart_needed": code_watch.changed_files(),
         }
 
     async def _set_state(self, state: str) -> None:
@@ -282,6 +286,8 @@ class AgentHub:
             # CLI가 죽었으면 다음 send에서 같은 세션으로 다시 붙는다
             self._client = None
         finally:
+            # 웹 턴 끝에서만 이력 기록 — 자동 재시작 도입 여부를 빈도로 판단하기 위함
+            code_watch.record_if_new(code_watch.changed_files(), self.session_id)
             await self._set_state("idle" if self._client is not None else "disconnected")
 
     # ------------------------------------------------------------ 권한

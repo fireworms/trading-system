@@ -81,7 +81,8 @@ trading_system/
 │   │   │   └── events.py        # 이벤트 자동 감지 (DART 공시/수급·주가 급변/실적 캘린더 + 자동 분석, 16:30 잡)
 │   │   ├── agent/
 │   │   │   ├── session.py       # AgentHub — claude-agent-sdk 세션 (WS보다 오래 삶, 승인 대기·로그 재전송)
-│   │   │   └── guard.py         # 하드 차단 목록 (PreToolUse 훅 — 승인 눌러도 거부)
+│   │   │   ├── guard.py         # 하드 차단 목록 (PreToolUse 훅 — 승인 눌러도 거부)
+│   │   │   └── code_watch.py    # 자기 코드 변경 감지 → 재시작 필요 배너 (자동 재시작 아님)
 │   │   ├── research/
 │   │   │   └── analyst.py       # AI 리서치 (질문→종목 식별→관심종목 스냅샷 재사용→마크다운 답변)
 │   │   ├── krx/
@@ -523,6 +524,7 @@ Stage4는 종목코드-이름 환각을 막기 위해 3겹 방어:
 - **같은 세션을 터미널과 웹에서 동시에 이어 쓰지 말 것** — 기록이 꼬인다. 허브는 단일 세션만 유지
 - 인증 과금: 서버 주인 1인용이라 CLI 구독 로그인 사용. 남에게 제공하는 용도면 `ANTHROPIC_API_KEY` 필수 (Anthropic 정책)
 - **의존성 함정**: SDK가 끌고 오는 `mcp`가 starlette를 1.x로 올려 fastapi 0.115와 깨진다 → requirements.txt에 starlette `<0.39` 고정. `sse-starlette` 버전 경고는 MCP SSE 서버를 안 쓰므로 무해
+- **자기 코드 변경 배너 (2026-11-19)**: `services/agent/code_watch.py`가 기동 시점 mtime(agent_main.py·services/agent/*·requirements.txt — 공용 모듈은 제외)과 비교해 status에 `restart_needed`를 싣고, UI가 '터미널에서 재시작 필요' 배너를 띄운다. 재시작 안 하면 구 코드로 돌거나 지연 import로 신구가 섞인다. **자동 셀프 재시작은 미채택** — 폰에서 에이전트 코드 수정이 드물고 같은 cgroup의 백그라운드 작업을 자를 위험. 웹 턴 중 감지 이력은 `~/.cache/trading-agent/code_changes.log` — 잦아지면 exam-app 구현 이식 검토
 - 공용 `components/Markdown.tsx`에 코드 블록(```) 지원 추가 (리서치 탭도 혜택), Nav는 모바일 가로 스크롤
 
 ## Circuit Breaker

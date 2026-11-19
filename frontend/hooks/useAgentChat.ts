@@ -35,6 +35,8 @@ export function useAgentChat() {
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [socketOpen, setSocketOpen] = useState(false);
   const [fatal, setFatal] = useState<string | null>(null);
+  // 기동 이후 바뀐 에이전트 코드 — 재시작 전까지 반영 안 됨 (서버가 status에 실어 보냄)
+  const [restartNeeded, setRestartNeeded] = useState<string[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
 
   useEffect(() => {
@@ -61,6 +63,7 @@ export function useAgentChat() {
             setState(ev.state as AgentState);
             setSessionId((ev.session_id as string) ?? null);
             if (!ev.pending) setPending([]);
+            setRestartNeeded(Array.isArray(ev.restart_needed) ? (ev.restart_needed as string[]) : []);
             break;
           case "reset":
             setEvents([]);
@@ -112,7 +115,7 @@ export function useAgentChat() {
   }, []);
 
   return {
-    events, pending, state, sessionId, socketOpen, fatal,
+    events, pending, state, sessionId, socketOpen, fatal, restartNeeded,
     start: (session_id: string | null) => send({ type: "start", session_id }),
     message: (text: string) => send({ type: "message", text }),
     decide: (id: string, allow: boolean) => {
