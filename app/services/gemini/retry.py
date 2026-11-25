@@ -85,3 +85,52 @@ def call_with_retry(
             time.sleep(delay)
     assert last is not None
     raise last
+
+
+# 같은 모델 재시도로 안 풀리는 장기 과부하(2026-11 실측: gemini-2.5-flash 503이 4분+ 지속,
+# 2주간 뉴스 감시 9회·관심종목 자동 분석 4회·모닝 게이트 1회 최종 실패) 대비 대체 모델.
+# 검색 그라운딩을 지원하는 모델이어야 한다 — 그라운딩을 버리는 폴백은 Stage1 사례처럼
+# 훈련 기억 기반 서술을 '정상 결과'로 저장하게 만든다.
+# gemini-3 계열은 이 키에서 그라운딩 호출이 429(쿼터 0)라 쓸 수 없다 (2026-11-26 실측:
+# 3-flash-preview·3.1-flash-lite 그라운딩 429, 2.5-flash-lite 그라운딩 정상).
+# 비그라운딩 3-flash는 "오늘 KOSPI"를 2024년 값으로 답했다 — 그라운딩 없는 폴백 금지의 근거.
+GROUNDED_FALLBACK_MODEL = "gemini-2.5-flash-lite"
+
+
+def call_with_model_fallback(
+    fn: Callable[[str], T],
+    *,
+    models: tuple[str, ...],
+    label: str,
+    attempts: int = 3,
+    delays: tuple[float, ...] = (20.0, 60.0),
+    fallback_attempts: int = 2,
+    fallback_delays: tuple[float, ...] = (20.0,),
+) -> T:
+    """fn(model)을 models 순서대로 시도한다. 각 모델 안에서는 call_with_retry.
+
+    첫 모델은 attempts/delays, 이후 모델은 fallback_attempts/fallback_delays로 재시도.
+    **일시 오류일 때만** 다음 모델로 넘어간다 — 400/401 같은 요청 오류는 모델을 바꿔도
+    안 고쳐지므로 즉시 올린다. 최종 실패 시 마지막 예외를 올린다.
+    """
+    last: BaseException | None = None
+    for idx, model in enumerate(models):
+        primary = idx == 0
+        try:
+            result = call_with_retry(
+                lambda m=model: fn(m),
+                label=f"{label} [{model}]",
+                attempts=attempts if primary else fallback_attempts,
+                delays=delays if primary else fallback_delays,
+            )
+            if not primary:
+                logger.warning("%s: fallback model %s succeeded", label, model)
+            return result
+        except Exception as e:  # noqa: BLE001
+            last = e
+            if not is_transient(e):
+                raise
+            if idx < len(models) - 1:
+                logger.warning("%s: %s exhausted, switching to %s", label, model, models[idx + 1])
+    assert last is not None
+    raise last

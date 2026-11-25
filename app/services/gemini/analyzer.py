@@ -28,7 +28,9 @@ from app.services.gemini.prompts import (
 
 _CHAIN_STAGE4B = ["gemini-3.1-flash-lite", "gemini-2.5-flash-lite"]
 
-from app.services.gemini.retry import call_with_retry
+from app.services.gemini.retry import (
+    GROUNDED_FALLBACK_MODEL, call_with_model_fallback,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -154,13 +156,26 @@ class GeminiAnalyzer:
     def grounded_json(self, prompt: str, model: str = "gemini-2.5-flash") -> tuple[dict, str, str]:
         """검색 그라운딩 1회 호출 + JSON 파싱 (공용 헬퍼).
         반환: (파싱된 dict, 원문 텍스트, 사용 모델명). 파싱 실패 시 Gemma 정제 재시도 후 예외."""
-        text = self._call_model_with_search(prompt, model)
-        return self._parse_json(text), text, model
+        # 관심종목/리서치 공용 — 503 시 같은 모델 재시도 후 그라운딩 지원 대체 모델로 (2026-11-26)
+        def _one(m: str) -> tuple[dict, str, str]:
+            t = self._call_model_with_search(prompt, m)
+            return self._parse_json(t), t, m
+        return self._grounded_with_fallback(_one, model, label="grounded_json")
 
     def grounded_text(self, prompt: str, model: str = "gemini-2.5-flash") -> tuple[str, str]:
         """검색 그라운딩 1회 호출 — 원문 텍스트 그대로 반환 (마크다운 등 비-JSON 출력용).
         반환: (텍스트, 사용 모델명)."""
-        return self._call_model_with_search(prompt, model), model
+        return self._grounded_with_fallback(
+            lambda m: (self._call_model_with_search(prompt, m), m), model, label="grounded_text",
+        )
+
+    @staticmethod
+    def _grounded_with_fallback(fn, model: str, *, label: str):
+        models = (model,) if model == GROUNDED_FALLBACK_MODEL else (model, GROUNDED_FALLBACK_MODEL)
+        return call_with_model_fallback(
+            fn, models=models, label=label,
+            attempts=2, delays=(15.0,), fallback_attempts=2, fallback_delays=(15.0,),
+        )
 
     def plain_json(self, prompt: str, model: str = "gemini-3.1-flash-lite") -> dict:
         """그라운딩 없는 1회 호출 + JSON 파싱 (경량 추출 작업용)."""
@@ -181,8 +196,10 @@ class GeminiAnalyzer:
             # Stage2~4와 A-gate 키워드 게이트가 그걸 그대로 물려받는다 (2026-10-09 실측:
             # 전일 KOSPI -2.62%·MA20 아래인 날에 "AI 수익화 본격 개화" 강세 테마가 저장됐다.
             # 그날은 수치 게이트가 막았지만 그건 안전망이고 Stage1이 제대로 돈 게 아니다).
-            text = call_with_retry(
-                lambda: self._call_model_with_search(prompt, model),
+            # 같은 모델 재시도로 안 풀리면 그라운딩 지원 대체 모델 → 그래도 안 되면 비그라운딩 폴백
+            text, model = call_with_model_fallback(
+                lambda m: (self._call_model_with_search(prompt, m), m),
+                models=(model, GROUNDED_FALLBACK_MODEL),
                 label="Stage1 grounding", attempts=3, delays=(15.0, 45.0),
             )
         except Exception as e:

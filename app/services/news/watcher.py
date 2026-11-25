@@ -10,11 +10,14 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from zoneinfo import ZoneInfo
 
-from app.services.gemini.retry import call_with_retry
+from app.services.gemini.retry import (
+    GROUNDED_FALLBACK_MODEL, call_with_model_fallback,
+)
 
 logger = logging.getLogger(__name__)
 
 NEWS_MODEL = "gemini-2.5-flash"
+_NEWS_MODELS = (NEWS_MODEL, GROUNDED_FALLBACK_MODEL)  # 503 장기화 시 대체 모델 (2026-11-26)
 
 _BASE_PROMPT = """
 당신은 한국 주식시장 리스크 감시 전문가입니다.
@@ -125,9 +128,9 @@ def check_news(db=None) -> dict:
     )
 
     # 503 등 일시 오류는 기다렸다 다시 하면 대개 풀린다 (모델 변경 없음 — 검색 그라운딩 유지)
-    def _ask() -> dict:
+    def _ask(model: str) -> dict:
         response = client.models.generate_content(
-            model=NEWS_MODEL, contents=prompt, config=config,
+            model=model, contents=prompt, config=config,
         )
         text = response.text.strip()
         if "```" in text:
@@ -144,7 +147,9 @@ def check_news(db=None) -> dict:
         }
 
     try:
-        return call_with_retry(_ask, label="News check", attempts=3, delays=(20.0, 60.0))
+        return call_with_model_fallback(
+            _ask, models=_NEWS_MODELS, label="News check", attempts=3, delays=(20.0, 60.0),
+        )
     except Exception as e:
         logger.error("News check failed after retries: %s", e)
 
@@ -252,9 +257,9 @@ def morning_gate_check() -> None:
 
         # 08:00 실행이고 매수 잡은 09:20이라 재시도 여유가 80분 있다.
         # 503 하나로 게이트가 날아가면 그날 야간 리스크 평가 없이 매수가 진행된다.
-        def _ask_gate() -> dict:
+        def _ask_gate(model: str) -> dict:
             response = client_g.models.generate_content(
-                model=NEWS_MODEL, contents=_MORNING_GATE_PROMPT, config=config,
+                model=model, contents=_MORNING_GATE_PROMPT, config=config,
             )
             text = response.text.strip()
             if "```" in text:
@@ -264,8 +269,10 @@ def morning_gate_check() -> None:
             return json.loads(text)
 
         try:
-            result = call_with_retry(
-                _ask_gate, label="Morning gate check", attempts=4, delays=(20.0, 60.0, 120.0),
+            result = call_with_model_fallback(
+                _ask_gate, models=_NEWS_MODELS, label="Morning gate check",
+                attempts=4, delays=(20.0, 60.0, 120.0),
+                fallback_attempts=3, fallback_delays=(30.0, 60.0),
             )
             severity = result.get("severity", "NORMAL")
             reason   = result.get("reason", "")
@@ -707,9 +714,9 @@ def check_position_theses() -> None:
                 )
             positions_text = "\n\n".join(lines)
 
-            def _ask_thesis(text_block: str = positions_text) -> dict:
+            def _ask_thesis(model: str, text_block: str = positions_text) -> dict:
                 response = client_g.models.generate_content(
-                    model=NEWS_MODEL,
+                    model=model,
                     contents=_THESIS_CHECK_PROMPT.format(positions_text=text_block),
                     config=config,
                 )
@@ -722,8 +729,9 @@ def check_position_theses() -> None:
 
             try:
                 # 그룹이 여러 개라 대기를 짧게 — 한 그룹 실패가 전체 잡을 붙잡지 않게
-                data = call_with_retry(
-                    _ask_thesis, label="Thesis check group", attempts=3, delays=(15.0, 45.0),
+                data = call_with_model_fallback(
+                    _ask_thesis, models=_NEWS_MODELS, label="Thesis check group",
+                    attempts=3, delays=(15.0, 45.0), fallback_attempts=2, fallback_delays=(15.0,),
                 )
                 for check in data.get("checks", []):
                     results[check["stock_code"]] = check
